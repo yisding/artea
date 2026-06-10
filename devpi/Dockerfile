@@ -1,6 +1,8 @@
 # Artea devpi image: PyPI pull-through cache + devpi-constrained filtering.
 # Internal-only service; the gateway enforces auth (see docs/ARCHITECTURE.md).
-FROM python:3.12-slim
+# Base = python:3.12-slim, digest-pinned (ADR-0004); bump procedure in
+# docs/guides/operations.md ("Base-image digest pins").
+FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203
 
 # Exact pins; docker compose overrides these from .env so all pins live there.
 ARG DEVPI_SERVER_VERSION=6.20.1

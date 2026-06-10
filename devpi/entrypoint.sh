@@ -64,7 +64,8 @@ done
 log "devpi-server is up"
 
 # ensure the filtered index exists (the gateway's pypi 404-fallback target);
-# constraints on it are managed externally by policy-sync, never hardcoded here.
+# a fresh index is seeded fail-closed ('*' = block all) and an existing one is
+# left alone — its constraints are owned by policy-sync (see ensure_index.py).
 # Uses the JSON API, not devpi-client: --outside-url rewrites client URLs (README)
 python3 "${SCRIPT_DIR}/ensure_index.py" "${LOCAL_URL}"
 

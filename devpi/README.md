@@ -8,8 +8,10 @@ This container is Artea's PyPI mirror layer. It does exactly two things:
 2. **`root/constrained`** — a [`devpi-constrained`](https://pypi.org/project/devpi-constrained/)
    index (`type=constrained`, `bases=root/pypi`) that re-exposes the mirror filtered
    by a constraints list (`name<2`, `name ==1.2.3`, `*` default-deny). The entrypoint
-   creates this index idempotently on every boot but **never sets constraints** —
-   those are pushed by `policy-sync` from `artea/registry-policy:pypi-constraints.txt`.
+   creates this index idempotently on every boot; a **freshly created** index is
+   seeded with the `*` constraint (fail-closed: block everything) and an existing
+   index's constraints are **never touched** — the real policy is pushed by
+   `policy-sync` from `artea/registry-policy:pypi-constraints.txt`.
 
 What this container is **not**:
 
@@ -20,10 +22,11 @@ What this container is **not**:
   by the `gateway` container. (`--restrict-modify root` is passed as defense in depth
   so an anonymous reacher cannot create users/indexes, but it is not the auth model.)
 - **Not a store of record.** The whole server dir is a disposable cache: it is always
-  safe to `docker compose down && docker volume rm <project>_devpi-data`. The next
-  boot re-runs `devpi-init` and recreates both indexes. **Caveat:** after a wipe,
-  `root/constrained` has an *empty* constraints list (= allow everything) until
-  policy-sync's startup sync or poll re-pushes `pypi-constraints.txt`.
+  safe to `docker compose down && docker volume rm <project>_devpi-data` (or
+  `make clean`). The next boot re-runs `devpi-init` and recreates both indexes.
+  After a wipe, `root/constrained` is seeded **fail-closed** (`*` = block
+  everything, e2e S15) until policy-sync's startup sync, webhook, or poll
+  replaces the constraints with the real `pypi-constraints.txt`.
 
 ## URL shapes (contract for the gateway author)
 
@@ -147,7 +150,8 @@ devpi:
 against fake `devpi-init`/`devpi-server` binaries (the fake server really listens
 and emulates the index JSON API, so the readiness probe and HTTP calls are
 exercised for real). It asserts: init runs only on an empty server dir, the
-constrained index is created only when missing (with root credentials), re-runs
+constrained index is created only when missing (with root credentials and the
+fail-closed `*` constraints seed — never overwriting an existing index), re-runs
 are no-ops, and a missing `DEVPI_ROOT_PASSWORD` fails fast. No docker or network
 needed:
 

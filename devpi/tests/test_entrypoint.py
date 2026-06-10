@@ -134,6 +134,8 @@ def test_first_boot_inits_and_creates_index(env):
     assert "authed" in creates[0]  # sent root credentials
     assert '"type": "constrained"' in creates[0]
     assert '"bases": "root/pypi"' in creates[0]
+    # fail-closed seed (S15): a fresh index blocks everything until policy-sync
+    assert '"constraints": ["*"]' in creates[0]
     server = [c for c in lines if c.startswith("devpi-server ")]
     assert len(server) == 1
     assert "--host 0.0.0.0" in server[0]
@@ -149,6 +151,7 @@ def test_second_boot_is_idempotent(env):
     assert res.returncode == 0, res.stderr
     new = calls(env)[seen:]
     assert not any(c.startswith("devpi-init ") for c in new)
+    # no PUT at all: an existing index's constraints are never overwritten
     assert not any(c.startswith("PUT ") for c in new)
     assert any(c == "GET /root/constrained" for c in new)  # existence was checked
 
