@@ -7,8 +7,8 @@ plugins loaded through Verdaccio's stable plugin API.
 | Piece | Purpose |
 |-------|---------|
 | `config.yaml` | Verdaccio config: `/npm/` url_prefix, npmjs uplink, package rules, plugin wiring |
-| `plugins/verdaccio-auth-gitea/` | auth plugin — validates `user:PAT` against Gitea, maps orgs to groups, 60s positive cache |
-| `plugins/verdaccio-filter-artea/` | metadata filter — enforces `/policy/npm-rules.yaml` (blocked names/scopes/semver ranges, mtime hot-reload) |
+| `plugins/verdaccio-auth-gitea/` | auth plugin — validates `user:PAT` against Gitea, maps orgs to groups (paginated), 60s positive cache |
+| `plugins/verdaccio-filter-artea/` | metadata filter + tarball middleware — enforces `/policy/npm-rules.yaml` (blocked names/scopes/semver ranges, mtime hot-reload, fail-closed) |
 | `smoke/` | dev-only: boots verdaccio 6 in-process with `config.yaml` + built plugins and asserts the auth/deny contract; **not mounted** into the container |
 
 Design (see `docs/ARCHITECTURE.md`): Verdaccio is **read-only** — publish is denied
@@ -54,8 +54,8 @@ pnpm installs dependencies as *relative* symlinks into `plugins/node_modules/.pn
 so the tree is only self-contained as a whole. `config.yaml` sets
 `plugins: /verdaccio/plugins`, and Verdaccio's loader resolves
 `/verdaccio/plugins/verdaccio-<name>` for each configured plugin
-(`auth: auth-gitea`, `filters: filter-artea`) via each package's `main`
-(`dist/index.js`).
+(`auth: auth-gitea`, `filters: filter-artea`, `middlewares: filter-artea` — the
+filter package serves both roles) via each package's `main` (`dist/index.js`).
 
 The image runs as uid 10001 (`$VERDACCIO_USER_UID`). Named volumes initialized by the
 image get the right ownership automatically; the read-only bind mounts just need to be
@@ -82,7 +82,11 @@ minute (e2e S12). There is no local user database and `npm adduser` fails by des
 
 policy-sync writes `npm-rules.yaml` from the `artea/registry-policy` repo into the
 shared `/policy` volume; the filter plugin hot-reloads it on mtime change — no
-container restart. Schema and fail-open semantics are documented in
+container restart. The same package is also wired as a middleware that rejects
+direct tarball downloads of blocked versions with 403 (S13). A missing or
+unparsable policy file **fails closed**: packuments are served with no versions and
+tarballs get 503 until the file is restored (S15). Schema, fail-closed semantics and
+the `fail_open` escape hatch are documented in
 `plugins/verdaccio-filter-artea/README.md`.
 
 ## Upgrading verdaccio

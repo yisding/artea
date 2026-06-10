@@ -30,7 +30,8 @@ auth:
 
 filters:
   # loads /verdaccio/plugins/verdaccio-filter-artea; /policy is the shared
-  # policy-data volume written by policy-sync
+  # policy-data volume written by policy-sync. A missing/unparsable policy file
+  # FAILS CLOSED (public packages rejected); fail_open: true is the escape hatch
   filter-artea:
     policy_file: /policy/npm-rules.yaml
 
@@ -64,6 +65,11 @@ middlewares:
   # proxy `npm audit` to the uplink
   audit:
     enabled: true
+  # same package as in filters: (one package, two plugin roles) — registers the
+  # middleware that 403s direct tarball downloads of blocked versions (S13) and
+  # 503s them while the policy file is missing/unparsable (fail-closed, S15)
+  filter-artea:
+    policy_file: /policy/npm-rules.yaml
 
 server:
   keepAliveTimeout: 60

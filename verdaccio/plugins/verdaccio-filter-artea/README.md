@@ -1,11 +1,25 @@
 # verdaccio-filter-artea
 
-Verdaccio metadata filter plugin (`IPluginStorageFilter`, `filter_metadata` hook) that
-enforces Artea's npm block policy (requirement R3). It rewrites packuments before
-Verdaccio serves them: blocked versions disappear from `versions`/`time`, dist-tags
-pointing at removed versions are dropped (`latest` is re-pointed to the highest
-remaining version), and fully-blocked names are served with zero versions so installs
-fail with the standard "No matching version found" npm error.
+One package, two Verdaccio plugin roles, enforcing Artea's npm block policy
+(requirement R3). Wire it under **both** `filters:` and `middlewares:`:
+
+- **Metadata filter** (`IPluginStorageFilter`, `filter_metadata` hook): rewrites
+  packuments before Verdaccio serves them. Blocked versions disappear from
+  `versions`/`time`, dist-tags pointing at removed versions are dropped (`latest` is
+  re-pointed to the highest remaining version), and fully-blocked names are served
+  with zero versions so installs fail with the standard "No matching version found"
+  npm error.
+- **Middleware** (`IPluginMiddleware`, `register_middlewares` hook): intercepts
+  tarball downloads — `GET /{pkg}/-/{file}.tgz`, scoped
+  `GET /@{scope}/{pkg}/-/{file}.tgz`, and their URL-encoded variants (`%2f`, `%40`) —
+  and answers `403` with a JSON error for blocked names, scopes, and versions.
+  Metadata filtering alone can be bypassed by constructing the tarball URL directly
+  (e2e scenario S13); the middleware closes that hole. The version is derived from
+  the filename by stripping the exact `<unscoped-name>-` prefix, so hyphenated names
+  and prerelease/build-metadata versions are handled.
+
+Both roles share one policy-loading code path (`src/policy.ts`): a `stat()` per
+request, re-parse only on mtime change.
 
 ## Configuration (verdaccio config.yaml)
 
@@ -13,6 +27,11 @@ fail with the standard "No matching version found" npm error.
 filters:
   filter-artea:
     policy_file: /policy/npm-rules.yaml   # default; the shared policy-data volume
+
+middlewares:
+  filter-artea:                           # same package, middleware role (S13)
+    policy_file: /policy/npm-rules.yaml
+    # fail_open: true                     # escape hatch, see below; default false
 ```
 
 ## Policy file schema (`npm-rules.yaml`)
@@ -53,22 +72,32 @@ Semantics:
 
 ## Reload behavior
 
-The plugin `stat()`s the policy file on every `filter_metadata` call and re-parses it
-only when the mtime changes — no restart needed after policy-sync writes a new file.
-If a new revision fails to parse (invalid YAML or wrong structure), the **last good
-policy stays in effect** and an error is logged; the file is not re-parsed until its
-mtime changes again.
+The plugin `stat()`s the policy file on every request and re-parses it only when the
+mtime changes — no restart needed after policy-sync writes a new file. A
+stale-but-valid file keeps serving as last-known-good: freshness is policy-sync's
+job, not the plugin's.
 
-## Fail-open on missing file (deliberate)
+## Failure mode: fail-closed (default)
 
-If the policy file does not exist, the plugin behaves as if the policy were empty and
-nothing is blocked. This is intentional: the policy file is provisioned asynchronously
-(policy-sync fetches it from Gitea after bootstrap), and a fresh stack must be able to
-serve packages before the first sync lands. Blocking is a curation feature, not an
-access-control boundary — access control is the auth plugin's job, and the private
-`@artea` scope is denied in `config.yaml` package rules, not here. If the file
-disappears after having existed, the plugin reverts to the empty policy and logs a
-warning.
+If the policy file is **missing or unparsable** (invalid YAML or wrong structure),
+the plugin rejects public-package traffic instead of silently serving everything
+unfiltered (e2e scenario S15):
+
+- the middleware answers tarball requests with
+  `503 {"error": "policy unavailable: ..."}`;
+- the filter strips every version from every packument it sees, so installs fail.
+  (It cannot 503: Verdaccio swallows errors thrown by filter plugins and would serve
+  the packument unfiltered — stripping is the only reliable rejection.)
+
+The failed state clears automatically through the same mtime/stat reload: as soon as
+the file reappears or is fixed, the policy applies again — no restart. Load failures
+are logged once per transition (`error` level); rejected requests log at `warn`.
+
+### `fail_open: true` (escape hatch, not advised)
+
+Restores the legacy behavior: a missing file is treated as an empty policy (nothing
+blocked) and an unparsable update keeps the last good policy in effect. Only use
+this if availability of public packages matters more than policy enforcement.
 
 ## Develop
 

@@ -47,6 +47,7 @@ describe('verdaccio 6 boots with our config and plugins', () => {
     expect(config.url_prefix).toBe('/npm/');
     expect(config.auth['auth-gitea']).toBeDefined();
     expect(config.filters['filter-artea']).toBeDefined();
+    expect(config.middlewares['filter-artea']).toBeDefined(); // tarball guard wired (S13)
     expect(config.packages['@artea/*'].proxy).toBeUndefined(); // private scope must never proxy
     expect(config.packages['**'].proxy).toBe('npmjs');
 
@@ -55,10 +56,11 @@ describe('verdaccio 6 boots with our config and plugins', () => {
     config.plugins = PLUGINS_DIR;
     config.auth['auth-gitea'].gitea_url = giteaUrl;
     config.filters['filter-artea'].policy_file = join(tmp, 'npm-rules.yaml');
+    config.middlewares['filter-artea'].policy_file = join(tmp, 'npm-rules.yaml');
     writeFileSync(join(tmp, 'npm-rules.yaml'), 'blocked:\n  packages:\n    - left-pad\n');
     delete config.listen;
     // bundled audit middleware does not resolve under pnpm's isolated node_modules
-    delete config.middlewares;
+    delete config.middlewares.audit;
     config.log = { type: 'stdout', format: 'json', level: 'fatal' };
 
     const configPath = join(tmp, 'config.yaml');
@@ -108,5 +110,22 @@ describe('verdaccio 6 boots with our config and plugins', () => {
       body: JSON.stringify({ name: 'some-public-package', versions: {} }),
     });
     expect(res.status).toBe(403);
+  });
+
+  it('blocks a direct tarball download of a blocked package with 403 (S13)', async () => {
+    const res = await fetch(`${base}/left-pad/-/left-pad-1.3.0.tgz`, { headers: { authorization: basic } });
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: string }).error).toContain('blocked');
+  });
+
+  it('fails closed (503) while the policy file is missing, then recovers (S15)', async () => {
+    rmSync(join(tmp, 'npm-rules.yaml'));
+    const gone = await fetch(`${base}/left-pad/-/left-pad-1.3.0.tgz`, { headers: { authorization: basic } });
+    expect(gone.status).toBe(503);
+    expect(((await gone.json()) as { error: string }).error).toContain('policy unavailable');
+
+    writeFileSync(join(tmp, 'npm-rules.yaml'), 'blocked:\n  packages:\n    - left-pad\n');
+    const back = await fetch(`${base}/left-pad/-/left-pad-1.3.0.tgz`, { headers: { authorization: basic } });
+    expect(back.status).toBe(403); // policy applies again, no restart needed
   });
 });
