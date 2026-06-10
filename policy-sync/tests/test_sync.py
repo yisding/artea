@@ -36,6 +36,19 @@ def test_resync_unchanged_is_idempotent(cfg, mock_gitea, mock_devpi):
     assert len(mock_devpi.patches) == patches  # no devpi churn
 
 
+def test_wiped_devpi_healed_on_next_sync_with_unchanged_policy(cfg, mock_gitea, mock_devpi):
+    # a recreated devpi index carries the entrypoint's fail-closed '*' seed;
+    # the next sync must replace it even though the policy file is unchanged
+    mock_gitea.files["npm-rules.yaml"] = NPM
+    mock_gitea.files["pypi-constraints.txt"] = PYPI
+    syncer, _ = make_syncer(cfg)
+    syncer.sync_once()
+
+    mock_devpi.config["constraints"] = ["*"]  # simulate wipe + fail-closed seed
+    assert syncer.sync_once() is True
+    assert mock_devpi.config["constraints"] == PYPI.decode()
+
+
 def test_changed_constraints_reapplied(cfg, mock_gitea, mock_devpi):
     mock_gitea.files["npm-rules.yaml"] = NPM
     mock_gitea.files["pypi-constraints.txt"] = PYPI

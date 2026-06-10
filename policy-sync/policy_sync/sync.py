@@ -9,7 +9,6 @@ Failure semantics:
   crash-loop because Gitea or devpi is down.
 """
 
-import hashlib
 import logging
 import time
 from pathlib import Path
@@ -29,9 +28,6 @@ class Syncer:
     def __init__(self, cfg: Config, sleep=time.sleep):
         self.cfg = cfg
         self.sleep = sleep
-        # hash of last successfully applied constraints, to skip devpi churn
-        # on every poll when nothing changed
-        self._applied_constraints: str | None = None
 
     @property
     def npm_dest(self) -> Path:
@@ -58,13 +54,14 @@ class Syncer:
         data = self._fetch(PYPI_CONSTRAINTS_FILE)
         if data is None:
             return
-        digest = hashlib.sha256(data).hexdigest()
-        if digest == self._applied_constraints:
-            log.debug("constraints unchanged; not touching devpi")
-            return
-        apply_constraints(self.cfg, data.decode("utf-8", errors="replace"))
-        self._applied_constraints = digest
-        log.info("applied %d bytes of constraints to %s", len(data), self.cfg.devpi_index)
+        # apply_constraints skips the PATCH when devpi already holds these
+        # constraints — the live index config, not a local hash, is the
+        # idempotency source of truth, so a wiped+recreated devpi (fail-closed
+        # '*' seed) is healed by the next poll even with an unchanged policy
+        if apply_constraints(self.cfg, data.decode("utf-8", errors="replace")):
+            log.info("applied %d bytes of constraints to %s", len(data), self.cfg.devpi_index)
+        else:
+            log.debug("constraints unchanged; devpi untouched")
 
     def sync_once(self) -> bool:
         """Run one sync. Returns True if nothing retryable failed."""

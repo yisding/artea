@@ -27,6 +27,19 @@ def test_apply_preserves_other_index_config_keys(cfg, mock_devpi):
     assert body["constraints"] == CONSTRAINTS
 
 
+def test_apply_skips_patch_when_devpi_already_matches(cfg, mock_devpi):
+    # real devpi returns constraints normalized: a list without comments/blanks
+    mock_devpi.config["constraints"] = ["urllib3<2", "requests ==2.31.0"]
+    assert apply_constraints(cfg, CONSTRAINTS) is False
+    assert mock_devpi.patches == []
+
+
+def test_apply_patches_when_devpi_differs(cfg, mock_devpi):
+    mock_devpi.config["constraints"] = ["*"]  # entrypoint's fail-closed seed
+    assert apply_constraints(cfg, CONSTRAINTS) is True
+    assert mock_devpi.config["constraints"] == CONSTRAINTS
+
+
 def test_get_failure_raises_without_patching(cfg, mock_devpi):
     mock_devpi.fail_remaining = 1
     with pytest.raises(DevpiError, match="GET .* 500"):

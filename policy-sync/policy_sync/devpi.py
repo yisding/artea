@@ -8,6 +8,11 @@ devpi/README.md. Raw HTTP against http://devpi:3141 is unaffected.
 devpi-constrained stores constraints as an index property; replacing the whole
 property is idempotent, and the raw pypi-constraints.txt text can be pushed
 as-is (blank lines and # comments are part of the format).
+
+The index config fetched from devpi — not any local state — decides whether a
+PATCH is needed: a wiped devpi-data volume comes back with the entrypoint's
+fail-closed '*' seed (see devpi/ensure_index.py) and must be healed by the
+next sync even though the policy file itself did not change.
 """
 
 import base64
@@ -38,11 +43,32 @@ def _request(req: urllib.request.Request, timeout: float = 30.0) -> dict:
         raise DevpiError(f"{what} failed: {e}") from e
 
 
-def apply_constraints(cfg: Config, constraints_text: str) -> None:
+def _effective_lines(value) -> list[str] | None:
+    """Constraints reduced to devpi-constrained's effective form: stripped
+    lines minus blanks and #-comment lines (verified against a live server,
+    which stores/returns exactly that). Accepts the raw file text (str) or
+    the stored index value (list); None for anything else, which never
+    compares equal, so callers re-apply."""
+    if isinstance(value, str):
+        lines = value.splitlines()
+    elif isinstance(value, (list, tuple)):
+        lines = [str(v) for v in value]
+    else:
+        return None
+    return [s for s in (line.strip() for line in lines) if s and not s.startswith("#")]
+
+
+def apply_constraints(cfg: Config, constraints_text: str) -> bool:
+    """Ensure the index holds constraints_text. Returns True if devpi was
+    PATCHed, False if it already held the same effective constraints."""
     url = f"{cfg.devpi_url}/{cfg.devpi_index}"
     config = _request(urllib.request.Request(url, headers={"Accept": "application/json"})).get("result")
     if not isinstance(config, dict):
         raise DevpiError(f"GET {url}: response has no index config in .result")
+
+    if _effective_lines(config.get("constraints")) == _effective_lines(constraints_text):
+        log.debug("%s already holds these constraints; no PATCH", cfg.devpi_index)
+        return False
 
     config["constraints"] = constraints_text
     auth = base64.b64encode(f"root:{cfg.devpi_root_password}".encode()).decode()
@@ -58,3 +84,4 @@ def apply_constraints(cfg: Config, constraints_text: str) -> None:
             },
         )
     )
+    return True
