@@ -22,9 +22,37 @@ import time
 import unittest
 
 CONF = pathlib.Path(__file__).resolve().parent.parent / "nginx.conf"
+NJS_DIR = CONF.parent / "njs"
 
 GOOD_AUTH = "Basic dXNlcjpnb29kLXBhdA=="  # user:good-pat
 BAD_AUTH = "Basic dXNlcjpyZXZva2Vk"  # user:revoked
+
+# Where distros/images put nginx's dynamic modules; the conf's load_module path
+# is relative to the prefix (-p), so the test needs an absolute host path.
+NJS_MODULE_DIRS = (
+    "/usr/lib/nginx/modules",
+    "/usr/lib64/nginx/modules",
+    "/usr/local/lib/nginx/modules",
+    "/opt/homebrew/lib/nginx/modules",
+    "/etc/nginx/modules",
+)
+
+
+def njs_load_directive():
+    """Host replacement for the conf's load_module line.
+
+    Returns the directive, '' when njs is compiled into the binary, or None
+    when the host nginx cannot provide njs at all (test must skip; use the
+    docker validation from gateway/README.md instead).
+    """
+    for d in NJS_MODULE_DIRS:
+        path = pathlib.Path(d) / "ngx_http_js_module.so"
+        if path.exists():
+            return f"load_module {path};"
+    info = subprocess.run(["nginx", "-V"], capture_output=True, text=True)
+    if "njs" in info.stderr or "http_js" in info.stderr:
+        return ""  # statically built in; no load_module needed
+    return None
 
 
 def free_port():
@@ -79,6 +107,18 @@ class UpstreamHandler(http.server.BaseHTTPRequestHandler):
             if self.path.startswith("/api/packages/artea/pypi/simple/"):
                 self._reply(404, "package does not exist")
                 return
+        if server.tag == "verdaccio":
+            # stand-in for the policy middleware's tarball block (S13)
+            if self.path.endswith("/blocked-1.0.0.tgz"):
+                self._reply(403, "blocked by policy")
+                return
+        if server.tag == "devpi":
+            # devpi should never need to redirect (the gateway sends canonical
+            # names), but if it does, the gateway must map it back to /pypi/
+            if self.path == "/root/constrained/+simple/redirector/":
+                loc = "http://localhost:8080/root/constrained/+simple/target/"
+                self._reply(302, "", headers=(("Location", loc),))
+                return
         self._reply(200, f"{server.tag} {self.path}")
 
     do_POST = do_GET
@@ -90,6 +130,10 @@ class GatewayTest(unittest.TestCase):
     def setUpClass(cls):
         if shutil.which("nginx") is None:
             raise unittest.SkipTest("nginx binary not on PATH")
+        load_module = njs_load_directive()
+        if load_module is None:
+            raise unittest.SkipTest("host nginx lacks the njs module; use the "
+                                    "docker validation from gateway/README.md")
         cls.tmp = tempfile.TemporaryDirectory(prefix="artea-gw-test.")
         tmp = pathlib.Path(cls.tmp.name)
         (tmp / "logs").mkdir()
@@ -101,8 +145,17 @@ class GatewayTest(unittest.TestCase):
 
         cls.port = free_port()
         conf = CONF.read_text()
+        # nginx's compiled-in temp dirs (client_body, proxy, ...) often live in
+        # root-owned /var/cache/nginx; point them into the test tmpdir so the
+        # suite runs as any user with any nginx build.
+        temp_dirs = "\n".join(
+            f"    {d}_temp_path {tmp / 'cache' / d};"
+            for d in ("client_body", "proxy", "fastcgi", "uwsgi", "scgi"))
         subs = {
             "listen 80;": f"listen 127.0.0.1:{cls.port};",
+            "load_module modules/ngx_http_js_module.so;": load_module,
+            "http {": "http {\n" + temp_dirs,
+            "/etc/nginx/njs": str(NJS_DIR),
             "gitea:3000": "127.0.0.1:%d" % cls.upstreams["gitea"].server_port,
             "verdaccio:4873": "127.0.0.1:%d" % cls.upstreams["verdaccio"].server_port,
             "devpi:3141": "127.0.0.1:%d" % cls.upstreams["devpi"].server_port,
@@ -173,9 +226,35 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(body, f"gitea {path}")
 
     def test_npm_prefix_stripped_for_verdaccio(self):
-        status, body, _ = self._raw("GET", "/npm/left-pad")
+        status, body, _ = self._raw("GET", "/npm/left-pad", auth=GOOD_AUTH)
         self.assertEqual(status, 200)
         self.assertEqual(body, "verdaccio /left-pad")
+        # credential must reach Verdaccio: its auth plugin authorizes npm-level
+        self.assertIn(("/left-pad", GOOD_AUTH), self.upstreams["verdaccio"].requests)
+
+    def test_npm_anonymous_rejected_everywhere(self):
+        # Verdaccio's service endpoints must not answer without credentials
+        # ("anonymous access: none, anywhere")
+        before = len(self.upstreams["verdaccio"].requests)
+        for path in ("/npm/-/ping", "/npm/-/v1/search?text=left-pad",
+                     "/npm/-/npm/v1/security/audits/quick", "/npm/left-pad"):
+            status, _, headers = self._raw("GET", path)
+            self.assertEqual(status, 401, path)
+            self.assertEqual(headers.get("WWW-Authenticate"), 'Basic realm="Artea"')
+        self.assertEqual(len(self.upstreams["verdaccio"].requests), before)
+
+    def test_npm_bad_credentials_rejected(self):
+        status, _, headers = self._raw("GET", "/npm/-/ping", auth=BAD_AUTH)
+        self.assertEqual(status, 401)
+        self.assertIn("WWW-Authenticate", headers)
+
+    def test_npm_upstream_403_passes_through(self):
+        # Verdaccio's own 401/403 (policy tarball block, S13) must NOT be
+        # re-mapped to the gateway's Basic challenge — only auth_request
+        # failures are (proxy_intercept_errors stays off on /npm/).
+        status, body, _ = self._raw("GET", "/npm/blocked/-/blocked-1.0.0.tgz",
+                                    auth=GOOD_AUTH)
+        self.assertEqual((status, body), (403, "blocked by policy"))
 
     def test_npm_root_redirects(self):
         status, _, headers = self._raw("GET", "/npm")
@@ -205,6 +284,48 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(body, "devpi /root/constrained/+simple/six/")
         # Gitea really was asked first, under the org pypi endpoint
         self.assertIn("/api/packages/artea/pypi/simple/six/", self.seen("gitea"))
+
+    def test_pypi_name_normalized_before_gitea_lookup(self):
+        # S16: non-canonical spellings of a private name must still resolve to
+        # the private package and never fall through to the public mirror.
+        for spelling in ("Private-PKG", "private_pkg", "Private..pkg"):
+            status, body, _ = self._raw("GET", f"/pypi/simple/{spelling}/",
+                                        auth=GOOD_AUTH)
+            self.assertEqual(status, 200, spelling)
+            self.assertEqual(body, "gitea-simple private-pkg", spelling)
+        self.assertFalse([p for p in self.seen("devpi") if "private" in p.lower()])
+
+    def test_pypi_fallback_uses_normalized_name(self):
+        status, body, _ = self._raw("GET", "/pypi/simple/Some_Public.Pkg/",
+                                    auth=GOOD_AUTH)
+        self.assertEqual(status, 200)
+        self.assertEqual(body, "devpi /root/constrained/+simple/some-public-pkg/")
+        self.assertIn("/api/packages/artea/pypi/simple/some-public-pkg/",
+                      self.seen("gitea"))
+
+    def test_pypi_missing_slash_canonicalized_by_gateway(self):
+        # the slashless form must go through the Gitea-first check itself; it
+        # must never reach devpi slashless (devpi would answer with its own
+        # redirect, letting redirect-following clients skip the check)
+        status, body, _ = self._raw("GET", "/pypi/simple/six", auth=GOOD_AUTH)
+        self.assertEqual(status, 200)
+        self.assertEqual(body, "devpi /root/constrained/+simple/six/")
+        self.assertIn("/api/packages/artea/pypi/simple/six/", self.seen("gitea"))
+        self.assertNotIn("/root/constrained/+simple/six", self.seen("devpi"))
+
+    def test_pypi_bare_index_guarded(self):
+        status, _, _ = self._raw("GET", "/pypi/simple/")
+        self.assertEqual(status, 401)
+        status, body, _ = self._raw("GET", "/pypi/simple/", auth=GOOD_AUTH)
+        self.assertEqual((status, body), (200, "devpi /root/constrained/+simple/"))
+
+    def test_pypi_devpi_redirect_mapped_back_into_gateway(self):
+        # belt-and-braces: a devpi Location header may never point the client
+        # at /root/... directly — it must re-enter the precedence check
+        status, _, headers = self._raw("GET", "/pypi/simple/redirector/",
+                                       auth=GOOD_AUTH)
+        self.assertEqual(status, 302)
+        self.assertEqual(headers["Location"], "/pypi/simple/target/")
 
     def test_devpi_file_downloads_guarded_and_passed_through(self):
         path = "/root/constrained/+f/abc/six.whl"
