@@ -125,7 +125,8 @@ Gateway logic for `GET /pypi/simple/{name}/`:
   Verdaccio's org→group mapping works.
 - **Verdaccio**: our auth plugin validates each request's Basic credential against
   Gitea `/api/v1/user`, maps Gitea org/team membership to Verdaccio groups, caches
-  positive results for 60s (so revocation takes effect within a minute).
+  positive results for 30s (matching the gateway's auth_request cache, so PAT
+  revocation takes effect comfortably within the 60s budget of S12).
 - **devpi**: no plugin needed — the gateway's `auth_request` guard covers it.
 - **Anonymous access**: none, anywhere.
 
