@@ -1,8 +1,12 @@
 # Artea development targets. `make help` lists them.
 SHELL := /bin/bash
 COMPOSE := docker compose
+PROJECT := artea
+# throwaway container for volume backup/restore (pinned tag, never latest)
+UTIL_IMAGE ?= alpine:3.22
+BACKUP_DIR := backups
 
-.PHONY: help secrets plugins up down logs bootstrap smoke e2e clean
+.PHONY: help secrets plugins up down logs bootstrap smoke e2e clean destroy backup restore
 
 help: ## list available targets
 	@grep -E '^[a-z0-9-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "%-10s %s\n", $$1, $$2}'
@@ -31,9 +35,39 @@ bootstrap: .env ## idempotent S1: admin, org, policy repo + webhook, users, PATs
 smoke: ## gateway-level smoke checks (requires up + bootstrap)
 	./scripts/smoke.sh
 
-e2e: smoke ## scenario suite S1-S12 (requires up + bootstrap)
+e2e: smoke ## scenario suite S1-S16 (requires up + bootstrap)
 	./e2e/run.sh
 
-clean: ## stop the stack and delete ALL state (volumes, e2e tmp files)
+# clean wipes only what refills itself; gitea-data (users, private packages,
+# PATs — the store of record) survives. Full wipe = `make destroy`.
+clean: ## stop the stack and wipe the disposable caches (gitea-data preserved)
+	$(COMPOSE) down --remove-orphans
+	docker volume rm -f $(PROJECT)_devpi-data $(PROJECT)_verdaccio-storage $(PROJECT)_policy-data
+	rm -rf e2e/tmp
+
+destroy: ## DANGER: delete ALL state including gitea-data (interactive confirm)
+	@echo "This permanently deletes ALL Artea state, including gitea-data"
+	@echo "(users, private packages, PATs). 'make backup' first if in doubt."
+	@read -r -p "Type the project name ($(PROJECT)) to confirm: " answer; \
+		[ "$$answer" = "$(PROJECT)" ] || { echo "aborted"; exit 1; }
 	$(COMPOSE) down -v --remove-orphans
 	rm -rf e2e/tmp
+
+backup: ## cold-backup gitea-data to ./backups/ (stops gitea briefly)
+	@mkdir -p $(BACKUP_DIR)
+	$(COMPOSE) stop gitea
+	docker run --rm -v $(PROJECT)_gitea-data:/data:ro -v "$(CURDIR)/$(BACKUP_DIR)":/backup $(UTIL_IMAGE) \
+		tar czf "/backup/gitea-data-$$(date +%Y%m%d-%H%M%S).tar.gz" -C /data .
+	$(COMPOSE) start gitea
+	@ls -t $(BACKUP_DIR)/gitea-data-*.tar.gz | head -1
+
+restore: ## overwrite gitea-data from BACKUP=backups/gitea-data-<ts>.tar.gz
+	@[ -n "$(BACKUP)" ] && [ -f "$(BACKUP)" ] || \
+		{ echo "usage: make restore BACKUP=backups/gitea-data-<timestamp>.tar.gz"; exit 1; }
+	@read -r -p "Overwrite gitea-data with $(BACKUP)? Type the project name ($(PROJECT)) to confirm: " answer; \
+		[ "$$answer" = "$(PROJECT)" ] || { echo "aborted"; exit 1; }
+	$(COMPOSE) stop gitea
+	docker run --rm -v $(PROJECT)_gitea-data:/data -v "$(abspath $(BACKUP))":/backup.tar.gz:ro $(UTIL_IMAGE) \
+		sh -c 'find /data -mindepth 1 -delete && tar xzf /backup.tar.gz -C /data'
+	$(COMPOSE) start gitea
+	@echo "restored $(BACKUP); caches refill on demand (slower first installs)"
