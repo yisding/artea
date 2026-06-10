@@ -1,0 +1,31 @@
+{
+  "name": "verdaccio-filter-artea",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Verdaccio metadata filter: blocks packages, scopes and semver ranges listed in /policy/npm-rules.yaml",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.0",
+    "semver": "^7.7.0"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.10.0",
+    "@types/semver": "^7.5.8",
+    "@verdaccio/types": "^10.8.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.0.0"
+  }
+}

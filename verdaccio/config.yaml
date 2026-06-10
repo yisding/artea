@@ -1,0 +1,69 @@
+# Verdaccio config for Artea — read-only npm pull-through cache behind the gateway.
+# Mounted read-only at /verdaccio/conf/config.yaml in the stock verdaccio/verdaccio:6 image.
+# See docs/ARCHITECTURE.md ("Fixed contracts") and verdaccio/README.md for mounts.
+
+# named volume mounted at /verdaccio/storage (image default data dir)
+storage: /verdaccio/storage/data
+
+# bind mount of ./verdaccio/plugins — loader resolves <dir>/verdaccio-<name>
+plugins: /verdaccio/plugins
+
+listen: 0.0.0.0:4873
+
+# gateway serves us at http://localhost:8080/npm/ and strips the prefix;
+# url_prefix makes generated tarball/metadata URLs resolve back through it
+url_prefix: /npm/
+
+# no anonymous access anywhere (ARCHITECTURE.md auth model) — the web UI has no
+# per-user auth gate in verdaccio 6, so it is disabled outright
+web:
+  enable: false
+
+auth:
+  # loads /verdaccio/plugins/verdaccio-auth-gitea; replaces htpasswd entirely,
+  # so there is no local user database and `npm adduser` fails
+  auth-gitea:
+    gitea_url: http://gitea:3000
+    cache_ttl_ms: 60000
+
+filters:
+  # loads /verdaccio/plugins/verdaccio-filter-artea; /policy is the shared
+  # policy-data volume written by policy-sync
+  filter-artea:
+    policy_file: /policy/npm-rules.yaml
+
+uplinks:
+  npmjs:
+    url: https://registry.npmjs.org/
+    cache: true
+    maxage: 2m
+    max_fails: 5
+    fail_timeout: 5m
+
+packages:
+  # private scope: defense in depth. Clients route @artea to Gitea themselves
+  # (.npmrc scope registry); if one is misconfigured we still deny everything
+  # here — no access, no publish, and crucially no proxy, so private names can
+  # never leak to npmjs.
+  '@artea/*':
+    access: []
+    publish: []
+    unpublish: []
+
+  # everything else: authenticated pull-through of npmjs. Publish is denied for
+  # everyone — Verdaccio is read-only; the only writable surface is Gitea.
+  '**':
+    access: $authenticated
+    publish: []
+    unpublish: []
+    proxy: npmjs
+
+middlewares:
+  # proxy `npm audit` to the uplink
+  audit:
+    enabled: true
+
+server:
+  keepAliveTimeout: 60
+
+log: { type: stdout, format: pretty, level: info }

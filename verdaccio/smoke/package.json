@@ -1,0 +1,16 @@
+{
+  "name": "artea-verdaccio-smoke",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Dev-only smoke test: boots verdaccio 6 in-process with ../config.yaml + built plugins, asserts auth/deny rules, exits. Not mounted into the container.",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.10.0",
+    "js-yaml": "^4.1.0",
+    "verdaccio": "^6.7.2",
+    "vitest": "^4.0.0"
+  }
+}
