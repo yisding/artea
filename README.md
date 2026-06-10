@@ -17,9 +17,12 @@ an open-source alternative to Artifactory, built on [Gitea](https://about.gitea.
 
 ```sh
 cp .env.example .env   # edit passwords
-make up                # docker compose up
-make bootstrap         # create admin, org, tokens, policy repo
+make plugins           # build the Verdaccio plugins (mounted, gitignored dist/)
+make up                # docker compose up (also generates gitea/secrets/)
+make bootstrap         # create admin, org, tokens, policy repo (idempotent)
 make e2e               # run the end-to-end scenario suite
 ```
+
+Credentials for local testing land in `e2e/tmp/credentials.env` (gitignored).
 
 Client setup: see `docs/guides/`. Architecture: see `docs/ARCHITECTURE.md`.
