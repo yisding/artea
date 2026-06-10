@@ -12,14 +12,24 @@ pull-through caches:
   `constraints` key replaced, Basic auth `root:$DEVPI_ROOT_PASSWORD`).
   devpi-client cannot be used: with `--outside-url` set, its `/+api` discovery
   rewrites the client's target URL to the gateway origin (see devpi/README.md).
-  Replacing the whole property makes the apply idempotent; an unchanged file
-  (by content hash) skips devpi entirely.
+  Replacing the whole property makes the apply idempotent; the `PATCH` is
+  skipped when the fetched index config already holds the same effective
+  constraints. The live config — not local state — is the comparison source,
+  so a wiped devpi volume (recreated fail-closed with `*`, e2e S15) is healed
+  by the next sync or poll even when the policy file did not change.
 
 Sync triggers: once at startup, on every valid Gitea push webhook, and a poll
 every 5 minutes as fallback. All triggers are coalesced into a single worker
 thread, so syncs never run concurrently.
 
 Python 3.12, stdlib only — no pip dependencies in the image at all.
+
+The container runs the service as the non-root `policysync` user (uid 8920).
+Its entrypoint starts as root only to repair the ownership of the shared
+`/policy` volume (volumes created by an older root-only image stay
+root-owned), then drops privileges via `setpriv`. The policy file itself is
+written world-readable (0644) because Verdaccio reads it under a different
+uid.
 
 ## Endpoints (port 8920)
 
@@ -32,7 +42,7 @@ Python 3.12, stdlib only — no pip dependencies in the image at all.
 
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
-| `POLICY_SYNC_TOKEN` | yes | — | Gitea service PAT used to read raw files from the policy repo (`read:repository` scope is enough) |
+| `POLICY_SYNC_TOKEN` | yes | — | PAT of the `svc-policy` service account (non-admin; read-only on the policy repo via the `policy-readers` team), scoped `read:repository`. Minted and rotated by `scripts/bootstrap.sh` |
 | `POLICY_WEBHOOK_SECRET` | yes | — | Shared secret of the Gitea webhook on `artea/registry-policy` |
 | `DEVPI_ROOT_PASSWORD` | yes | — | devpi `root` password (HTTP Basic on the index PATCH) |
 | `GITEA_URL` | no | `http://gitea:3000` | Gitea base URL (internal) |
