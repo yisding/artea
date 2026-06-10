@@ -9,6 +9,7 @@ class MockGitea {
   public tokens = new Map<string, string>(); // user -> PAT
   public orgs = new Map<string, string[]>(); // user -> org names
   public userHits = 0;
+  public orgHits = 0;
   public failOrgs = false;
   public loginOverride: string | undefined;
   private server: Server;
@@ -41,9 +42,15 @@ class MockGitea {
     };
 
     if (req.url?.startsWith('/api/v1/user/orgs')) {
+      this.orgHits++;
       if (!authed) return json(401, { message: 'unauthorized' });
       if (this.failOrgs) return json(500, { message: 'boom' });
-      return json(200, (this.orgs.get(user) ?? []).map((name) => ({ username: name })));
+      // paginate like Gitea: page/limit query params, short page = last page
+      const params = new URL(req.url, 'http://mock').searchParams;
+      const page = Number(params.get('page') ?? '1');
+      const limit = Number(params.get('limit') ?? '50');
+      const slice = (this.orgs.get(user) ?? []).slice((page - 1) * limit, page * limit);
+      return json(200, slice.map((name) => ({ username: name })));
     }
     if (req.url === '/api/v1/user') {
       this.userHits++;
@@ -151,6 +158,29 @@ describe('verdaccio-auth-gitea', () => {
     expect((await auth(plugin, 'alice', 'pat-alice')).groups).toBe(false);
     gitea.tokens.set('alice', 'pat-alice');
     expect((await auth(plugin, 'alice', 'pat-alice')).groups).toEqual(['alice']);
+  });
+
+  it('follows org pagination so users in more than 50 orgs get all groups', async () => {
+    gitea = new MockGitea();
+    gitea.tokens.set('alice', 'pat-alice');
+    const orgs = Array.from({ length: 120 }, (_, i) => `org-${i}`);
+    gitea.orgs.set('alice', orgs);
+    const plugin = makePlugin({ gitea_url: await gitea.start() });
+
+    const { groups } = await auth(plugin, 'alice', 'pat-alice');
+    expect(groups).toEqual(['alice', ...orgs]);
+    expect(gitea.orgHits).toBe(3); // 50 + 50 + short page of 20
+  });
+
+  it('caps org pagination at 20 pages', async () => {
+    gitea = new MockGitea();
+    gitea.tokens.set('alice', 'pat-alice');
+    gitea.orgs.set('alice', Array.from({ length: 1500 }, (_, i) => `org-${i}`));
+    const plugin = makePlugin({ gitea_url: await gitea.start() });
+
+    const { groups } = await auth(plugin, 'alice', 'pat-alice');
+    expect((groups as string[]).length).toBe(1 + 1000); // username + 20 full pages
+    expect(gitea.orgHits).toBe(20);
   });
 
   it('still authenticates (username group only) when the orgs endpoint fails', async () => {

@@ -13,9 +13,11 @@ Gitea the single identity source for the whole stack (requirement R1).
 - On success, `GET /api/v1/user/orgs` maps Gitea organization names to Verdaccio
   groups. The returned group list always starts with the username: Verdaccio's auth
   chain treats an empty groups array as a *failed* authentication, so the list must
-  never be empty. Org lookup failures are non-fatal: the user authenticates with just
-  the username group, with a warning logged. Only the first 50 orgs are considered
-  (v1: no pagination).
+  never be empty. Org lookup failures are non-fatal: the user authenticates with the
+  groups gathered so far (at minimum the username group), with a warning logged.
+  Orgs are fetched in pages of 50, following `page=` until a short page; pagination
+  is capped at 20 pages (1000 orgs, logged if hit) so a misbehaving backend cannot
+  stall authentication.
 - Positive results are cached in memory for 60 seconds, keyed by
   `user + sha256(password)` — the PAT itself is never stored. Rejections are not
   cached. Net effect: a revoked PAT stops working within one minute

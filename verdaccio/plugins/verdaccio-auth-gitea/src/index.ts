@@ -17,6 +17,10 @@ const DEFAULT_GITEA_URL = 'http://gitea:3000';
 // 60s so a revoked PAT stops working within a minute (ARCHITECTURE.md auth model)
 const DEFAULT_CACHE_TTL_MS = 60_000;
 const CACHE_SWEEP_SIZE = 1_000;
+// Gitea caps page size at 50 by default; follow `page=` until a short page
+const ORG_PAGE_LIMIT = 50;
+// sane cap (1000 orgs) so a misbehaving backend cannot make auth loop forever
+const MAX_ORG_PAGES = 20;
 
 /** 503 without depending on the deprecated @verdaccio/commons-api package. */
 function backendUnavailable(): Error {
@@ -102,23 +106,33 @@ export default class AuthGitea implements IPluginAuth<AuthGiteaConfig> {
 
   /** Gitea org names become Verdaccio groups. Failures are non-fatal: auth still succeeds. */
   private async fetchOrgGroups(user: string, headers: Record<string, string>): Promise<string[]> {
+    const groups: string[] = [];
     try {
-      // v1: a single page of 50 orgs is plenty; pagination intentionally skipped
-      const res = await fetch(`${this.giteaUrl}/api/v1/user/orgs?page=1&limit=50`, { headers });
-      if (!res.ok) {
-        this.logger.warn({ user, status: res.status }, 'auth-gitea: org lookup for @{user} failed: HTTP @{status}');
-        return [];
+      for (let page = 1; page <= MAX_ORG_PAGES; page++) {
+        const res = await fetch(`${this.giteaUrl}/api/v1/user/orgs?page=${page}&limit=${ORG_PAGE_LIMIT}`, { headers });
+        if (!res.ok) {
+          this.logger.warn({ user, status: res.status }, 'auth-gitea: org lookup for @{user} failed: HTTP @{status}');
+          return groups;
+        }
+        const orgs = (await res.json()) as Array<{ username?: unknown; name?: unknown }>;
+        if (!Array.isArray(orgs)) {
+          return groups;
+        }
+        for (const org of orgs) {
+          const name = typeof org?.username === 'string' ? org.username : org?.name;
+          if (typeof name === 'string' && name.length > 0) {
+            groups.push(name);
+          }
+        }
+        if (orgs.length < ORG_PAGE_LIMIT) {
+          return groups; // short page = last page
+        }
       }
-      const orgs = (await res.json()) as Array<{ username?: unknown; name?: unknown }>;
-      if (!Array.isArray(orgs)) {
-        return [];
-      }
-      return orgs
-        .map((o) => (typeof o?.username === 'string' ? o.username : o?.name))
-        .filter((n): n is string => typeof n === 'string' && n.length > 0);
+      this.logger.warn({ user, max: MAX_ORG_PAGES }, 'auth-gitea: org list for @{user} truncated after @{max} pages');
+      return groups;
     } catch {
       this.logger.warn({ user }, 'auth-gitea: org lookup for @{user} failed');
-      return [];
+      return groups;
     }
   }
 
