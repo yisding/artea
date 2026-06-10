@@ -118,8 +118,11 @@ Gateway logic for `GET /pypi/simple/{name}/`:
   in `docs/guides/okta.md`). Self-registration disabled.
 - **Tools**: HTTP Basic with `username:Gitea-PAT` everywhere (npm also supports token
   auth on Gitea paths). PATs are created in Gitea, currently non-expiring (satisfies
-  R5; an expiry patch is a planned v2 fork patch), scoped `read:packages` or
-  `write:packages` (write implies read → R6).
+  R5; an expiry patch is a planned v2 fork patch), scoped `read:package` or
+  `write:package` (Gitea's actual scope strings are singular; write implies read →
+  R6). PATs must additionally carry `read:user` — the gateway's `auth_request`
+  guard calls `GET /api/v1/user`, which requires it — and `read:organization` so
+  Verdaccio's org→group mapping works.
 - **Verdaccio**: our auth plugin validates each request's Basic credential against
   Gitea `/api/v1/user`, maps Gitea org/team membership to Verdaccio groups, caches
   positive results for 60s (so revocation takes effect within a minute).
@@ -205,6 +208,6 @@ S8 `pip install six` via gateway → devpi → PyPI pull-through.
 S9 precedence: privately publish a name that also exists on PyPI; `pip index versions`
    through the gateway must show ONLY the private versions (proves shadowing).
 S10 add `urllib3<2` to constraints, push, verify pip resolves only <2 through the gateway.
-S11 same-token: all scenarios above run with one PAT; a `read:packages` PAT can
-    install but gets 403 on publish.
+S11 same-token: all scenarios above run with one PAT; a `read:package` PAT can
+    install but is rejected (Gitea answers 401, not 403) on publish.
 S12 revocation: delete the PAT; installs fail within 60s.
