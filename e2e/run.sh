@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Artea e2e scenario suite — codifies S1-S12 from docs/ARCHITECTURE.md (the
+# Artea e2e scenario suite — codifies S1-S16 from docs/ARCHITECTURE.md (the
 # definition of done for v1). Requires a running stack (`make up`) and a
 # completed bootstrap (`make bootstrap`); uses real client tools: npm with an
-# isolated userconfig, pip/twine/build from a venv under e2e/tmp.
+# isolated userconfig, pip/twine/build from a venv under e2e/tmp, git for the
+# direct-push governance check (S14).
 #
 # Re-runnable: package versions are unique per run, fixed-version fixtures
 # (tinynetrc 0.0.1) are deleted up front, and policy edits are reverted.
@@ -14,7 +15,7 @@ cd "$(dirname "$0")/.."
 # shellcheck disable=SC1091
 source e2e/lib.sh
 
-for tool in curl jq docker npm python3; do
+for tool in curl jq docker npm python3 git; do
   command -v "$tool" >/dev/null || die "required tool '${tool}' not found"
 done
 
@@ -46,13 +47,26 @@ SHADOW_VERSION="0.0.1"
 
 RO_TOKEN_NAME="e2e-ro-${RUN_ID}"
 REVOKE_TOKEN_NAME="e2e-revoke-${RUN_ID}"
+S14_TOKEN_NAME="e2e-s14-${RUN_ID}"
 
 NPMRC="${WORK}/npmrc"
 NPM_CACHE="${WORK}/npm-cache"
 VENV="${ROOT}/e2e/tmp/venv"
 
+# the seed file ends with an empty 'blocked:' mapping; appending would be
+# invalid YAML, so S5/S13 replace the whole file (each scenario reverts it)
+BLOCK_LEFTPAD_RULES='# e2e fixture — temporarily blocks left-pad 1.3.0; reverted by the suite.
+blocked:
+  scopes: []
+  packages:
+    - name: left-pad
+      versions: "1.3.0"
+      reason: e2e fixture'
+
 NPM_RULES_DIRTY=0
 CONSTRAINTS_DIRTY=0
+POLICY_FILE_REMOVED=0 # S15: /policy/npm-rules.yaml deleted in the live volume
+DEVPI_WIPED=0         # S15: devpi-data wiped, constraints not yet re-synced
 
 # ---- cleanup (idempotent, tolerates partial runs) ---------------------------------
 cleanup() {
@@ -71,6 +85,17 @@ cleanup() {
   delete_pkg_version pypi "${SHADOW_NAME}" "${SHADOW_VERSION}" >/dev/null
   delete_dev1_token "${RO_TOKEN_NAME}" >/dev/null
   delete_dev1_token "${REVOKE_TOKEN_NAME}" >/dev/null
+  delete_dev1_token "${S14_TOKEN_NAME}" >/dev/null
+  # S15 partial-failure recovery: put the live policy file back and make sure
+  # devpi exists with real constraints again (startup sync of policy-sync)
+  if [ "${POLICY_FILE_REMOVED}" = 1 ] && [ -s "${WORK}/npm-rules.snapshot" ]; then
+    docker compose exec -T --user policysync policy-sync sh -c 'cat > /policy/npm-rules.yaml' \
+      < "${WORK}/npm-rules.snapshot" >/dev/null
+  fi
+  if [ "${DEVPI_WIPED}" = 1 ]; then
+    docker compose up -d --wait devpi >/dev/null 2>&1
+    docker compose restart policy-sync >/dev/null 2>&1
+  fi
   exit "$rc"
 }
 trap cleanup EXIT
@@ -206,18 +231,9 @@ left_pad_130_visible() {
 }
 
 s5_npm_policy_block() {
-  local rules versions
-  # the seed file ends with an empty 'blocked:' mapping; appending would be
-  # invalid YAML, so the fixture replaces the whole file (reverted below)
-  rules="# e2e S5 fixture — temporarily blocks left-pad 1.3.0; reverted by the suite.
-blocked:
-  scopes: []
-  packages:
-    - name: left-pad
-      versions: \"1.3.0\"
-      reason: e2e S5"
+  local versions
   NPM_RULES_DIRTY=1
-  put_policy_file npm-rules.yaml "$rules" "test(e2e): S5 block left-pad 1.3.0" || return 1
+  put_policy_file npm-rules.yaml "${BLOCK_LEFTPAD_RULES}" "test(e2e): S5 block left-pad 1.3.0" || return 1
   wait_for 45 2 "left-pad 1.3.0 filtered from packument" left_pad_130_hidden || return 1
   versions=$(npm_fresh view left-pad versions --json) || { echo "npm view failed"; return 1; }
   echo "npm view left-pad versions: ${versions}"
@@ -395,6 +411,169 @@ s12_revocation() {
   [ "$elapsed" -le 60 ] || { echo "revocation took ${elapsed}s, budget is 60s"; return 1; }
 }
 
+# ---- S13: tarball enforcement (+ anonymous /npm/ service endpoints) ---------------------------
+TARBALL_BLOCKED="${GATEWAY_URL}/npm/left-pad/-/left-pad-1.3.0.tgz"
+TARBALL_ALLOWED="${GATEWAY_URL}/npm/left-pad/-/left-pad-1.2.0.tgz"
+
+tarball_130_blocked() { [ "$(http_code -u "dev1:${DEV1_TOKEN}" "${TARBALL_BLOCKED}")" = 403 ]; }
+tarball_130_allowed() { [ "$(http_code -u "dev1:${DEV1_TOKEN}" "${TARBALL_BLOCKED}")" = 200 ]; }
+
+s13_tarball_enforcement() {
+  local code body
+  # anonymous /npm/: Verdaccio's service endpoints must challenge, not answer
+  body=$(curl -s -o /dev/null -w '%{http_code} %header{www-authenticate}' "${GATEWAY_URL}/npm/-/ping")
+  [ "$body" = '401 Basic realm="Artea"' ] \
+    || { echo "anonymous /npm/-/ping: expected 401 + Basic challenge, got: ${body}"; return 1; }
+  code=$(http_code "${GATEWAY_URL}/npm/-/v1/search?text=left-pad")
+  [ "$code" = 401 ] || { echo "anonymous /npm/ search got HTTP ${code}, expected 401"; return 1; }
+  echo "anonymous /npm/-/ping and /npm/-/v1/search get 401 with Basic challenge"
+
+  NPM_RULES_DIRTY=1
+  put_policy_file npm-rules.yaml "${BLOCK_LEFTPAD_RULES}" "test(e2e): S13 block left-pad 1.3.0" || return 1
+  wait_for 45 2 "blocked tarball rejected with 403" tarball_130_blocked || return 1
+  body=$(curl -s -u "dev1:${DEV1_TOKEN}" "${TARBALL_BLOCKED}")
+  echo "$body" | grep -q 'blocked by registry policy' \
+    || { echo "403 body is not the policy middleware's JSON error: ${body}"; return 1; }
+  code=$(http_code -u "dev1:${DEV1_TOKEN}" "${TARBALL_ALLOWED}")
+  [ "$code" = 200 ] || { echo "unblocked 1.2.0 tarball got HTTP ${code}, expected 200"; return 1; }
+  echo "blocked 1.3.0 tarball -> 403 (policy JSON); unblocked 1.2.0 tarball -> 200"
+  put_policy_file npm-rules.yaml "${ORIG_NPM_RULES}" "test(e2e): S13 revert npm rules" || return 1
+  wait_for 45 2 "tarball served again after revert" tarball_130_allowed || return 1
+  NPM_RULES_DIRTY=0
+}
+
+# ---- S14: branch protection on registry-policy@main (governance) ------------------------------
+s14_branch_protection() {
+  local token clone="${WORK}/s14-policy-clone" out code sha b64
+  token=$(mint_dev1_token "${S14_TOKEN_NAME}" '["write:repository","read:user"]') \
+    || { echo "minting dev1 repo-scoped token failed"; return 1; }
+
+  # a real git push to main as dev1 must hit the protected-branch pre-receive hook
+  git clone -q "http://dev1:${token}@${GATEWAY_HOSTPORT}/artea/registry-policy.git" "$clone" \
+    || { echo "git clone as dev1 failed (developers team should have code read)"; return 1; }
+  (cd "$clone" && echo "# e2e S14 direct-push probe" >> npm-rules.yaml \
+    && git -c user.email=dev1@localhost -c user.name=dev1 commit -aqm "test(e2e): S14 probe") || return 1
+  if out=$(git -C "$clone" push origin HEAD:main 2>&1); then
+    echo "direct push to main as dev1 unexpectedly succeeded"; echo "$out"; return 1
+  fi
+  echo "$out" | grep -qi 'protected branch' \
+    || { echo "push failed, but not with the protected-branch rejection:"; echo "$out"; return 1; }
+  echo "dev1 git push to main rejected: protected branch"
+
+  # the contents API goes through the same check: dev1 gets 403
+  admin_api GET /repos/artea/registry-policy/contents/npm-rules.yaml
+  sha=$(echo "$API_BODY" | jq -r .sha)
+  b64=$(printf '%s\n' '# e2e S14 contents-API probe' | json_b64)
+  code=$(http_code -X PUT -H "Authorization: token ${token}" -H 'Content-Type: application/json' \
+    -d "{\"content\":\"${b64}\",\"sha\":\"${sha}\",\"message\":\"test(e2e): S14 contents probe\"}" \
+    "${GATEWAY_URL}/api/v1/repos/artea/registry-policy/contents/npm-rules.yaml")
+  [ "$code" = 403 ] || { echo "dev1 contents-API edit got HTTP ${code}, expected 403"; return 1; }
+  [ "$(get_policy_file npm-rules.yaml)" = "${ORIG_NPM_RULES}" ] \
+    || { echo "npm-rules.yaml on main changed despite the rejections"; return 1; }
+  echo "dev1 contents-API edit rejected with 403; main unchanged"
+
+  # artea-admin stays on the push allowlist: contents-API edits still land
+  NPM_RULES_DIRTY=1
+  put_policy_file npm-rules.yaml "${ORIG_NPM_RULES}"$'\n'"# e2e S14: admin allowlist probe" \
+    "test(e2e): S14 admin edit through branch protection" \
+    || { echo "artea-admin contents-API edit failed under branch protection"; return 1; }
+  put_policy_file npm-rules.yaml "${ORIG_NPM_RULES}" "test(e2e): S14 revert admin probe" || return 1
+  NPM_RULES_DIRTY=0
+  echo "artea-admin contents-API edits on main still work (push allowlist)"
+
+  delete_dev1_token "${S14_TOKEN_NAME}"
+}
+
+# ---- S15: fail-closed on lost policy state (npm file + devpi volume) ---------------------------
+npm_outage_rejected() { # tarballs 503 AND packument stripped to zero versions
+  [ "$(http_code -u "dev1:${DEV1_TOKEN}" "${TARBALL_BLOCKED}")" = 503 ] || return 1
+  curl -s -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/left-pad" \
+    | jq -e '(.versions // {}) | length == 0' >/dev/null
+}
+npm_recovered() {
+  [ "$(http_code -u "dev1:${DEV1_TOKEN}" "${TARBALL_BLOCKED}")" = 200 ] || return 1
+  curl -s -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/left-pad" \
+    | jq -e '.versions | length > 0' >/dev/null
+}
+six_blocked() { # fresh '*'-seeded mirror exposes no six files through the gateway
+  local body
+  body=$(curl -s -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/six/") || return 1
+  ! echo "$body" | grep -q 'six-1\.'
+}
+six_served() {
+  curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/six/" | grep -q 'six-1\.'
+}
+
+s15_fail_closed() {
+  local snapshot="${WORK}/npm-rules.snapshot" report="${WORK}/s15-report.json" url
+  # --- npm: policy file lost (simulated policy-sync outage) -----------------
+  # exec as the service user so restored files keep the volume's ownership
+  docker compose exec -T --user policysync policy-sync cat /policy/npm-rules.yaml > "$snapshot" \
+    || { echo "cannot snapshot the live policy file"; return 1; }
+  POLICY_FILE_REMOVED=1
+  docker compose exec -T --user policysync policy-sync rm /policy/npm-rules.yaml || return 1
+  wait_for 30 1 "public npm rejected while the policy file is missing" npm_outage_rejected || return 1
+  echo "outage: tarball -> 503, packument -> zero versions (nothing served unfiltered)"
+  docker compose exec -T --user policysync policy-sync sh -c 'cat > /policy/npm-rules.yaml' < "$snapshot" \
+    || { echo "restoring the policy file failed"; return 1; }
+  wait_for 30 1 "npm recovered after restore, no restart" npm_recovered || return 1
+  POLICY_FILE_REMOVED=0
+  echo "recovery: mtime reload picked the restored file up without a verdaccio restart"
+
+  # --- pypi: wiped devpi cache comes back fail-closed until policy-sync syncs
+  DEVPI_WIPED=1
+  docker compose rm -sf devpi >/dev/null || { echo "removing devpi failed"; return 1; }
+  docker volume rm artea_devpi-data >/dev/null || { echo "removing devpi-data failed"; return 1; }
+  docker compose up -d --wait devpi >/dev/null || { echo "recreating devpi failed"; return 1; }
+  wait_for 15 1 "fresh mirror serves nothing (entrypoint's '*' seed)" six_blocked || return 1
+  # heal via the real trigger: a policy-repo push webhook fires a full sync,
+  # and policy-sync compares the LIVE index config, so the unchanged
+  # constraints file still replaces the '*' seed
+  CONSTRAINTS_DIRTY=1
+  put_policy_file pypi-constraints.txt "${ORIG_CONSTRAINTS}"$'\n'"# e2e S15 sync trigger" \
+    "test(e2e): S15 trigger policy sync" || return 1
+  wait_for 60 2 "six served again after policy-sync heals devpi" six_served || return 1
+  put_policy_file pypi-constraints.txt "${ORIG_CONSTRAINTS}" "test(e2e): S15 revert sync trigger" || return 1
+  CONSTRAINTS_DIRTY=0
+  DEVPI_WIPED=0
+  # S8 works again end-to-end: pip install six lands on the devpi mirror path
+  pip_e2e install -q --index-url "${INDEX_URL}" --force-reinstall --no-deps \
+    --report "$report" six || { echo "pip install six failed after recovery"; return 1; }
+  url=$(jq -r '.install[0].download_info.url' "$report")
+  echo "post-recovery six downloaded from: ${url}"
+  case "$url" in
+    */root/pypi/*) ;;
+    *) echo "six did not come through the devpi pull-through path"; return 1 ;;
+  esac
+}
+
+# ---- S16: PEP 503 normalization cannot dodge the private shadow --------------------------------
+s16_normalization() {
+  local s body code report="${WORK}/s16-report.json" url
+  # curl probes: non-canonical spellings, with and without the trailing slash,
+  # must get Gitea's page (its file URL shape), never the devpi mirror's
+  for s in "Artea-Hello/" "artea_hello"; do
+    body=$(curl -s -w '\n%{http_code}' -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/${s}")
+    code=${body##*$'\n'}
+    body=${body%$'\n'*}
+    [ "$code" = 200 ] || { echo "GET /pypi/simple/${s} -> HTTP ${code}, expected 200"; return 1; }
+    echo "$body" | grep -q '/api/packages/artea/pypi/files/' \
+      || { echo "/pypi/simple/${s}: no Gitea file URLs — not the private package"; return 1; }
+    echo "$body" | grep -q '/root/' \
+      && { echo "/pypi/simple/${s}: devpi mirror URLs leaked into the response"; return 1; }
+    echo "/pypi/simple/${s} -> 200 with Gitea file URLs only"
+  done
+  # pip, fed a non-canonical spelling, must install the private wheel from Gitea
+  pip_e2e install -q --index-url "${INDEX_URL}" --force-reinstall --no-deps \
+    --report "$report" "Artea_Hello==${PY_VERSION}" || { echo "pip install Artea_Hello failed"; return 1; }
+  url=$(jq -r '.install[0].download_info.url' "$report")
+  echo "pip downloaded from: ${url}"
+  case "$url" in
+    */api/packages/artea/pypi/files/*) ;;
+    *) echo "wheel did not come from Gitea"; return 1 ;;
+  esac
+}
+
 # ---- run ---------------------------------------------------------------------------------------
 scenario S1 "bootstrap state: stack healthy, org/repo/webhook/PATs present" s1_bootstrap
 scenario S2 "npm publish ${NPM_NAME}@${NPM_VERSION} -> Gitea" s2_npm_publish
@@ -408,10 +587,14 @@ scenario S9 "private ${SHADOW_NAME} fully shadows the PyPI name" s9_precedence_s
 scenario S10 "constraints push limits urllib3 to <2 via gateway" s10_pypi_policy_constraint
 scenario S11 "read:package PAT installs but gets 401 on publish" s11_token_scopes
 scenario S12 "revoked PAT stops installing within 60s" s12_revocation
+scenario S13 "blocked version's tarball GET -> 403; anonymous /npm/ -> 401" s13_tarball_enforcement
+scenario S14 "dev1 cannot push registry-policy@main; admin allowlist works" s14_branch_protection
+scenario S15 "fail-closed: missing npm policy / wiped devpi, then recovery" s15_fail_closed
+scenario S16 "non-canonical pypi spellings still resolve to the private package" s16_normalization
 
 echo
 if [ "$FAILED" = 0 ]; then
-  log "all 12 scenarios passed"
+  log "all 16 scenarios passed"
 else
   log "FAILURES:"
   echo "${RESULTS}" | grep ' FAIL ' || true

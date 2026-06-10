@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Artea smoke checks — fast gateway-level verification that the stack wiring
-# works (subset of the S1-S12 e2e scenarios). Requires `make up` + `make
+# works (subset of the S1-S16 e2e scenarios). Requires `make up` + `make
 # bootstrap` to have completed; uses the credentials bootstrap wrote.
 set -euo pipefail
 cd "$(dirname "$0")/.."
