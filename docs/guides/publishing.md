@@ -31,10 +31,27 @@ developer machines that never publish).
 > scope string is required (API calls, the CLI below).
 
 A token alone is not sufficient to publish: the user must also be a member of
-the `artea` organization with write permission on its packages (org owners, or
-a team with package write access). A `read:package` token — or a
+the `artea` organization with write permission on its packages — normally via
+the `developers` team (see below). A `read:package` token — or a
 `write:package` token of a user without org write access — gets
 `401 Unauthorized` from Gitea on publish.
+
+## Org roles and governance
+
+Bootstrap creates the org teams; humans are never made org **Owners** (that
+team is reserved for `artea-admin`):
+
+| Team | Access | Who |
+|------|--------|-----|
+| `developers` | code + pulls + packages **write** (no admin), all org repos | everyone who publishes packages or edits policy (e.g. the demo user `dev1`) |
+| `policy-readers` | code **read** on `artea/registry-policy` only | service accounts; holds `svc-policy`, whose `read:repository` PAT is what policy-sync uses |
+| `Owners` | org admin | `artea-admin` only |
+
+Registry policy is enforceably PR-only: the default branch of
+`artea/registry-policy` carries branch protection — direct pushes are blocked
+for everyone except `artea-admin`, and merging requires at least one approval
+(e2e scenario S14). Developers change policy by pushing a branch and opening a
+pull request; see [ADR-0006](../adr/0006-policy-as-code.md).
 
 Tokens are sent as:
 
@@ -58,8 +75,9 @@ docker compose exec -u git gitea \
     --scopes write:package --raw
 ```
 
-(`--raw` prints just the token; create the `ci-bot` user and add it to the
-`artea` org first.)
+(`--raw` prints just the token; create the `ci-bot` user first and add it to
+the `developers` team — never to Owners. Give read-only bots like policy-sync's
+`svc-policy` only the narrowest team and scope they need.)
 
 ## What publishes where
 

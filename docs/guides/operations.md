@@ -32,13 +32,28 @@ If an upgrade truly requires changing upstream behavior that config/overlay/
 plugins cannot reach, that is an ADR + `gitea/patches/` decision — not an ad-hoc
 fork (first expected candidate: PAT expiry dates).
 
+### Base-image digest pins
+
+The two images we build ourselves (`devpi/Dockerfile`, `policy-sync/Dockerfile`)
+digest-pin their `python:3.12-slim` base — a tag is floating, a digest is not
+(R7, [ADR-0004](../adr/0004-upstream-isolation-no-fork.md)). The tag stays in
+the `FROM` line for humans; docker ignores it once a digest is present. To bump:
+
+```sh
+docker buildx imagetools inspect python:3.12-slim   # copy the "Digest:" line
+# update the FROM line in devpi/Dockerfile and policy-sync/Dockerfile:
+#   FROM python:3.12-slim@sha256:<new digest>
+make up    # rebuilds both images
+make e2e
+```
+
 ## Backup and restore
 
 **The Gitea data volume is the single source of truth.** It contains users,
 PATs, org/team membership, all private package artifacts (npm tarballs, Python
 wheels/sdists), and the `artea/registry-policy` repo. Back up only this:
 
-- the `gitea` named volume (includes the embedded SQLite DB unless you
+- the `gitea-data` named volume (includes the embedded SQLite DB unless you
   configured an external database — back that up too if so),
 - your `.env` (secrets + version pins; it is never committed).
 
@@ -50,21 +65,67 @@ Everything else is disposable and must **not** be in the backup set:
 - the `policy-data` shared volume: rewritten by policy-sync from the policy
   repo on startup and on every push webhook.
 
-Procedure:
+Procedure (cold backup is simplest and the stack tolerates the short gitea
+downtime; both targets use a throwaway pinned-alpine container to tar/untar
+the named volume):
 
 ```sh
-# backup (cold backup is simplest and the stack tolerates short downtime)
-docker compose stop gitea
-docker run --rm -v <project>_gitea-data:/data -v "$PWD":/backup alpine \
-  tar czf /backup/gitea-data.tar.gz -C /data .
-docker compose start gitea
+make backup
+# -> backups/gitea-data-<timestamp>.tar.gz  (./backups/ is gitignored)
+
+make restore BACKUP=backups/gitea-data-<timestamp>.tar.gz
+# empties the volume and untars the backup; asks for confirmation first
 ```
 
 (Alternatively use `gitea dump` inside the container for a hot backup.)
 
-Restore = restore the volume, `docker compose up -d`, then `make e2e`. Caches
-rebuild themselves; the first installs after a restore are slower while the
-pull-through caches warm up.
+After a restore, caches rebuild themselves; the first installs are slower
+while the pull-through caches warm up, and the PyPI cache comes back
+**fail-closed** until policy-sync re-syncs (see below). Run `make bootstrap`
+afterwards if `e2e/tmp/credentials.env` no longer matches the restored PATs.
+
+### `make clean` vs `make destroy`
+
+| Target | Removes | Keeps |
+|--------|---------|-------|
+| `make down` | containers | all volumes |
+| `make clean` | containers, the disposable cache volumes (`devpi-data`, `verdaccio-storage`, `policy-data`), `e2e/tmp` | **`gitea-data`** |
+| `make destroy` | everything, including `gitea-data` | nothing |
+
+`clean` is always safe: `make up && make bootstrap` brings the stack back with
+all users, PATs, and private packages intact, and the caches refill on demand.
+`destroy` deletes the store of record and therefore prompts interactively (type
+the project name, `artea`) — take a `make backup` first if in doubt.
+
+## Fail-closed states and recovery
+
+Both pull-through caches fail **closed** when policy state is missing (R3,
+e2e S15):
+
+- **npm — policy file lost** (`policy-data` wiped, e.g. by `make clean`, or
+  `/policy/npm-rules.yaml` deleted/corrupted): the tarball middleware answers
+  503 and the filter strips packuments to zero versions rather than serving
+  unfiltered. A stale-but-valid file keeps serving as last-known-good.
+- **PyPI — devpi cache lost** (`devpi-data` wiped): on the next boot the devpi
+  entrypoint recreates `root/constrained` seeded with the `*` constraint
+  (devpi-constrained's block-everything sentinel), so a fresh mirror serves
+  nothing instead of everything.
+
+Recovery is policy-sync's job and needs no manual steps: it syncs at startup,
+on every push webhook of `artea/registry-policy`, and on a 5-minute fallback
+poll, rewriting `npm-rules.yaml` (picked up by Verdaccio within the
+mtime-reload window) and replacing the seeded `*` constraints with the real
+policy. To force immediate recovery: `docker compose restart policy-sync`
+(its startup sync re-applies both files), then check
+`docker compose exec policy-sync python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8920/healthz').read())"`
+for `last_sync_ok: true`.
+
+One non-self-healing case: if the policy-sync container logs
+`ERROR: /policy is not writable`, the `policy-data` volume ownership does not
+match the image's non-root user **and** the container was started with a
+`user:` override that prevents the entrypoint from repairing it (started as
+root, the entrypoint chowns the volume and drops privileges itself). Run the
+`chown` command printed in that error, or remove the override.
 
 ## PAT revocation
 
@@ -95,8 +156,8 @@ Remember that Okta deactivation does not delete Gitea PATs — see
 | Public npm package has missing versions | Policy block in `npm-rules.yaml` | Intentional; edit the policy repo via PR |
 | Policy change has no effect | Webhook not delivered, or policy-sync down | Repo settings → Webhooks → recent deliveries on `artea/registry-policy`; `docker compose logs policy-sync`; verify `/policy/npm-rules.yaml` mtime changed in the verdaccio container; the slow-poll fallback will also catch up eventually |
 | `pip install <private>` resolves a public version | Gateway 404-fallback misrouting (or a client `extra-index-url` bypass) | Treat as a security incident if client config is clean: verify the gateway serves Gitea's 200 for `/pypi/simple/<name>/` and only falls back on 404 |
-| `pip install <public>` 404s | devpi mirror cold/unreachable, or name blocked by `pypi-constraints.txt` | `docker compose logs devpi`; check the constraints file in the policy repo |
+| `pip install <public>` 404s | devpi mirror cold/unreachable, name blocked by `pypi-constraints.txt`, or a freshly recreated cache still fail-closed (`*` seed) | `docker compose logs devpi`; check the constraints file in the policy repo; check policy-sync `/healthz` for `last_sync_ok` |
 | npm/pip download URLs point at the wrong host | Gitea `ROOT_URL` misconfigured | Must be exactly `http://localhost:8080/` (the public gateway URL) so generated file URLs resolve through the gateway |
 | Revoked PAT still works on npm installs | 60 s positive-auth cache in Verdaccio | Expected; see above |
-| Pull-through is slow / disk is filling | Cache volumes grow unbounded | Safe to wipe: stop verdaccio/devpi, remove their volumes, start again (caches refill) |
+| Pull-through is slow / disk is filling | Cache volumes grow unbounded | Safe to wipe: `make clean && make up && make bootstrap` (caches refill; PyPI comes back fail-closed until policy-sync syncs) |
 | `twine upload` 409 Conflict | Re-uploading an already-uploaded file | Bump the version; Gitea package files are immutable |

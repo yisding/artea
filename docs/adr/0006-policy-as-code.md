@@ -26,13 +26,20 @@ Policy lives in the Gitea repository `artea/registry-policy` as two files:
 
 The `policy-sync` service turns repo state into enforcement: it receives the
 repo's push webhook (plus a startup sync and a slow poll as fallback), fetches
-both files via Gitea's raw-content API using a service PAT, writes
-`npm-rules.yaml` to the shared `policy-data` volume, and pushes the
-constraints into devpi.
+both files via Gitea's raw-content API, writes `npm-rules.yaml` to the shared
+`policy-data` volume, and pushes the constraints into devpi. It authenticates
+as `svc-policy`, a dedicated non-admin service account whose only access is
+read-only on the policy repo (via the `policy-readers` team) with a PAT scoped
+to `read:repository` — a leaked policy-sync credential cannot write anything.
 
 Changes therefore go through ordinary Gitea pull requests on a repo that
 exists anyway (Gitea is the control plane, ADR-0001): review via approvals,
-audit via git history, rollback via revert.
+audit via git history, rollback via revert. This is enforced, not just
+convention: the repo's default branch carries branch protection (direct pushes
+blocked for everyone except the `artea-admin` allowlist, ≥1 required approval,
+rejected reviews block the merge), and developers sit in a `developers` team
+(code/pulls/packages write, no admin) rather than in org Owners — so no
+developer credential can bypass the PR path (e2e scenario S14).
 
 ## Consequences
 
@@ -42,7 +49,8 @@ audit via git history, rollback via revert.
   backup).
 - Two enforcement dialects must stay semantically aligned by convention; e2e
   scenarios S5 and S10 guard the wiring.
-- policy-sync needs a service PAT and webhook plumbing — one more bootstrap
-  step (scenario S1).
+- policy-sync needs the `svc-policy` account, its PAT, and webhook plumbing —
+  bootstrap steps (scenario S1); the admin allowlist on the protected branch
+  also keeps the e2e suite's direct policy edits (as `artea-admin`) working.
 - New formats add a policy file section plus a policy-sync adapter, keeping
   the same review workflow.

@@ -24,7 +24,11 @@ through supported extension surfaces:
    v1, with an apply script and a documented bump procedure. Adding a patch
    requires an ADR. First expected candidate: PAT expiry dates.
 4. All version pins live in `.env` / `gitea/UPSTREAM`; floating `latest` is
-   forbidden in committed files. Upgrades = bump pin, `make up`, `make e2e`.
+   forbidden in committed files. The Dockerfiles we own (`devpi/`,
+   `policy-sync/`) digest-pin their base image (`FROM
+   python:3.12-slim@sha256:...` — the tag alone is floating; the digest is
+   not). Upgrades = bump pin (or re-resolve the digest, see the operations
+   guide), `make up`, `make e2e`.
 
 ## Consequences
 
