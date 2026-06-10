@@ -1,0 +1,29 @@
+# Upstream pin for the `gitea` service. THE pin consumed by compose lives in .env
+# (GITEA_VERSION in .env.example) — keep it in sync with this file. Never "latest".
+
+IMAGE=gitea/gitea
+VERSION=1.26.2
+# multi-arch manifest list digest for gitea/gitea:1.26.2 (Docker Hub, 2026-05-20)
+DIGEST=sha256:7d13848af12645600a5f9d93ee2560daa9c6fa6b5b859b7bff3a5e1c0b661031
+# git tag the runtime overlay (app.ini keys, custom/templates) was verified against
+SOURCE_TAG=v1.26.2
+
+# Bump procedure (also re-run after any overlay change):
+# 1. Pick the new stable tag from https://github.com/go-gitea/gitea/releases
+#    (and its digest from Docker Hub). Update VERSION/DIGEST/SOURCE_TAG here and
+#    GITEA_VERSION in .env / .env.example.
+# 2. Re-verify the template overlay against upstream template changes — every file
+#    under gitea/custom/templates/ shadows an upstream file wholesale, so upstream
+#    fixes there do NOT take effect until re-merged:
+#      for f in base/head_navbar.tmpl home.tmpl; do
+#        diff <(curl -sf https://raw.githubusercontent.com/go-gitea/gitea/<NEW_TAG>/templates/$f) \
+#             <(curl -sf https://raw.githubusercontent.com/go-gitea/gitea/<OLD_TAG>/templates/$f)
+#      done
+#    If upstream changed a shadowed file, re-copy it and re-apply the marked
+#    "ARTEA:" edits (they are listed at the top of each override).
+# 3. Re-verify app.ini keys against the new tag's custom/conf/app.example.ini
+#    (breaking config changes are listed in the upstream release notes).
+# 4. If gitea/patches/series is non-empty: gitea/patches/apply-patches.sh --check
+#    against a checkout of the new tag; rebase any failing patch (patches/README.md).
+# 5. `make up` — watch the gitea container log for config deprecation warnings.
+# 6. `make e2e` — the S1-S12 scenarios are the acceptance gate.

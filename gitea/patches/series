@@ -1,0 +1,2 @@
+# quilt-style patch queue: one patch filename per line, applied in order with -p1.
+# INTENTIONALLY EMPTY in v1 — see patches/README.md before adding anything.
