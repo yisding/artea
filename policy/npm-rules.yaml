@@ -1,0 +1,28 @@
+# Artea npm pull-through block rules (R3).
+#
+# Lives in the Gitea repo `artea/registry-policy`. Edit via PR; on push,
+# policy-sync copies this file to /policy/npm-rules.yaml, where the Verdaccio
+# filter plugin reloads it on mtime change (no restart needed).
+#
+# Schema (enforced by verdaccio-filter-artea, see its README):
+#
+#   blocked:
+#     scopes:            # block every package in a scope; leading "@" optional
+#       - "@evil-corp"
+#     packages:          # block individual packages
+#       - event-stream                  # bare string: block ALL versions
+#       - name: left-pad                # mapping form: optional semver RANGE
+#         versions: "1.3.0"             #   (`semver` npm syntax: "<4.17.21",
+#         reason: "example"             #   ">=1 <2", "1.2.x", "<2 || >3", ...)
+#
+# Notes:
+# - `name` is the full npm name, including scope if any (e.g. "@acme/utils").
+# - Omitting `versions` blocks all versions; `reason` is free text for humans.
+# - Multiple `packages` entries for the same name are OR-ed together.
+# - Blocking only affects pull-through of public packages via Verdaccio.
+#   Private @artea/* packages never pass through Verdaccio.
+#
+# Default policy: block nothing.
+blocked:
+  scopes: []
+  packages: []
