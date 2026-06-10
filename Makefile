@@ -31,8 +31,8 @@ bootstrap: .env ## idempotent S1: admin, org, policy repo + webhook, users, PATs
 smoke: ## gateway-level smoke checks (requires up + bootstrap)
 	./scripts/smoke.sh
 
-e2e: smoke ## scenario suite S1-S12; currently runs the smoke subset
-	@echo "NOTE: full e2e scenario suite (e2e/) not implemented yet; smoke checks passed"
+e2e: smoke ## scenario suite S1-S12 (requires up + bootstrap)
+	./e2e/run.sh
 
 clean: ## stop the stack and delete ALL state (volumes, e2e tmp files)
 	$(COMPOSE) down -v --remove-orphans
