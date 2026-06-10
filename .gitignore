@@ -1,0 +1,12 @@
+.env
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.DS_Store
+data/
+e2e/tmp/
