@@ -25,7 +25,8 @@ other containers' state (no `depends_on` ordering required for nginx itself).
 
 | Path | Upstream | Auth mechanism |
 |------|----------|----------------|
-| `/npm/**` | `verdaccio:4873` (prefix stripped; Verdaccio `url_prefix=/npm/`) | gateway `auth_request` → Gitea `GET /api/v1/user` (same guard + 30s cache as pypi), so Verdaccio service endpoints (`/-/ping`, `/-/v1/search`, audit) are not anonymous; the `Authorization` header still passes through so Verdaccio's auth plugin authorizes npm-level access against Gitea |
+| `/npm/@artea/**` and `/npm/-/package/@artea/**` (dist-tag API; scope literal or `%40`-encoded, separator `/` or `%2f`, any letter case) | `gitea:3000` → `/api/packages/artea/npm/...`. The regex location matches the **decoded** `$uri` case-insensitively (one pattern covers all encodings and case spellings — a case variant routes to Gitea and 404s there, never reaching Verdaccio/npmjs) but the forwarded path comes from a `map` over the **raw** `$request_uri`, so `%2f`/`%40` reach Gitea byte-for-byte. Decoded match without a raw match (percent-encoded scope *letters*, e.g. `@%61rtea`) → `400`, reaching neither upstream; double-encoded separators (`%252f`/`%2540`) decode once to literal `%2f`/`%40` text, never match this row, and stay on the Verdaccio row below (where the malformed name is rejected). All methods (publish `PUT` included) route identically | none at the gateway — Gitea enforces its own auth (Basic `user:PAT` or token); no `auth_request` |
+| `/npm/**` (everything not `@artea`-scoped) | `verdaccio:4873` (prefix stripped; Verdaccio `url_prefix=/npm/`) | gateway `auth_request` → Gitea `GET /api/v1/user` (same guard + 30s cache as pypi), so Verdaccio service endpoints (`/-/ping`, `/-/v1/search`, audit) are not anonymous; the `Authorization` header still passes through so Verdaccio's auth plugin authorizes npm-level access against Gitea |
 | `/pypi/simple/{name}[/]` | name PEP 503-normalized + trailing slash appended **in the gateway** (see below), then `gitea:3000` → `/api/packages/artea/pypi/simple/{norm}/`; **on Gitea 404 only** → `devpi:3141` → `/root/constrained/+simple/{norm}/` (same normalized name) | gateway `auth_request` → Gitea `GET /api/v1/user` (Basic `user:PAT`); 200s cached 30s keyed on the `Authorization` header |
 | `/pypi/simple/` (bare full-index page) | `devpi:3141` → `/root/constrained/+simple/` directly (Gitea has no list-all route) | gateway `auth_request` (same guard) |
 | `/root/**` (devpi simple pages, file downloads) | `devpi:3141` (path unchanged) | gateway `auth_request` (same guard; devpi itself has no auth) |
@@ -85,10 +86,46 @@ via `error_page 404 = @public_pypi`:
   `/root/...` directly. (It shouldn't happen: the gateway only sends devpi
   canonical names with trailing slashes.)
 
-npm needs no 404-fallback logic at the gateway: the npm client itself routes
-`@artea/*` to Gitea via scope config, everything else to `/npm/` (Verdaccio).
-The gateway's contribution on `/npm/` is the auth guard (anonymous access:
-none, anywhere).
+## npm scope routing (gateway-enforced)
+
+npm precedence is a **scope match, never a 404-fallback** — a fallback would
+reintroduce dependency confusion; the scope match keeps `@artea` structurally
+unable to reach Verdaccio or npmjs (an unpublished private name 404s, full
+stop). Mechanism, in `nginx.conf`:
+
+- A regex location (`~* ^/npm/(?:-/package/)?@artea/`) peels `@artea` traffic
+  off the `/npm/` prefix route before Verdaccio: packument/publish/tarball/
+  unpublish paths plus the dist-tag API under `/-/package/`. It matches the
+  **decoded** `$uri` — nginx decodes `%2f`/`%40` before location matching, so
+  one pattern covers the encoded and literal spellings — case-insensitively,
+  so case-variant spellings of the scope (`@ARTEA/...`) also route to Gitea
+  (where they 404) instead of falling through to Verdaccio's npmjs uplink
+  (the npm analogue of the pypi route's PEP 503 case-folding). The trailing
+  slash (the decoded scope separator) keeps `@artea-evil/*` out.
+- The forwarded path is not a rewrite: a `map` over the **raw** `$request_uri`
+  produces `/api/packages/artea/npm/...`, preserving npm's `%2f`-encoded
+  scoped names byte-for-byte (a rewrite would operate on the decoded `$uri`
+  and corrupt them).
+- If the decoded URI matched but the raw URI fits neither map pattern — the
+  scope *letters* themselves are percent-encoded (e.g. `/npm/@%61rtea/x`,
+  which decodes to `@artea/x`) — the map yields `""` and the location returns
+  `400`: such a request reaches neither Verdaccio nor Gitea. Double-encoded
+  separators (`%252f`, `%2540`) are a different case: they decode once to
+  literal `%2f`/`%40` *text*, so the decoded URI never looks `@artea`-scoped,
+  this location never matches, and the request falls through to Verdaccio —
+  where it misses the `@artea/*` deny pattern (the decoded-once name is
+  `%40artea%2f...`, not `@artea/...`) but is rejected as a malformed package
+  name; no canonical `@artea/*` name can be expressed that way, so nothing
+  private can leak by this spelling.
+- No `auth_request` on this route: it is Gitea-bound and Gitea authenticates
+  itself. The guard's job on `/npm/` remains the Verdaccio-bound paths.
+
+Verdaccio's deny rule for `@artea/*` stays as defense in depth, and the legacy
+client-side scope routing (`@artea:registry=` in `.npmrc`) keeps working — it
+hits `/api/packages/...` directly and never exercises this location (S17).
+Client contract, including the npm-publish credential-preflight caveat (one
+credential value on two nerf-dart lines): `docs/guides/clients-npm.md` and the
+CLIENT CAVEAT comment in `nginx.conf`.
 
 ## Buffering / streaming choices
 
@@ -136,7 +173,8 @@ Trade-offs, accepted and documented:
 2. **PAT scopes for the guard.** The guard calls `/api/v1/user`, which in Gitea
    requires the `read:user` token scope — `read:packages` alone yields 403 (the
    gateway converts it to a 401 challenge, but pip still can't get in). The
-   same now applies to every `/npm/` request. **Bootstrap must mint PATs with
+   same now applies to every Verdaccio-bound `/npm/` request (`@artea`-scoped
+   paths skip the guard; Gitea authenticates them itself). **Bootstrap must mint PATs with
    `read:user` in addition to `read:packages`/`write:packages`.** Basic auth
    with the account password (or a token used as Basic password, which Gitea
    treats as full-scope) is not affected.
@@ -171,12 +209,15 @@ Trade-offs, accepted and documented:
    no list-all route, so asking it first would be a guaranteed 404. That page
    is the complete pypi.org name list, several MB. pip doesn't fetch it during
    `install`; nothing breaks, just don't be surprised in logs.
-7. **Scoped-npm URL encoding.** Raw URIs go to Gitea byte-for-byte (`%2f`
-   preserved — covered by a test). The `/npm/` location rewrites (strips the
-   prefix), which makes nginx re-encode the URI, so Verdaccio may see
-   `@scope/name` where the client sent `@scope%2fname`. Verdaccio's own
-   documented nginx sub-path setup has the same property and it accepts both
-   forms; S4/S5 exercise this.
+7. **Scoped-npm URL encoding.** Gitea-bound paths carry the raw URI
+   byte-for-byte (`%2f` preserved — covered by a test): `/api/packages/...`
+   via `location /` (no rewrite), and `@artea` traffic under `/npm/` via the
+   `$artea_npm_uri` map over the raw `$request_uri` (see "npm scope routing"
+   above). For other scopes the `/npm/` location rewrites (strips the prefix),
+   which makes nginx re-encode the URI, so Verdaccio may see `@scope/name`
+   where the client sent `@scope%2fname`. Verdaccio's own documented nginx
+   sub-path setup has the same property and it accepts both forms; S4/S5
+   exercise this.
 8. **Auth caching vs revocation.** A revoked PAT keeps working on guarded
    paths — `/npm/` and devpi-bound — for up to 30 s (S12's budget is 60 s, and
    Verdaccio's own plugin cache is 60 s). Gitea-bound paths (npm
@@ -189,7 +230,9 @@ Trade-offs, accepted and documented:
    untouched, and Verdaccio's own 401/403 responses (policy tarball 403, S13)
    reach the client unmodified — `proxy_intercept_errors` stays off on
    `/npm/`, so only nginx-generated auth_request failures are re-mapped to the
-   Basic challenge. S2–S5 must keep passing with the guard in place.
+   Basic challenge. `@artea`-scoped paths peel off to Gitea before the guard
+   and are authenticated by Gitea itself (their 401s come from Gitea, not the
+   gateway). S2–S5 must keep passing with the guard in place.
 
 ## Validating the config
 

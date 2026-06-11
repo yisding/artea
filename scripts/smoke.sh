@@ -32,7 +32,9 @@ check "anonymous / redirects to sign-in" 303 "$(code "${GATEWAY_URL}/")"
 check "npm packument w/o auth is denied" 401 "$(code "${GATEWAY_URL}/npm/left-pad")"
 check "npm packument with PAT (npmjs pull-through)" 200 \
   "$(code -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/left-pad")"
-check "npm @artea scope denied on verdaccio even with PAT" 403 \
+# the gateway scope-routes @artea under /npm/ to Gitea: an unknown private name
+# 404s from Gitea — never Verdaccio (whose @artea deny would 403), never npmjs
+check "npm @artea scope routed to Gitea: unknown name 404s, never Verdaccio" 404 \
   "$(code -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/@artea%2fanything")"
 
 # 3. pypi path: gateway auth guard + Gitea-404 fallthrough to devpi/pypi.org

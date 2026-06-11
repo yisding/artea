@@ -72,25 +72,55 @@ resolve through the gateway.
 
 ## Resolution flows
 
-### npm — precedence by scope (no merging anywhere)
+### npm — precedence by scope, enforced by the gateway (no merging anywhere)
 
-Client `.npmrc` (this is the documented client contract):
+Client `.npmrc` (this is the documented client contract — one registry URL, one
+credential value; consumers need only the host-rooted `_auth` line, publishers
+add the `/npm/`-scoped copy — the full form, as in
+`docs/guides/clients-npm.md`):
 
 ```ini
 registry=http://localhost:8080/npm/
-@artea:registry=http://localhost:8080/api/packages/artea/npm/
+//localhost:8080/:_auth=<base64 user:PAT>
 //localhost:8080/npm/:_auth=<base64 user:PAT>
-//localhost:8080/api/packages/artea/npm/:_authToken=<PAT>
 always-auth=true
 ```
 
-- `@artea/*` → routed by the npm client itself straight to Gitea. Publish and install
-  use the same URL, same token (R6). Verdaccio never sees private packages.
-- Everything else → Verdaccio: pull-through cache of npmjs.org with the policy filter
-  applied (R2, R3). Verdaccio is **read-only**: publish is denied in its config —
-  the only writable surface is Gitea.
-- Defense in depth: Verdaccio config also denies access/proxy for `@artea/*` so a
-  misconfigured client can never leak private names to npmjs.
+The same `_auth` value appears on two nerf-dart lines: the host-rooted
+`//localhost:8080/:` line covers the tarball URLs Gitea generates from `ROOT_URL`
+(`/api/packages/artea/npm/...` — npm's nerf-dart prefix matching walks up to the
+host root); the `//localhost:8080/npm/:` line exists only because `npm publish`
+runs a local credential preflight against the registry's *exact* nerf-dart and
+never walks up (verified npm 11; see the CLIENT CAVEAT in `gateway/nginx.conf`
+and `docs/guides/clients-npm.md`).
+
+- `@artea/*` → routed to Gitea **by the gateway**: a regex location peels
+  `/npm/@artea/...` and the dist-tag API `/npm/-/package/@artea/...` off the
+  Verdaccio route and proxies them to `/api/packages/artea/npm/...`. This is a
+  scope match, never a 404-fallback — a 404-fallback would reintroduce
+  dependency confusion, while the scope match keeps `@artea` names structurally
+  unable to reach Verdaccio or npmjs (an unpublished private name 404s, full
+  stop). The match is case-insensitive, so case-variant spellings of the scope
+  (`@ARTEA/...`) also route to Gitea (and 404 there) instead of reaching
+  Verdaccio. The forwarded path is derived from the raw `$request_uri` via an
+  nginx `map`, so the `%2f`/`%40` encodings npm sends in packument/publish URLs
+  reach Gitea byte-for-byte; a request whose decoded path looks `@artea`-scoped
+  but whose raw form matches neither map pattern (percent-encoded scope
+  letters, e.g. `@%61rtea`) is rejected with 400 instead of falling through.
+  (Double-encoded separators such as `%252f` decode once to literal `%2f` text,
+  never look `@artea`-scoped, and stay on the Verdaccio route, which rejects
+  the malformed name.) No `auth_request` on this route — Gitea
+  authenticates itself. Publish and install use the same URL, same token (R6).
+- Everything else under `/npm/` → Verdaccio: pull-through cache of npmjs.org with
+  the policy filter applied (R2, R3). Verdaccio is **read-only**: publish is
+  denied in its config — the only writable surface is Gitea.
+- Legacy client config (optional): the previous two-registry `.npmrc`
+  (`@artea:registry=http://localhost:8080/api/packages/artea/npm/` plus
+  per-registry credential lines) keeps working unchanged — client scope routing
+  reaches Gitea directly without exercising the gateway's scope match (S17).
+- Defense in depth: Verdaccio config also denies access/proxy for `@artea/*`, so
+  even if a scoped request ever reached it, private names could never leak to
+  npmjs.
 
 ### Python — precedence by gateway 404-fallback (PEP 503 has no scopes)
 
@@ -136,8 +166,10 @@ devpi redirect that would skip the precedence check.
   revocation takes effect comfortably within the 60s budget of S12).
 - **devpi**: no plugin needed — the gateway's `auth_request` guard covers it.
 - **Anonymous access**: none, anywhere. The gateway's `auth_request` guard covers
-  `/npm/` as well as the devpi paths, so Verdaccio's service endpoints (`/-/ping`,
-  search, audit) are not reachable anonymously either.
+  Verdaccio-bound `/npm/` paths as well as the devpi paths, so Verdaccio's service
+  endpoints (`/-/ping`, search, audit) are not reachable anonymously either.
+  Gitea-bound paths — including `@artea` traffic the gateway peels off `/npm/` —
+  carry no gateway guard because Gitea enforces its own auth.
 
 ## Policy model (R3)
 
@@ -221,7 +253,7 @@ must remain functional anyway for `registry-policy`.
 | Req | Mechanism | E2E scenario |
 |-----|-----------|--------------|
 | R1 | Gitea OIDC (Okta) + plugins/auth_request validate everything against Gitea | S11, S12 (+ docs) |
-| R2 | npm scopes → Gitea; pypi gateway 404-fallback (200 = never consult public) | S2–S4, S6–S9 |
+| R2 | npm gateway scope routing → Gitea (scope match, never a fallback); pypi gateway 404-fallback (200 = never consult public) | S2–S4, S6–S9, S17 |
 | R3 | Verdaccio filter plugin + tarball middleware + devpi-constrained, fail-closed | S5, S10, S13, S15 |
 | R4 | Stock protocols: npm/pnpm/yarn vs Verdaccio+Gitea; pip/uv/twine vs gateway+Gitea | S2–S10 |
 | R5 | Gitea PATs (non-expiring today) | S11 |
@@ -232,7 +264,7 @@ must remain functional anyway for `registry-policy`.
 
 S1 bootstrap: stack up; admin, org `artea`, PAT, policy repo seeded, webhook wired.
 S2 `npm publish` `@artea/hello-artea` with PAT → 201 in Gitea.
-S3 `npm install @artea/hello-artea` resolves from Gitea via scope routing.
+S3 `npm install @artea/hello-artea` resolves from Gitea via gateway scope routing.
 S4 `npm install left-pad` resolves via Verdaccio pull-through from npmjs.
 S5 block a `left-pad` version in `npm-rules.yaml`, push, verify it disappears from `npm view left-pad versions`.
 S6 `twine upload` a locally built `artea-hello` wheel → Gitea (artifact stored in Gitea).
@@ -257,3 +289,8 @@ S15 fail-closed: with `/policy/npm-rules.yaml` removed (simulated policy-sync ou
 S16 normalization: non-canonical spellings of a private name (`Artea-Hello`,
     `artea_hello`) through the gateway still resolve to the private package, never
     falling through to the public mirror.
+S17 npm routing compatibility: the legacy two-registry scoped `.npmrc` still
+    installs `@artea/*` unchanged (its publish path — a direct PUT to
+    `/api/packages/artea/npm/`, bypassing the scope match — is the unchanged
+    `location /` route), and `%40`/`%2f`-encoded `@artea` paths under `/npm/`
+    route to Gitea (gateway scope routing), never to Verdaccio.

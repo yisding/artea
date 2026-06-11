@@ -134,8 +134,8 @@ Revoke a token in the Gitea UI (**Settings → Applications → Delete**) or via
 
 | Path | Effect |
 |------|--------|
-| Gitea-direct (`/api/packages/...`: npm `@artea/*`, twine, private pip files) | immediate |
-| npm pull-through (`/npm/` via Verdaccio) | ≤ 60 s — the Verdaccio auth plugin caches *positive* validations for 60 s |
+| Gitea-direct (npm `@artea/*` — gateway scope route under `/npm/` or legacy `/api/packages/...`; twine; private pip files) | immediate |
+| public npm pull-through (non-`@artea` `/npm/` via Verdaccio) | ≤ 60 s — the Verdaccio auth plugin caches *positive* validations for 60 s |
 | PyPI paths via the gateway (`/pypi/simple/`, `/root/...`) | per-request `auth_request` against Gitea — effectively immediate |
 
 So the system-wide guarantee is: **a revoked token stops working everywhere
@@ -151,7 +151,7 @@ Remember that Okta deactivation does not delete Gitea PATs — see
 |---------|--------------|-------------|
 | Everything returns 502 | A backend container is down | `docker compose ps`, `docker compose logs gateway <service>` |
 | All requests 401 with valid token | Token revoked, or Gitea unreachable from verdaccio/gateway (auth validation goes to Gitea) | `curl -u user:PAT http://localhost:8080/api/v1/user`; check gitea logs |
-| `npm install @artea/x` 404s | Client missing `@artea:registry` scope routing | Fix `.npmrc` ([clients-npm.md](clients-npm.md)) |
+| `npm install @artea/x` 404s | Package/version not published — the gateway routes `@artea/*` to Gitea server-side, so missing client scope config is no longer a cause (legacy `@artea:registry` configs still work) | Check the `artea` org's package list in Gitea; client setup in [clients-npm.md](clients-npm.md) |
 | `npm publish` rejected | Read-only cache (unscoped publish), missing `write:package`, or no org write permission | Scope the package `@artea/*`; check token scope and org membership |
 | Public npm package has missing versions | Policy block in `npm-rules.yaml` | Intentional; edit the policy repo via PR |
 | Policy change has no effect | Webhook not delivered, or policy-sync down | Repo settings → Webhooks → recent deliveries on `artea/registry-policy`; `docker compose logs policy-sync`; verify `/policy/npm-rules.yaml` mtime changed in the verdaccio container; the slow-poll fallback will also catch up eventually |

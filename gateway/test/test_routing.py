@@ -261,6 +261,72 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(status, 301)
         self.assertEqual(headers["Location"], "/npm/")  # relative: keeps :8080
 
+    def test_npm_artea_scope_to_gitea_raw_encoding_preserved(self):
+        # gateway scope routing: the %2f/%40 encodings npm sends must reach
+        # Gitea byte-for-byte, and the route takes no auth_request — Gitea
+        # authenticates itself
+        users_before = [p for p in self.seen("gitea") if p == "/api/v1/user"]
+        for raw in ("/npm/@artea%2fscoped-a", "/npm/%40artea%2Fscoped-a"):
+            status, body, _ = self._raw("GET", raw, auth=GOOD_AUTH)
+            self.assertEqual(status, 200, raw)
+            self.assertEqual(body, f"gitea /api/packages/artea/npm{raw[4:]}", raw)
+        users_after = [p for p in self.seen("gitea") if p == "/api/v1/user"]
+        self.assertEqual(len(users_after), len(users_before),
+                         "scoped route must not fire an auth_request")
+        self.assertFalse([p for p in self.seen("verdaccio") if "scoped-a" in p])
+
+    def test_npm_artea_case_variants_to_gitea_never_verdaccio(self):
+        # @ARTEA/... must never reach Verdaccio (its @artea/* deny is
+        # case-sensitive) and from there the npmjs uplink: the scope match is
+        # case-insensitive, so case variants land on Gitea (404 there in life)
+        for raw in ("/npm/@ARTEA%2Fscoped-c", "/npm/@Artea/scoped-c"):
+            status, body, _ = self._raw("GET", raw, auth=GOOD_AUTH)
+            self.assertEqual(status, 200, raw)
+            self.assertEqual(body, f"gitea /api/packages/artea/npm{raw[4:]}", raw)
+        self.assertFalse([p for p in self.seen("verdaccio")
+                          if "scoped-c" in p.lower()])
+
+    def test_npm_artea_dist_tag_api_to_gitea(self):
+        path = "/npm/-/package/@artea%2fscoped-b/dist-tags"
+        status, body, _ = self._raw("GET", path, auth=GOOD_AUTH)
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            body, "gitea /api/packages/artea/npm/-/package/@artea%2fscoped-b/dist-tags")
+        self.assertFalse([p for p in self.seen("verdaccio") if "scoped-b" in p])
+
+    def test_npm_artea_publish_put_routes_identically(self):
+        status, body, _ = self._raw("PUT", "/npm/@artea%2fscoped-d", auth=GOOD_AUTH)
+        self.assertEqual(status, 200)
+        self.assertEqual(body, "gitea /api/packages/artea/npm/@artea%2fscoped-d")
+
+    def test_npm_scope_boundary_artea_evil_stays_on_verdaccio(self):
+        # the decoded scope separator is part of the regex: @artea-evil/* must
+        # not be captured by the Gitea route
+        status, body, _ = self._raw("GET", "/npm/@artea-evil%2fnope", auth=GOOD_AUTH)
+        self.assertEqual(status, 200)
+        self.assertTrue(body.startswith("verdaccio /@artea-evil"), body)
+        self.assertFalse([p for p in self.seen("gitea") if "artea-evil" in p])
+
+    def test_npm_percent_encoded_scope_letters_rejected_at_gateway(self):
+        # decoded $uri looks @artea-scoped but the raw URI matches neither map
+        # pattern: the 400 guard fires at the gateway, reaching no upstream
+        g_before = len(self.upstreams["gitea"].requests)
+        v_before = len(self.upstreams["verdaccio"].requests)
+        status, _, _ = self._raw("GET", "/npm/@%61rtea/scoped-e", auth=GOOD_AUTH)
+        self.assertEqual(status, 400)
+        self.assertEqual(len(self.upstreams["gitea"].requests), g_before)
+        self.assertEqual(len(self.upstreams["verdaccio"].requests), v_before)
+
+    def test_npm_double_encoded_separator_stays_on_verdaccio_route(self):
+        # %252f decodes once to literal '%2f' text: never @artea-scoped in
+        # $uri, so it stays on the /npm/ row (the real Verdaccio rejects the
+        # malformed name); it must not reach the Gitea scope route
+        status, body, _ = self._raw("GET", "/npm/@artea%252fscoped-f",
+                                    auth=GOOD_AUTH)
+        self.assertEqual(status, 200)
+        self.assertTrue(body.startswith("verdaccio /"), body)
+        self.assertFalse([p for p in self.seen("gitea") if "scoped-f" in p])
+
     def test_pypi_unauthenticated_gets_basic_challenge(self):
         status, _, headers = self._raw("GET", "/pypi/simple/six/")
         self.assertEqual(status, 401)

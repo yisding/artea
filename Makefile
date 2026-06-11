@@ -35,7 +35,7 @@ bootstrap: .env ## idempotent S1: admin, org, policy repo + webhook, users, PATs
 smoke: ## gateway-level smoke checks (requires up + bootstrap)
 	./scripts/smoke.sh
 
-e2e: smoke ## scenario suite S1-S16 (requires up + bootstrap)
+e2e: smoke ## scenario suite S1-S17 (requires up + bootstrap)
 	./e2e/run.sh
 
 # clean wipes only what refills itself; gitea-data (users, private packages,

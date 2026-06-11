@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Artea e2e scenario suite — codifies S1-S16 from docs/ARCHITECTURE.md (the
-# definition of done for v1). Requires a running stack (`make up`) and a
-# completed bootstrap (`make bootstrap`); uses real client tools: npm with an
+# definition of done for v1) plus S17, the legacy npm client-contract probe.
+# Requires a running stack (`make up`) and a completed bootstrap
+# (`make bootstrap`); uses real client tools: npm with an
 # isolated userconfig, pip/twine/build from a venv under e2e/tmp, git for the
 # direct-push governance check (S14).
 #
@@ -197,9 +198,11 @@ s3_npm_install_private() {
   [ "$version" = "${NPM_VERSION}" ] || { echo "installed version ${version}, expected ${NPM_VERSION}"; return 1; }
   resolved=$(jq -r ".packages[\"node_modules/${NPM_NAME}\"].resolved" "$proj/package-lock.json")
   echo "resolved: ${resolved}"
+  # even under gateway scope routing (packument fetched via /npm/) the tarball
+  # URL is Gitea-built from ROOT_URL, so it stays on /api/packages/artea/npm/
   case "$resolved" in
     */api/packages/artea/npm/*) ;;
-    *) echo "tarball did not come from Gitea scope routing"; return 1 ;;
+    *) echo "tarball did not come from Gitea (gateway scope routing)"; return 1 ;;
   esac
 }
 
@@ -574,10 +577,55 @@ s16_normalization() {
   esac
 }
 
+# ---- S17: legacy scoped .npmrc still works; encoded @artea paths route to Gitea ----------------
+s17_legacy_and_encoding() {
+  local proj="${WORK}/proj-s17" npmrc_legacy="${WORK}/npmrc-legacy"
+  local spelling body code out version
+
+  # a. the legacy two-registry client config must keep working unchanged
+  write_npmrc_legacy "${npmrc_legacy}" "${DEV1_TOKEN}"
+  mkdir -p "$proj"
+  echo '{"name":"e2e-consumer-s17","version":"1.0.0"}' > "$proj/package.json"
+  (cd "$proj" && npm_config_userconfig="${npmrc_legacy}" npm_config_cache="${WORK}/npm-cache-s17" \
+    npm install "${NPM_NAME}@${NPM_VERSION}") || { echo "legacy-npmrc npm install failed"; return 1; }
+  version=$(jq -r .version "$proj/node_modules/${NPM_NAME}/package.json")
+  [ "$version" = "${NPM_VERSION}" ] || { echo "legacy install got ${version}, expected ${NPM_VERSION}"; return 1; }
+  echo "legacy two-registry .npmrc installs ${NPM_NAME}@${NPM_VERSION}"
+
+  # b. packuments under /npm/: encoded and literal @artea spellings both reach Gitea
+  for spelling in "${NPM_NAME_ENC}" "${NPM_NAME}"; do
+    body=$(curl -s -w '\n%{http_code}' -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/${spelling}")
+    code=${body##*$'\n'}
+    body=${body%$'\n'*}
+    [ "$code" = 200 ] || { echo "GET /npm/${spelling} -> HTTP ${code}, expected 200"; return 1; }
+    echo "$body" | grep -qF "\"${NPM_VERSION}\"" \
+      || { echo "/npm/${spelling}: packument does not contain ${NPM_VERSION}"; return 1; }
+    echo "/npm/${spelling} -> 200, packument contains ${NPM_VERSION}"
+  done
+
+  # c. dist-tag API route (the /npm/-/package/@artea/... map entry)
+  out=$(npm_e2e dist-tag ls "${NPM_NAME}" 2>&1) || { echo "npm dist-tag ls failed:"; echo "$out"; return 1; }
+  echo "$out"
+  echo "$out" | grep -q '^latest:' || { echo "no latest tag in dist-tag output"; return 1; }
+  echo "dist-tag route serves a latest tag for ${NPM_NAME}"
+
+  # d. boundary: @artea-evil must NOT be captured by the @artea route — it falls
+  # through to Verdaccio, which misses on npmjs (404). 400 would mean the
+  # gateway's encoded-path rejection fired; 401 would mean Gitea answered.
+  code=$(http_code -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/@artea-evil%2fnope")
+  [ "$code" = 404 ] || { echo "/npm/@artea-evil%2fnope -> HTTP ${code}, expected 404 (Verdaccio miss)"; return 1; }
+  echo "/npm/@artea-evil%2fnope -> 404 from the Verdaccio path, not the Gitea route"
+
+  # e. the @artea route has no auth_request guard; Gitea itself must demand auth
+  code=$(http_code "${GATEWAY_URL}/npm/${NPM_NAME_ENC}")
+  [ "$code" = 401 ] || { echo "anonymous /npm/${NPM_NAME_ENC} -> HTTP ${code}, expected 401"; return 1; }
+  echo "anonymous /npm/${NPM_NAME_ENC} -> 401"
+}
+
 # ---- run ---------------------------------------------------------------------------------------
 scenario S1 "bootstrap state: stack healthy, org/repo/webhook/PATs present" s1_bootstrap
 scenario S2 "npm publish ${NPM_NAME}@${NPM_VERSION} -> Gitea" s2_npm_publish
-scenario S3 "npm install ${NPM_NAME} resolves from Gitea (scope routing)" s3_npm_install_private
+scenario S3 "npm install ${NPM_NAME} resolves from Gitea (gateway scope routing)" s3_npm_install_private
 scenario S4 "npm install left-pad via Verdaccio pull-through" s4_npm_install_public
 scenario S5 "policy push hides left-pad 1.3.0 from npm view" s5_npm_policy_block
 scenario S6 "twine upload ${PY_NAME} ${PY_VERSION} -> Gitea" s6_twine_upload
@@ -591,10 +639,11 @@ scenario S13 "blocked version's tarball GET -> 403; anonymous /npm/ -> 401" s13_
 scenario S14 "dev1 cannot push registry-policy@main; admin allowlist works" s14_branch_protection
 scenario S15 "fail-closed: missing npm policy / wiped devpi, then recovery" s15_fail_closed
 scenario S16 "non-canonical pypi spellings still resolve to the private package" s16_normalization
+scenario S17 "legacy scoped .npmrc still works; encoded @artea paths route to Gitea" s17_legacy_and_encoding
 
 echo
 if [ "$FAILED" = 0 ]; then
-  log "all 16 scenarios passed"
+  log "all 17 scenarios passed"
 else
   log "FAILURES:"
   echo "${RESULTS}" | grep ' FAIL ' || true

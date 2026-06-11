@@ -91,7 +91,31 @@ delete_dev1_token() { # <name> ; tolerates 404/422 (already gone)
 }
 
 # ---- npm helpers -------------------------------------------------------------------
-write_npmrc() { # <file> <token> ; the documented client contract from ARCHITECTURE.md
+write_npmrc() { # <file> <token> ; the documented single-URL client contract
+  # (docs/guides/clients-npm.md): ONE registry — the gateway routes @artea
+  # traffic under /npm/ to Gitea server-side (ADR-0002, gateway scope routing).
+  # ONE credential VALUE on two nerf-dart lines (amendment in gateway/nginx.conf):
+  #   //host/      — covers Gitea tarball downloads by nerf-dart prefix matching
+  #                  (ROOT_URL pins them under /api/packages/artea/npm/...);
+  #   //host/npm/  — covers npm publish's local credential preflight, which
+  #                  checks only the registry's exact nerf-dart, never //host/.
+  local b64
+  b64=$(printf 'dev1:%s' "$2" | json_b64)
+  cat > "$1" <<EOF
+registry=${GATEWAY_URL}/npm/
+//${GATEWAY_HOSTPORT}/:_auth=${b64}
+//${GATEWAY_HOSTPORT}/npm/:_auth=${b64}
+always-auth=true
+audit=false
+fund=false
+update-notifier=false
+EOF
+}
+
+write_npmrc_legacy() { # <file> <token> ; the OLD two-registry contract — kept as
+  # the backward-compat probe (S17): client-side @artea scope routing to Gitea
+  # plus path-scoped credentials. Must keep working unchanged behind the new
+  # gateway (the legacy /api/packages/artea/npm/ URLs bypass the /npm/ routing).
   local b64
   b64=$(printf 'dev1:%s' "$2" | json_b64)
   cat > "$1" <<EOF
@@ -99,6 +123,7 @@ registry=${GATEWAY_URL}/npm/
 @artea:registry=${GATEWAY_URL}/api/packages/artea/npm/
 //${GATEWAY_HOSTPORT}/npm/:_auth=${b64}
 //${GATEWAY_HOSTPORT}/api/packages/artea/npm/:_authToken=$2
+always-auth=true
 audit=false
 fund=false
 update-notifier=false

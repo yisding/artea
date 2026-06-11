@@ -55,9 +55,12 @@ pull request; see [ADR-0006](../adr/0006-policy-as-code.md).
 
 Tokens are sent as:
 
-- HTTP Basic, `username:token` (npm `_auth`, pip/netrc, twine, uv, poetry)
+- HTTP Basic, `username:token` (npm `_auth`, pip/netrc, twine, uv, poetry) —
+  this is the whole npm client contract now; Gitea accepts Basic with the PAT
+  as the password
 - `Authorization: token <PAT>` or `Authorization: Bearer <PAT>` on Gitea paths
-  (npm `_authToken` uses Bearer)
+  (the legacy npm `_authToken` form uses Bearer; still accepted, no longer
+  needed)
 
 ## Creating tokens
 
@@ -83,7 +86,7 @@ the `developers` team — never to Owners. Give read-only bots like policy-sync'
 
 | Action | Endpoint | Token scope |
 |--------|----------|-------------|
-| `npm publish` of `@artea/*` | `PUT http://localhost:8080/api/packages/artea/npm/` (routed by the npm client via `@artea:registry`) | `write:package` |
+| `npm publish` of `@artea/*` | `PUT http://localhost:8080/npm/@artea%2f<name>` — the gateway routes the scope server-side to Gitea's `/api/packages/artea/npm/` | `write:package` |
 | `twine upload` | `POST http://localhost:8080/api/packages/artea/pypi/` | `write:package` |
 | `npm install`, `pip install` (private or public) | `http://localhost:8080/...` (see client guides) | `read:package` |
 
@@ -110,12 +113,19 @@ jobs:
           node-version: 22
       - name: Configure registry
         run: |
+          AUTH=$(printf '%s:%s' "${{ secrets.ARTEA_USER }}" "${{ secrets.ARTEA_TOKEN }}" | base64 -w0)
           cat > .npmrc <<EOF
-          @artea:registry=http://localhost:8080/api/packages/artea/npm/
-          //localhost:8080/api/packages/artea/npm/:_authToken=${{ secrets.ARTEA_TOKEN }}
+          registry=http://localhost:8080/npm/
+          //localhost:8080/:_auth=${AUTH}
+          //localhost:8080/npm/:_auth=${AUTH}
+          always-auth=true
           EOF
       - run: npm publish
 ```
+
+(Two `_auth` lines, same value: the host-rooted one covers installs including
+Gitea-generated tarball URLs; the exact-registry one satisfies npm's local
+publish preflight — see [clients-npm.md](clients-npm.md).)
 
 ### npm install (consume only)
 
@@ -125,9 +135,7 @@ jobs:
           AUTH=$(printf '%s:%s' "${{ secrets.ARTEA_USER }}" "${{ secrets.ARTEA_TOKEN }}" | base64 -w0)
           cat > .npmrc <<EOF
           registry=http://localhost:8080/npm/
-          @artea:registry=http://localhost:8080/api/packages/artea/npm/
-          //localhost:8080/npm/:_auth=${AUTH}
-          //localhost:8080/api/packages/artea/npm/:_authToken=${{ secrets.ARTEA_TOKEN }}
+          //localhost:8080/:_auth=${AUTH}
           always-auth=true
           EOF
       - run: npm ci
