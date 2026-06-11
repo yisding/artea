@@ -18,15 +18,26 @@ One package, two Verdaccio plugin roles, enforcing Artea's npm block policy
   the filename by stripping the exact `<unscoped-name>-` prefix, so hyphenated names
   and prerelease/build-metadata versions are handled.
 
-Both roles share one policy-loading code path (`src/policy.ts`): a `stat()` per
-request, re-parse only on mtime change.
+Both roles share one policy-loading code path (`src/policy.ts`), with two
+interchangeable policy sources behind the same `PolicyLoader` interface:
+
+- **`policy_file`** — read from disk, re-parsed when the mtime changes. Use in
+  docker compose, where policy-sync and Verdaccio share the `policy-data` volume.
+- **`policy_url`** — polled over HTTP with ETag/If-None-Match from policy-sync's
+  `GET /policy/npm-rules.yaml`. Use in Kubernetes, where there is no shared
+  (RWX) volume.
+
+Exactly **one** of the two must be configured; setting both or neither is a
+startup error.
 
 ## Configuration (verdaccio config.yaml)
+
+File mode (compose):
 
 ```yaml
 filters:
   filter-artea:
-    policy_file: /policy/npm-rules.yaml   # default; the shared policy-data volume
+    policy_file: /policy/npm-rules.yaml   # the shared policy-data volume
 
 middlewares:
   filter-artea:                           # same package, middleware role (S13)
@@ -34,10 +45,37 @@ middlewares:
     # fail_open: true                     # escape hatch, see below; default false
 ```
 
+URL mode (K8s):
+
+```yaml
+filters:
+  filter-artea:
+    policy_url: http://policy-sync:8920/policy/npm-rules.yaml
+    # poll_interval_ms: 10000             # default; poll period
+    # fail_grace_ms: 60000                # default; failure window before fail-closed
+
+middlewares:
+  filter-artea:
+    policy_url: http://policy-sync:8920/policy/npm-rules.yaml
+```
+
+Verdaccio instantiates the package once per role, so the filter and the
+middleware each run their own poller — two policy GETs per `poll_interval_ms`,
+which the ETag handling turns into cheap 304s.
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `policy_file` | — | Policy file path (compose). Mutually exclusive with `policy_url` |
+| `policy_url` | — | policy-sync endpoint to poll (K8s). Mutually exclusive with `policy_file` |
+| `poll_interval_ms` | `10000` | URL mode only: poll period |
+| `fail_grace_ms` | `60000` | URL mode only: how long polls may keep failing before fail-closed |
+| `fail_open` | `false` | Escape hatch: never reject, see below |
+
 ## Policy file schema (`npm-rules.yaml`)
 
-The file lives in the Gitea repo `artea/registry-policy` and is written into the
-`/policy` volume by policy-sync. Top-level key `blocked` with two optional lists:
+The file lives in the Gitea repo `artea/registry-policy`; policy-sync writes it
+into the `/policy` volume (compose) and serves it at `GET /policy/npm-rules.yaml`
+(K8s). Top-level key `blocked` with two optional lists:
 
 ```yaml
 blocked:
@@ -72,16 +110,19 @@ Semantics:
 
 ## Reload behavior
 
-The plugin `stat()`s the policy file on every request and re-parses it only when the
-mtime changes — no restart needed after policy-sync writes a new file. A
-stale-but-valid file keeps serving as last-known-good: freshness is policy-sync's
-job, not the plugin's.
+- **File mode**: the plugin `stat()`s the policy file on every request and re-parses
+  it only when the mtime changes — no restart needed after policy-sync writes a new
+  file. A stale-but-valid file keeps serving as last-known-good: freshness is
+  policy-sync's job, not the plugin's.
+- **URL mode**: a background poller GETs `policy_url` every `poll_interval_ms`
+  (default 10s) sending `If-None-Match` with the last seen ETag. A `200` parses and
+  atomically swaps the active policy; a `304` keeps it. The ETag of an unparsable
+  body is never adopted, so a later `304` can never mask a fix. Worst-case policy
+  propagation is one poll interval after policy-sync has synced.
 
 ## Failure mode: fail-closed (default)
 
-If the policy file is **missing or unparsable** (invalid YAML or wrong structure),
-the plugin rejects public-package traffic instead of silently serving everything
-unfiltered (e2e scenario S15):
+Rejection always looks the same (e2e scenario S15):
 
 - the middleware answers tarball requests with
   `503 {"error": "policy unavailable: ..."}`;
@@ -89,15 +130,29 @@ unfiltered (e2e scenario S15):
   (It cannot 503: Verdaccio swallows errors thrown by filter plugins and would serve
   the packument unfiltered — stripping is the only reliable rejection.)
 
-The failed state clears automatically through the same mtime/stat reload: as soon as
-the file reappears or is fixed, the policy applies again — no restart. Load failures
-are logged once per transition (`error` level); rejected requests log at `warn`.
+When rejection kicks in differs per mode:
+
+- **File mode**: immediately, whenever the file is **missing or unparsable**
+  (invalid YAML or wrong structure). The failed state clears automatically through
+  the same mtime/stat reload: as soon as the file reappears or is fixed, the policy
+  applies again — no restart.
+- **URL mode**: transient failures are normal on a network, so the last
+  successfully fetched policy keeps serving (last-known-good, in memory) while
+  polls fail — whether the failure is a connection error, a non-2xx response, or an
+  unparsable body. Only when failures persist past `fail_grace_ms` (default 60s)
+  does the plugin fail closed — plus on **cold start**, when nothing has ever been
+  fetched (there is no known-good policy to serve). The first successful poll
+  recovers automatically.
+
+Load failures and the open/closed transitions are logged once per transition
+(`warn`/`error` level); rejected requests log at `warn`.
 
 ### `fail_open: true` (escape hatch, not advised)
 
-Restores the legacy behavior: a missing file is treated as an empty policy (nothing
-blocked) and an unparsable update keeps the last good policy in effect. Only use
-this if availability of public packages matters more than policy enforcement.
+Never rejects, in either mode: a missing policy source is treated as an empty
+policy (nothing blocked) and a broken update keeps the last good policy in effect
+indefinitely. Only use this if availability of public packages matters more than
+policy enforcement.
 
 ## Develop
 
