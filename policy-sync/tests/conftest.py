@@ -163,17 +163,27 @@ def mock_devpi():
     server.stop()
 
 
-@pytest.fixture
-def cfg(mock_gitea, mock_devpi, tmp_path):
+def make_config(mock_gitea, mock_devpi, policy_file_path: str) -> Config:
     return Config(
         gitea_url=mock_gitea.url,
         sync_token=TEST_TOKEN,
         webhook_secret=TEST_SECRET,
         policy_repo=TEST_REPO,
-        policy_dir=str(tmp_path),
+        policy_file_path=policy_file_path,
         devpi_url=mock_devpi.url,
         devpi_root_password=TEST_DEVPI_PASSWORD,
         devpi_index="root/constrained",
         port=0,
         poll_interval=300,
     )
+
+
+@pytest.fixture
+def cfg(mock_gitea, mock_devpi, tmp_path):
+    return make_config(mock_gitea, mock_devpi, str(tmp_path / "npm-rules.yaml"))
+
+
+@pytest.fixture
+def cfg_http_only(mock_gitea, mock_devpi):
+    """POLICY_FILE_PATH="" — the K8s shape: no file write at all."""
+    return make_config(mock_gitea, mock_devpi, "")

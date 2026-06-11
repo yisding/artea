@@ -1,8 +1,12 @@
-"""HTTP surface: Gitea push-webhook receiver + health endpoint.
+"""HTTP surface: Gitea push-webhook receiver, health endpoint, and the npm
+policy endpoint (`GET /policy/npm-rules.yaml`) that the Verdaccio filter plugin
+polls in K8s deployments (no shared volume there).
 
-Stdlib http.server is enough here: two routes, internal-only traffic, and the
+Stdlib http.server is enough here: a few routes, internal-only traffic, and the
 actual sync work runs on a single background worker thread (webhooks only set
 an event, so deliveries return immediately and concurrent syncs are coalesced).
+The policy endpoint is unauthenticated by design: it is cluster-internal and
+serves block rules, not secrets.
 """
 
 import hmac
@@ -14,11 +18,20 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .config import Config
+from .store import PolicyStore
 from .sync import Syncer
 
 log = logging.getLogger(__name__)
 
 MAX_BODY = 10 * 1024 * 1024  # webhook payloads are small; cap reads defensively
+
+POLICY_ENDPOINT = "/policy/npm-rules.yaml"
+
+
+def etag_matches(if_none_match: str, etag: str) -> bool:
+    """If-None-Match comparison (RFC 9110: weak comparison, list or `*`)."""
+    candidates = [c.strip() for c in if_none_match.split(",")]
+    return "*" in candidates or etag in (c.removeprefix("W/") for c in candidates)
 
 
 class SyncState:
@@ -54,8 +67,29 @@ class PolicySyncHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 (http.server API)
         if self.path == "/healthz":
             self._respond(200, {"status": "ok", **self.server.state.snapshot()})
+        elif self.path == POLICY_ENDPOINT:
+            self._serve_policy()
         else:
             self._respond(404, {"error": "not found"})
+
+    def _serve_policy(self) -> None:
+        got = self.server.store.get()
+        if got is None:
+            self._respond(404, {"error": "no npm policy has been synced yet; check Gitea connectivity and /healthz"})
+            return
+        content, etag = got
+        if_none_match = self.headers.get("If-None-Match")
+        if if_none_match and etag_matches(if_none_match, etag):
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/yaml")
+        self.send_header("ETag", etag)
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)
 
     def do_POST(self) -> None:  # noqa: N802
         if self.path != "/hooks/policy":
@@ -92,15 +126,18 @@ class PolicySyncHandler(BaseHTTPRequestHandler):
 class PolicySyncHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, addr, webhook_secret: str, trigger_sync, state: SyncState):
+    def __init__(self, addr, webhook_secret: str, trigger_sync, state: SyncState, store: PolicyStore):
         super().__init__(addr, PolicySyncHandler)
         self.webhook_secret = webhook_secret
         self.trigger_sync = trigger_sync
         self.state = state
+        self.store = store
 
 
-def make_http_server(host: str, port: int, webhook_secret: str, trigger_sync, state: SyncState) -> PolicySyncHTTPServer:
-    return PolicySyncHTTPServer((host, port), webhook_secret, trigger_sync, state)
+def make_http_server(
+    host: str, port: int, webhook_secret: str, trigger_sync, state: SyncState, store: PolicyStore
+) -> PolicySyncHTTPServer:
+    return PolicySyncHTTPServer((host, port), webhook_secret, trigger_sync, state, store)
 
 
 def run_sync_worker(syncer: Syncer, state: SyncState, wake: threading.Event, poll_interval: float, stop: threading.Event) -> None:
@@ -125,7 +162,10 @@ def main() -> None:
     state = SyncState()
     wake = threading.Event()
     stop = threading.Event()
-    syncer = Syncer(cfg)
+    # the file fallback keeps the endpoint serving across restarts in compose,
+    # where the volume still holds the last synced policy
+    store = PolicyStore(fallback_path=cfg.policy_file_path)
+    syncer = Syncer(cfg, store=store)
 
     worker = threading.Thread(
         target=run_sync_worker,
@@ -135,9 +175,10 @@ def main() -> None:
     )
     worker.start()
 
-    httpd = make_http_server("0.0.0.0", cfg.port, cfg.webhook_secret, wake.set, state)
-    log.info("policy-sync listening on :%d (gitea=%s devpi=%s poll=%.0fs)",
-             cfg.port, cfg.gitea_url, cfg.devpi_url, cfg.poll_interval)
+    httpd = make_http_server("0.0.0.0", cfg.port, cfg.webhook_secret, wake.set, state, store)
+    log.info("policy-sync listening on :%d (gitea=%s devpi=%s poll=%.0fs file=%s)",
+             cfg.port, cfg.gitea_url, cfg.devpi_url, cfg.poll_interval,
+             cfg.policy_file_path or "<disabled: HTTP-only>")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

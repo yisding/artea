@@ -17,6 +17,7 @@ from .config import Config
 from .devpi import DevpiError, apply_constraints
 from .files import write_atomic
 from .gitea import GiteaError, GiteaNotFound, fetch_raw
+from .store import PolicyStore
 
 log = logging.getLogger(__name__)
 
@@ -25,13 +26,14 @@ PYPI_CONSTRAINTS_FILE = "pypi-constraints.txt"
 
 
 class Syncer:
-    def __init__(self, cfg: Config, sleep=time.sleep):
+    def __init__(self, cfg: Config, sleep=time.sleep, store: PolicyStore | None = None):
         self.cfg = cfg
         self.sleep = sleep
+        self.store = store
 
     @property
-    def npm_dest(self) -> Path:
-        return Path(self.cfg.policy_dir) / NPM_RULES_FILE
+    def npm_dest(self) -> Path | None:
+        return Path(self.cfg.policy_file_path) if self.cfg.policy_file_path else None
 
     def _fetch(self, path: str) -> bytes | None:
         """Returns file bytes, or None if the file should be skipped (404)."""
@@ -45,10 +47,17 @@ class Syncer:
         data = self._fetch(NPM_RULES_FILE)
         if data is None:
             return
-        if write_atomic(self.npm_dest, data):
-            log.info("wrote %s (%d bytes)", self.npm_dest, len(data))
+        if self.store is not None:
+            self.store.set(data)  # the /policy endpoint serves the new policy immediately
+        dest = self.npm_dest
+        if dest is None:
+            log.debug("POLICY_FILE_PATH empty; HTTP-only mode, no file written")
+            return
+        dest.parent.mkdir(parents=True, exist_ok=True)  # private tmp dirs may not exist yet
+        if write_atomic(dest, data):
+            log.info("wrote %s (%d bytes)", dest, len(data))
         else:
-            log.debug("%s unchanged", self.npm_dest)
+            log.debug("%s unchanged", dest)
 
     def _sync_pypi(self) -> None:
         data = self._fetch(PYPI_CONSTRAINTS_FILE)
