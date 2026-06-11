@@ -7,55 +7,137 @@
 # write, no admin), demo user `dev1` (developers member, never Owners) + PAT,
 # branch protection on the policy repo's default branch (PRs + >=1 approval;
 # direct push only for artea-admin), the `svc-policy` service account in a
-# read-only `policy-readers` team, and its policy-sync PAT (written back into
-# .env, container recreated). Re-running migrates older stacks: dev1 is moved
-# out of Owners and an admin-minted POLICY_SYNC_TOKEN is rotated to svc-policy
-# and revoked. Resulting credentials land in e2e/tmp/credentials.env.
+# read-only `policy-readers` team, and its policy-sync PAT (delivered via the
+# token sink below). Re-running migrates older stacks: dev1 is moved out of
+# Owners and an admin-minted POLICY_SYNC_TOKEN is rotated to svc-policy and
+# revoked.
+#
+# Token sink (TOKEN_SINK):
+#   env-file   (default) compose flow: the PAT lands in .env and policy-sync
+#              is recreated via docker compose. Admin actions use the Gitea
+#              CLI in-container; .env is required; kubectl is never touched.
+#   k8s-secret in-cluster flow (Helm hook Job): the PAT is patched into the
+#              Secret SECRET_NAME (key SECRET_KEY, default POLICY_SYNC_TOKEN)
+#              and DEPLOYMENT_NAME is rollout-restarted, both via kubectl in
+#              NAMESPACE (empty = context default). Admin actions use the
+#              Gitea HTTP API (the chart provisions the admin user).
+#              Credentials are printed to stdout between BEGIN/END markers
+#              (the harness extracts them from Job logs) and, if
+#              WRITE_CREDENTIALS_PATH is set and writable, written there too.
+#
+# Other knobs (all optional): GITEA_URL (where this script reaches Gitea),
+# GATEWAY_URL (public base recorded in the credentials), GITEA_READY_TIMEOUT,
+# POLICY_SYNC_URL, POLICY_SYNC_HOOK_URL, ARTEA_ADMIN_USER, ROLLOUT_TIMEOUT.
+# Credentials (ARTEA_ADMIN_PASSWORD, DEV1_PASSWORD, POLICY_WEBHOOK_SECRET,
+# POLICY_SYNC_TOKEN) are read from the environment first, then .env.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-
-GATEWAY_URL="${GATEWAY_URL:-http://localhost:8080}"
-ADMIN_USER=artea-admin
-ORG=artea
-REPO=registry-policy
-CRED_FILE=e2e/tmp/credentials.env
-RESP="$(mktemp)"
-trap 'rm -f "$RESP"' EXIT
 
 log() { echo "[bootstrap] $*"; }
 die() { echo "[bootstrap] ERROR: $*" >&2; exit 1; }
 
-[ -f .env ] || die ".env is missing — cp .env.example .env and change the secrets"
-set -a; source ./.env; set +a
-: "${ARTEA_ADMIN_PASSWORD:?must be set in .env}"
-: "${DEV1_PASSWORD:?must be set in .env}"
-: "${POLICY_WEBHOOK_SECRET:?must be set in .env}"
+TOKEN_SINK="${TOKEN_SINK:-env-file}"
+case "${TOKEN_SINK}" in env-file | k8s-secret) ;; *) die "TOKEN_SINK must be 'env-file' or 'k8s-secret', got '${TOKEN_SINK}'" ;; esac
+in_k8s() { [ "${TOKEN_SINK}" = k8s-secret ]; }
 
-./gitea/scripts/gen-secrets.sh
+# GITEA_URL = where THIS script reaches Gitea (in-cluster service URL in k8s);
+# GATEWAY_URL = the public base URL recorded in the credentials for e2e.
+GITEA_URL="${GITEA_URL:-${GATEWAY_URL:-http://localhost:8080}}"
+GATEWAY_URL="${GATEWAY_URL:-${GITEA_URL}}"
+GITEA_READY_TIMEOUT="${GITEA_READY_TIMEOUT:-120}" # seconds
+# policy-sync base URL: polled directly for health in k8s mode; also the
+# default webhook target unless POLICY_SYNC_HOOK_URL overrides it
+POLICY_SYNC_URL="${POLICY_SYNC_URL:-http://policy-sync:8920}"
+POLICY_SYNC_HOOK_URL="${POLICY_SYNC_HOOK_URL:-${POLICY_SYNC_URL}/hooks/policy}"
+ADMIN_USER="${ARTEA_ADMIN_USER:-artea-admin}" # fixed contract; env for the k8s Job
+ORG=artea
+REPO=registry-policy
+CRED_FILE="${WRITE_CREDENTIALS_PATH:-e2e/tmp/credentials.env}"
+case "${CRED_FILE}" in /*) ;; *) CRED_FILE="./${CRED_FILE}" ;; esac
+RESP="$(mktemp)"
+trap 'rm -f "$RESP"' EXIT
+
+if in_k8s; then
+  command -v kubectl >/dev/null || die "TOKEN_SINK=k8s-secret requires kubectl"
+  # explicit die, not ${VAR:?}: with an EXIT trap set, bash 3.2 exits 0 on a
+  # failed :? expansion, which would make a misconfigured bootstrap Job "pass"
+  [ -n "${SECRET_NAME:-}" ] || die "SECRET_NAME is required with TOKEN_SINK=k8s-secret (policy-sync token Secret)"
+  [ -n "${DEPLOYMENT_NAME:-}" ] || die "DEPLOYMENT_NAME is required with TOKEN_SINK=k8s-secret (policy-sync Deployment)"
+  SECRET_KEY="${SECRET_KEY:-POLICY_SYNC_TOKEN}"
+  ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-120}" # seconds
+  KC=(kubectl)
+  [ -n "${NAMESPACE:-}" ] && KC=(kubectl -n "${NAMESPACE}")
+fi
+
+# env-provided credentials win over .env (the k8s Job has no .env at all)
+ENV_ADMIN_PW="${ARTEA_ADMIN_PASSWORD:-}"
+ENV_DEV1_PW="${DEV1_PASSWORD:-}"
+ENV_WEBHOOK_SECRET="${POLICY_WEBHOOK_SECRET:-}"
+ENV_POLICY_TOKEN="${POLICY_SYNC_TOKEN:-}"
+if [ -f .env ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source ./.env
+  set +a
+elif ! in_k8s; then
+  die ".env is missing — cp .env.example .env and change the secrets"
+fi
+[ -n "${ENV_ADMIN_PW}" ] && ARTEA_ADMIN_PASSWORD="${ENV_ADMIN_PW}"
+[ -n "${ENV_DEV1_PW}" ] && DEV1_PASSWORD="${ENV_DEV1_PW}"
+[ -n "${ENV_WEBHOOK_SECRET}" ] && POLICY_WEBHOOK_SECRET="${ENV_WEBHOOK_SECRET}"
+[ -n "${ENV_POLICY_TOKEN}" ] && POLICY_SYNC_TOKEN="${ENV_POLICY_TOKEN}"
+[ -n "${ARTEA_ADMIN_PASSWORD:-}" ] || die "ARTEA_ADMIN_PASSWORD must be set (env or .env)"
+[ -n "${DEV1_PASSWORD:-}" ] || die "DEV1_PASSWORD must be set (env or .env)"
+[ -n "${POLICY_WEBHOOK_SECRET:-}" ] || die "POLICY_WEBHOOK_SECRET must be set (env or .env)"
+
+# compose-only: file-mounted gitea secrets; the chart manages these in k8s
+in_k8s || ./gitea/scripts/gen-secrets.sh
 
 # ---- helpers -----------------------------------------------------------------
-gitea_cli() { docker compose exec -T -u git gitea gitea "$@"; }
+gitea_cli() { docker compose exec -T -u git gitea gitea "$@"; } # env-file mode only
 
-# all CLI-minted tokens get unique names; gitea refuses duplicate token names
-mint_token() { # <user> <scopes>  -> raw token on stdout
-  gitea_cli admin user generate-access-token \
-    --username "$1" --scopes "$2" --token-name "bootstrap-$(date +%s)-$RANDOM" --raw | tr -d '[:space:]'
+# all minted tokens get unique names; gitea refuses duplicate token names
+mint_token() { # <user> <comma-separated scopes>  -> raw token on stdout
+  if in_k8s; then
+    # API equivalent of the CLI path: admin Basic auth may mint for any user
+    local scopes
+    scopes=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1].split(",")))' "$2")
+    curl -sfS -u "${ADMIN_USER}:${ARTEA_ADMIN_PASSWORD}" -X POST -H 'Content-Type: application/json' \
+      -d "{\"name\":\"bootstrap-$(date +%s)-$RANDOM\",\"scopes\":${scopes}}" \
+      "${GITEA_URL}/api/v1/users/$1/tokens" \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha1"])'
+  else
+    gitea_cli admin user generate-access-token \
+      --username "$1" --scopes "$2" --token-name "bootstrap-$(date +%s)-$RANDOM" --raw | tr -d '[:space:]'
+  fi
+}
+
+create_user() { # <username> <password> ; CLI in compose, admin API in k8s
+  if in_k8s; then
+    # the admin API's email validator rejects dot-less domains like
+    # user@localhost (which the CLI path accepts), hence .localhost
+    admin_send POST /admin/users \
+      "{\"username\":\"$1\",\"email\":\"$1@artea.localhost\",\"password\":\"$2\",\"must_change_password\":false}"
+  else
+    gitea_cli admin user create --username "$1" --password "$2" \
+      --email "$1@localhost" --must-change-password=false >/dev/null
+  fi
 }
 
 admin_code() { # <api path> -> http status code
-  curl -sS -o "$RESP" -w '%{http_code}' -H "Authorization: token ${ADMIN_TOKEN}" "${GATEWAY_URL}/api/v1$1"
+  curl -sS -o "$RESP" -w '%{http_code}' -H "Authorization: token ${ADMIN_TOKEN}" "${GITEA_URL}/api/v1$1"
 }
 
 admin_send() { # <method> <api path> <json body or ''> ; dies on non-2xx
   local code
   code=$(curl -sS -o "$RESP" -w '%{http_code}' -X "$1" \
     -H "Authorization: token ${ADMIN_TOKEN}" -H 'Content-Type: application/json' \
-    ${3:+-d "$3"} "${GATEWAY_URL}/api/v1$2")
+    ${3:+-d "$3"} "${GITEA_URL}/api/v1$2")
   case "$code" in 2*) ;; *) die "$1 $2 -> HTTP $code: $(cat "$RESP")";; esac
 }
 
 token_login() { # <token> -> login name of the token's user, '' if invalid
-  curl -sf -H "Authorization: token $1" "${GATEWAY_URL}/api/v1/user" 2>/dev/null \
+  curl -sf -H "Authorization: token $1" "${GITEA_URL}/api/v1/user" 2>/dev/null \
     | python3 -c 'import json,sys; print(json.load(sys.stdin).get("login",""))' 2>/dev/null || true
 }
 
@@ -69,17 +151,25 @@ resp_id() { # id field of the last admin_send response
   python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$RESP"
 }
 
-# ---- wait for gitea through the gateway ----------------------------------------
-log "waiting for gitea (via ${GATEWAY_URL}) ..."
-for i in $(seq 1 60); do
-  curl -fsS -o /dev/null "${GATEWAY_URL}/api/healthz" 2>/dev/null && break
-  [ "$i" -eq 60 ] && die "gitea not healthy after 120s — is the stack up? (make up)"
+# ---- wait for gitea ------------------------------------------------------------
+WAIT_TRIES=$(( GITEA_READY_TIMEOUT / 2 ))
+log "waiting for gitea (via ${GITEA_URL}, up to ${GITEA_READY_TIMEOUT}s) ..."
+for i in $(seq 1 "${WAIT_TRIES}"); do
+  curl -fsS -o /dev/null "${GITEA_URL}/api/healthz" 2>/dev/null && break
+  [ "$i" -eq "${WAIT_TRIES}" ] && die "gitea not healthy after ${GITEA_READY_TIMEOUT}s — is the stack up? (make up / make k8s-deploy)"
   sleep 2
 done
 log "gitea is healthy"
 
 # ---- admin user ----------------------------------------------------------------
-if gitea_cli admin user list --admin | awk '{print $2}' | grep -qx "${ADMIN_USER}"; then
+if in_k8s; then
+  # the chart's gitea provisions the admin (gitea.admin values); verify only
+  ADMIN_LOGIN=$(curl -sf -u "${ADMIN_USER}:${ARTEA_ADMIN_PASSWORD}" "${GITEA_URL}/api/v1/user" 2>/dev/null \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("login",""))' 2>/dev/null || true)
+  [ "${ADMIN_LOGIN}" = "${ADMIN_USER}" ] \
+    || die "cannot authenticate as ${ADMIN_USER} — in k8s the chart must provision the admin user"
+  log "admin ${ADMIN_USER} present (chart-provisioned)"
+elif gitea_cli admin user list --admin | awk '{print $2}' | grep -qx "${ADMIN_USER}"; then
   log "admin ${ADMIN_USER} already exists"
 else
   log "creating admin ${ADMIN_USER}"
@@ -89,9 +179,9 @@ else
 fi
 
 # ---- admin PAT (reused from a previous run when still valid) -------------------
-mkdir -p e2e/tmp
 ADMIN_TOKEN=""
-[ -f "${CRED_FILE}" ] && ADMIN_TOKEN="$(. "./${CRED_FILE}"; echo "${ARTEA_ADMIN_TOKEN:-}")"
+# shellcheck disable=SC1090
+[ -f "${CRED_FILE}" ] && ADMIN_TOKEN="$(. "${CRED_FILE}"; echo "${ARTEA_ADMIN_TOKEN:-}")"
 if [ "$(token_login "${ADMIN_TOKEN:-invalid}")" = "${ADMIN_USER}" ]; then
   log "reusing admin token from ${CRED_FILE}"
 else
@@ -130,7 +220,7 @@ seed_file policy/npm-rules.yaml npm-rules.yaml
 seed_file policy/pypi-constraints.txt pypi-constraints.txt
 
 # ---- push webhook -> policy-sync ------------------------------------------------
-HOOK_URL="http://policy-sync:8920/hooks/policy"
+HOOK_URL="${POLICY_SYNC_HOOK_URL}"
 admin_send GET "/repos/${ORG}/${REPO}/hooks" ''
 if grep -q "${HOOK_URL}" "$RESP"; then
   log "policy webhook already wired"
@@ -164,8 +254,7 @@ if [ "$(admin_code /users/dev1)" = 200 ]; then
   log "user dev1 already exists"
 else
   log "creating user dev1"
-  gitea_cli admin user create --username dev1 --password "${DEV1_PASSWORD}" \
-    --email dev1@localhost --must-change-password=false >/dev/null
+  create_user dev1 "${DEV1_PASSWORD}"
 fi
 admin_send PUT "/teams/${DEV_TEAM_ID}/members/dev1" ''
 log "dev1 is a member of ${ORG} (developers team)"
@@ -200,7 +289,8 @@ fi
 # guard (GET /api/v1/user). read:organization: verdaccio org->group mapping.
 DEV1_SCOPES="write:package,read:user,read:organization"
 DEV1_TOKEN=""
-[ -f "${CRED_FILE}" ] && DEV1_TOKEN="$(. "./${CRED_FILE}"; echo "${DEV1_TOKEN:-}")"
+# shellcheck disable=SC1090
+[ -f "${CRED_FILE}" ] && DEV1_TOKEN="$(. "${CRED_FILE}"; echo "${DEV1_TOKEN:-}")"
 if [ "$(token_login "${DEV1_TOKEN:-invalid}")" = "dev1" ]; then
   log "reusing dev1 token from ${CRED_FILE}"
 else
@@ -214,8 +304,12 @@ if [ "$(admin_code "/users/${SVC_USER}")" = 200 ]; then
   log "user ${SVC_USER} already exists"
 else
   log "creating service user ${SVC_USER} (random password, PAT-only account)"
-  gitea_cli admin user create --username "${SVC_USER}" --random-password \
-    --email "${SVC_USER}@localhost" --must-change-password=false >/dev/null
+  if in_k8s; then
+    create_user "${SVC_USER}" "$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+  else
+    gitea_cli admin user create --username "${SVC_USER}" --random-password \
+      --email "${SVC_USER}@localhost" --must-change-password=false >/dev/null
+  fi
 fi
 READERS_ID=$(team_id policy-readers)
 if [ -n "${READERS_ID}" ]; then
@@ -234,32 +328,46 @@ admin_send PUT "/teams/${READERS_ID}/repos/${ORG}/${REPO}" ''
 admin_send PUT "/teams/${READERS_ID}/members/${SVC_USER}" ''
 log "${SVC_USER} has read-only access to ${ORG}/${REPO}"
 
-# ---- policy-sync service PAT (svc-policy; lands in .env, container recreated) ----
+# ---- policy-sync service PAT (svc-policy; delivered via the token sink) ----------
 # Valid means: reads the raw policy file AND is low-privilege (pull-only on the
 # repo). An admin-minted token from an older bootstrap reads fine but carries
 # push+admin rights, so it fails the second check and gets rotated + revoked.
+if in_k8s; then
+  # the current token lives in the Secret, not in .env
+  POLICY_SYNC_TOKEN="$("${KC[@]}" get secret "${SECRET_NAME}" -o "jsonpath={.data.${SECRET_KEY}}" 2>/dev/null \
+    | base64 -d 2>/dev/null || true)"
+fi
 policy_token_ok() {
   curl -sf -o /dev/null -H "Authorization: token ${POLICY_SYNC_TOKEN:-invalid}" \
-    "${GATEWAY_URL}/api/v1/repos/${ORG}/${REPO}/raw/npm-rules.yaml" || return 1
+    "${GITEA_URL}/api/v1/repos/${ORG}/${REPO}/raw/npm-rules.yaml" || return 1
   curl -sf -H "Authorization: token ${POLICY_SYNC_TOKEN:-invalid}" \
-      "${GATEWAY_URL}/api/v1/repos/${ORG}/${REPO}" 2>/dev/null \
+      "${GITEA_URL}/api/v1/repos/${ORG}/${REPO}" 2>/dev/null \
     | python3 -c 'import json,sys; p=json.load(sys.stdin).get("permissions",{}); sys.exit(0 if p.get("pull") and not p.get("push") and not p.get("admin") else 1)' \
       2>/dev/null
 }
 if policy_token_ok; then
-  log "POLICY_SYNC_TOKEN in .env is valid and low-privilege"
+  log "current POLICY_SYNC_TOKEN is valid and low-privilege"
 else
-  log "minting ${SVC_USER} token (scopes: read:repository) and updating .env"
+  log "minting ${SVC_USER} token (scopes: read:repository)"
   POLICY_SYNC_TOKEN=$(mint_token "${SVC_USER}" read:repository)
-  sed -i.bak "s|^POLICY_SYNC_TOKEN=.*|POLICY_SYNC_TOKEN=${POLICY_SYNC_TOKEN}|" .env && rm -f .env.bak
-  log "recreating policy-sync with the new token"
-  # --build: also picks up image changes (e.g. the non-root migration) when
-  # bootstrap is re-run without a prior `make up`
-  docker compose up -d --build --wait policy-sync >/dev/null
+  if in_k8s; then
+    log "patching secret ${SECRET_NAME} (key ${SECRET_KEY}) and restarting ${DEPLOYMENT_NAME}"
+    "${KC[@]}" create secret generic "${SECRET_NAME}" \
+      --from-literal="${SECRET_KEY}=${POLICY_SYNC_TOKEN}" \
+      --dry-run=client -o yaml | "${KC[@]}" apply -f - >/dev/null
+    "${KC[@]}" rollout restart "deployment/${DEPLOYMENT_NAME}" >/dev/null
+    "${KC[@]}" rollout status "deployment/${DEPLOYMENT_NAME}" --timeout="${ROLLOUT_TIMEOUT}s" >/dev/null
+  else
+    log "updating .env and recreating policy-sync with the new token"
+    sed -i.bak "s|^POLICY_SYNC_TOKEN=.*|POLICY_SYNC_TOKEN=${POLICY_SYNC_TOKEN}|" .env && rm -f .env.bak
+    # --build: also picks up image changes (e.g. the non-root migration) when
+    # bootstrap is re-run without a prior `make up`
+    docker compose up -d --build --wait policy-sync >/dev/null
+  fi
   # migration: revoke superseded admin-minted policy tokens (recognizable by
   # their exact read:repository scope; the admin's own bootstrap PAT is 'all')
   curl -sf -u "${ADMIN_USER}:${ARTEA_ADMIN_PASSWORD}" \
-      "${GATEWAY_URL}/api/v1/users/${ADMIN_USER}/tokens" \
+      "${GITEA_URL}/api/v1/users/${ADMIN_USER}/tokens" \
     | python3 -c 'import json,sys
 for t in json.load(sys.stdin):
     if t.get("scopes") == ["read:repository"]:
@@ -267,16 +375,25 @@ for t in json.load(sys.stdin):
     | while read -r tid; do
         log "revoking superseded admin-minted policy token (id ${tid})"
         curl -sf -o /dev/null -X DELETE -u "${ADMIN_USER}:${ARTEA_ADMIN_PASSWORD}" \
-          "${GATEWAY_URL}/api/v1/users/${ADMIN_USER}/tokens/${tid}" || true
+          "${GITEA_URL}/api/v1/users/${ADMIN_USER}/tokens/${tid}" || true
       done || log "WARN: could not enumerate admin tokens; old policy token not revoked"
 fi
 
 # ---- wait for the first successful policy sync ------------------------------------
+policy_synced() {
+  if in_k8s; then
+    # the bootstrap Job runs in-cluster, so the service URL is reachable
+    curl -sf --max-time 3 "${POLICY_SYNC_URL}/healthz" 2>/dev/null \
+      | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("last_sync_ok") else 1)' 2>/dev/null
+  else
+    docker compose exec -T policy-sync python -c \
+      "import json,sys,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8920/healthz', timeout=3)); sys.exit(0 if d.get('last_sync_ok') else 1)" \
+      2>/dev/null
+  fi
+}
 log "waiting for policy-sync to complete a sync ..."
 for i in $(seq 1 45); do
-  if docker compose exec -T policy-sync python -c \
-    "import json,sys,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8920/healthz', timeout=3)); sys.exit(0 if d.get('last_sync_ok') else 1)" \
-    2>/dev/null; then
+  if policy_synced; then
     log "policy-sync reports last_sync_ok=true"
     break
   fi
@@ -285,8 +402,8 @@ for i in $(seq 1 45); do
 done
 
 # ---- credentials for the e2e suite -------------------------------------------------
-umask 177
-cat > "${CRED_FILE}" <<EOF
+emit_credentials() {
+  cat <<EOF
 # generated by scripts/bootstrap.sh — gitignored, dev credentials only
 GATEWAY_URL=${GATEWAY_URL}
 ARTEA_ADMIN_USER=${ADMIN_USER}
@@ -297,5 +414,24 @@ DEV1_PASSWORD=${DEV1_PASSWORD}
 DEV1_TOKEN=${DEV1_TOKEN}
 POLICY_SYNC_TOKEN=${POLICY_SYNC_TOKEN}
 EOF
-log "credentials written to ${CRED_FILE}"
+}
+write_credentials() { # <path> ; subshell so umask stays contained
+  (mkdir -p "$(dirname "$1")" && umask 177 && emit_credentials > "$1")
+}
+if in_k8s; then
+  # the harness/CI extracts this block from the Job logs (scripts/k8s-e2e.sh)
+  echo "----- BEGIN ARTEA CREDENTIALS -----"
+  emit_credentials
+  echo "----- END ARTEA CREDENTIALS -----"
+  if [ -n "${WRITE_CREDENTIALS_PATH:-}" ]; then
+    if write_credentials "${CRED_FILE}" 2>/dev/null; then
+      log "credentials also written to ${CRED_FILE}"
+    else
+      log "WARN: WRITE_CREDENTIALS_PATH=${CRED_FILE} not writable; rely on the log block"
+    fi
+  fi
+else
+  write_credentials "${CRED_FILE}"
+  log "credentials written to ${CRED_FILE}"
+fi
 log "bootstrap complete"
