@@ -4,6 +4,14 @@
 log() { echo "[e2e] $*"; }
 die() { echo "[e2e] ERROR: $*" >&2; exit 1; }
 
+kc() { # kubectl, namespaced when K8S_NAMESPACE is set (RUNTIME=k8s helpers)
+  if [ -n "${K8S_NAMESPACE:-}" ]; then
+    kubectl -n "${K8S_NAMESPACE}" "$@"
+  else
+    kubectl "$@"
+  fi
+}
+
 http_code() { # <curl args...> -> status code on stdout
   curl -sS -o /dev/null -w '%{http_code}' "$@"
 }

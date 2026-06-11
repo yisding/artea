@@ -1,15 +1,25 @@
 #!/usr/bin/env bash
 # Artea smoke checks — fast gateway-level verification that the stack wiring
-# works (subset of the S1-S16 e2e scenarios). Requires `make up` + `make
-# bootstrap` to have completed; uses the credentials bootstrap wrote.
+# works (subset of the S1-S16 e2e scenarios). Requires a bootstrapped stack;
+# uses the credentials bootstrap wrote. Portable across runtimes:
+#   BASE_URL          public gateway URL (beats the recorded GATEWAY_URL)
+#   CREDENTIALS_FILE  credentials path (default e2e/tmp/credentials.env)
+#   RUNTIME           compose (default) | k8s — how the internal-only
+#                     policy-sync healthz probe is exec'd
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-CRED_FILE=e2e/tmp/credentials.env
-[ -f "${CRED_FILE}" ] || { echo "ERROR: ${CRED_FILE} missing — run make bootstrap"; exit 1; }
+RUNTIME="${RUNTIME:-compose}"
+CREDENTIALS_FILE="${CREDENTIALS_FILE:-e2e/tmp/credentials.env}"
+case "${CREDENTIALS_FILE}" in /*) ;; *) CREDENTIALS_FILE="./${CREDENTIALS_FILE}" ;; esac
+[ -f "${CREDENTIALS_FILE}" ] || { echo "ERROR: ${CREDENTIALS_FILE} missing — run make bootstrap"; exit 1; }
 # shellcheck disable=SC1090
-source "./${CRED_FILE}"
-GATEWAY_URL="${GATEWAY_URL:-http://localhost:8080}"
+source "${CREDENTIALS_FILE}"
+# explicit BASE_URL beats the GATEWAY_URL recorded at bootstrap time
+GATEWAY_URL="${BASE_URL:-${GATEWAY_URL:-http://localhost:8080}}"
+# k8s runtime knobs (must match the chart; scripts/k8s-e2e.sh exports them)
+K8S_NAMESPACE="${K8S_NAMESPACE:-}"
+K8S_POLICY_SYNC_DEPLOY="${K8S_POLICY_SYNC_DEPLOY:-artea-policy-sync}"
 
 pass=0; fail=0
 check() { # <description> <expected> <actual>
@@ -43,7 +53,7 @@ check "pypi simple for unpublished name falls through to devpi" 200 \
   "$(code -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/six/")"
 # file links inside the fallthrough page must stay on the gateway origin (/root/...)
 links=$(curl -s -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/six/" \
-  | grep -c 'href="http://localhost:8080/root/pypi/' || true)
+  | grep -c "href=\"${GATEWAY_URL}/root/pypi/" || true)
 check "devpi simple page links route via gateway /root/" yes "$([ "${links}" -gt 0 ] && echo yes || echo no)"
 check "devpi file path w/o auth is denied" 401 "$(code "${GATEWAY_URL}/root/pypi/")"
 
@@ -51,9 +61,15 @@ check "devpi file path w/o auth is denied" 401 "$(code "${GATEWAY_URL}/root/pypi
 check "gitea pypi simple 404s for unpublished name (auth'd)" 404 \
   "$(code -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/api/packages/artea/pypi/simple/six/")"
 
-# 5. policy-sync health (internal-only; via docker exec)
-ps_health=$(docker compose exec -T policy-sync python -c \
-  "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8920/healthz', timeout=3)); print('ok' if d.get('status')=='ok' and d.get('last_sync_ok') else 'bad')")
+# 5. policy-sync health (internal-only; via docker/kubectl exec)
+PS_HEALTH_PY="import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8920/healthz', timeout=3)); print('ok' if d.get('status')=='ok' and d.get('last_sync_ok') else 'bad')"
+if [ "${RUNTIME}" = k8s ]; then
+  kc=(kubectl)
+  [ -n "${K8S_NAMESPACE}" ] && kc=(kubectl -n "${K8S_NAMESPACE}")
+  ps_health=$("${kc[@]}" exec "deploy/${K8S_POLICY_SYNC_DEPLOY}" -- python -c "${PS_HEALTH_PY}")
+else
+  ps_health=$(docker compose exec -T policy-sync python -c "${PS_HEALTH_PY}")
+fi
 check "policy-sync /healthz reports synced" ok "${ps_health}"
 
 echo

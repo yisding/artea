@@ -5,26 +5,54 @@
 # isolated userconfig, pip/twine/build from a venv under e2e/tmp, git for the
 # direct-push governance check (S14).
 #
+# Runtime-portable: the suite only knows BASE_URL; the few stack-mutating
+# steps (S1 health, S15 outage/wipe) switch on RUNTIME:
+#   BASE_URL          public gateway URL (beats the recorded GATEWAY_URL)
+#   CREDENTIALS_FILE  credentials path (default e2e/tmp/credentials.env)
+#   RUNTIME           compose (default) | k8s — docker compose vs kubectl
+# `make k8s-e2e` (scripts/k8s-e2e.sh) wires all of this up for a cluster.
+#
 # Re-runnable: package versions are unique per run, fixed-version fixtures
 # (tinynetrc 0.0.1) are deleted up front, and policy edits are reverted.
 # Exit code is non-zero when any scenario fails; per-scenario PASS/FAIL with
 # logs under e2e/tmp/run-<id>/logs/.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 
 # shellcheck disable=SC1091
 source e2e/lib.sh
 
-for tool in curl jq docker npm python3 git; do
+RUNTIME="${RUNTIME:-compose}" # compose|k8s: how stack-mutating steps run
+case "${RUNTIME}" in compose | k8s) ;; *) die "RUNTIME must be 'compose' or 'k8s', got '${RUNTIME}'" ;; esac
+
+for tool in curl jq npm python3 git; do
   command -v "$tool" >/dev/null || die "required tool '${tool}' not found"
 done
+case "${RUNTIME}" in
+  compose) command -v docker >/dev/null || die "required tool 'docker' not found" ;;
+  k8s) command -v kubectl >/dev/null || die "required tool 'kubectl' not found" ;;
+esac
 
-CRED_FILE=e2e/tmp/credentials.env
-[ -f "${CRED_FILE}" ] || die "${CRED_FILE} missing — run 'make bootstrap' first"
+CREDENTIALS_FILE="${CREDENTIALS_FILE:-e2e/tmp/credentials.env}"
+case "${CREDENTIALS_FILE}" in /*) ;; *) CREDENTIALS_FILE="./${CREDENTIALS_FILE}" ;; esac
+[ -f "${CREDENTIALS_FILE}" ] || die "${CREDENTIALS_FILE} missing — run 'make bootstrap' (or 'make k8s-e2e') first"
 # shellcheck disable=SC1090
-source "./${CRED_FILE}"
-GATEWAY_URL="${GATEWAY_URL:-http://localhost:8080}"
+source "${CREDENTIALS_FILE}"
+# explicit BASE_URL beats the GATEWAY_URL recorded at bootstrap time
+GATEWAY_URL="${BASE_URL:-${GATEWAY_URL:-http://localhost:8080}}"
 GATEWAY_HOSTPORT="${GATEWAY_URL#http://}"
+# webhook target as seen by Gitea (S1 asserts the wiring bootstrap created)
+POLICY_SYNC_URL="${POLICY_SYNC_URL:-http://policy-sync:8920}"
+
+# k8s runtime knobs (must match the chart; scripts/k8s-e2e.sh exports them)
+K8S_NAMESPACE="${K8S_NAMESPACE:-}" # empty = kubectl context default
+K8S_POLICY_SYNC_DEPLOY="${K8S_POLICY_SYNC_DEPLOY:-artea-policy-sync}"
+K8S_DEVPI_DEPLOY="${K8S_DEVPI_DEPLOY:-artea-devpi}"
+K8S_DEVPI_PVC="${K8S_DEVPI_PVC:-artea-devpi-data}"
+# S15/k8s: the verdaccio filter plugin polls policy_url and only fails closed
+# after a grace window of persistent failure (fail_grace_ms, default 60000);
+# must match the chart's plugin config or S15 waits on the wrong clock
+POLICY_GRACE_SECS="${POLICY_GRACE_SECS:-60}"
 
 RUN_ID=$(date +%s)
 ROOT=$(pwd)
@@ -65,8 +93,9 @@ blocked:
 
 NPM_RULES_DIRTY=0
 CONSTRAINTS_DIRTY=0
-POLICY_FILE_REMOVED=0 # S15: /policy/npm-rules.yaml deleted in the live volume
-DEVPI_WIPED=0         # S15: devpi-data wiped, constraints not yet re-synced
+POLICY_FILE_REMOVED=0 # S15/compose: /policy/npm-rules.yaml deleted in the live volume
+POLICY_SYNC_SCALED=0  # S15/k8s: policy-sync scaled to 0 replicas
+DEVPI_WIPED=0         # S15: devpi cache wiped, constraints not yet re-synced
 
 # ---- cleanup (idempotent, tolerates partial runs) ---------------------------------
 cleanup() {
@@ -86,15 +115,25 @@ cleanup() {
   delete_dev1_token "${RO_TOKEN_NAME}" >/dev/null
   delete_dev1_token "${REVOKE_TOKEN_NAME}" >/dev/null
   delete_dev1_token "${S14_TOKEN_NAME}" >/dev/null
-  # S15 partial-failure recovery: put the live policy file back and make sure
+  # S15 partial-failure recovery: put the policy source back and make sure
   # devpi exists with real constraints again (startup sync of policy-sync)
   if [ "${POLICY_FILE_REMOVED}" = 1 ] && [ -s "${WORK}/npm-rules.snapshot" ]; then
     docker compose exec -T --user policysync policy-sync sh -c 'cat > /policy/npm-rules.yaml' \
       < "${WORK}/npm-rules.snapshot" >/dev/null
   fi
+  if [ "${POLICY_SYNC_SCALED}" = 1 ]; then
+    kc scale "deployment/${K8S_POLICY_SYNC_DEPLOY}" --replicas=1 >/dev/null 2>&1
+  fi
   if [ "${DEVPI_WIPED}" = 1 ]; then
-    docker compose up -d --wait devpi >/dev/null 2>&1
-    docker compose restart policy-sync >/dev/null 2>&1
+    if [ "${RUNTIME}" = compose ]; then
+      docker compose up -d --wait devpi >/dev/null 2>&1
+      docker compose restart policy-sync >/dev/null 2>&1
+    else
+      # PVC apply is idempotent; restart triggers policy-sync's startup sync
+      [ -s "${WORK}/devpi-pvc.json" ] && kc apply -f "${WORK}/devpi-pvc.json" >/dev/null 2>&1
+      kc scale "deployment/${K8S_DEVPI_DEPLOY}" --replicas=1 >/dev/null 2>&1
+      kc rollout restart "deployment/${K8S_POLICY_SYNC_DEPLOY}" >/dev/null 2>&1
+    fi
   fi
   exit "$rc"
 }
@@ -152,12 +191,27 @@ scenario() { # <id> <description> <function>
 # ---- S1: bootstrap state ----------------------------------------------------------------
 s1_bootstrap() {
   local c login
-  for c in gitea verdaccio devpi gateway policy-sync; do
-    local health
-    health=$(docker inspect -f '{{.State.Health.Status}}' "$c") || return 1
-    echo "container ${c}: ${health}"
-    [ "$health" = healthy ] || return 1
-  done
+  if [ "${RUNTIME}" = compose ]; then
+    for c in gitea verdaccio devpi gateway policy-sync; do
+      local health
+      health=$(docker inspect -f '{{.State.Health.Status}}' "$c") || return 1
+      echo "container ${c}: ${health}"
+      [ "$health" = healthy ] || return 1
+    done
+  else
+    # name-agnostic: every non-completed pod in the namespace must be Ready
+    # (completed = the bootstrap hook Job); the gateway is probed end-to-end
+    kc get pods -o json | jq -e '
+      ([.items[] | select(.status.phase != "Succeeded")] | length) as $n
+      | ([.items[] | select(.status.phase != "Succeeded")
+          | (.status.conditions // [])[] | select(.type == "Ready" and .status == "True")]
+         | length) == $n and $n > 0' >/dev/null \
+      || { echo "not all pods are Ready:"; kc get pods; return 1; }
+    echo "all pods Ready in namespace ${K8S_NAMESPACE:-<context default>}"
+    [ "$(http_code "${GATEWAY_URL}/-/artea-gateway/health")" = 200 ] \
+      || { echo "gateway health endpoint not reachable via ${GATEWAY_URL}"; return 1; }
+    echo "gateway healthy via ${GATEWAY_URL}"
+  fi
   admin_api GET /user
   [ "$API_CODE" = 200 ] || { echo "admin token rejected (HTTP ${API_CODE})"; return 1; }
   login=$(echo "$API_BODY" | jq -r .login)
@@ -171,8 +225,9 @@ s1_bootstrap() {
   [ "$API_CODE" = 200 ] || { echo "pypi-constraints.txt not seeded"; return 1; }
   admin_api GET /repos/artea/registry-policy/hooks
   [ "$API_CODE" = 200 ] || { echo "cannot list hooks"; return 1; }
-  echo "$API_BODY" | jq -e 'any(.[]; .config.url == "http://policy-sync:8920/hooks/policy" and .active)' >/dev/null \
-    || { echo "policy webhook not wired"; return 1; }
+  echo "$API_BODY" | jq -e --arg hook "${POLICY_SYNC_URL}/hooks/policy" \
+    'any(.[]; .config.url == $hook and .active)' >/dev/null \
+    || { echo "policy webhook not wired (expected ${POLICY_SYNC_URL}/hooks/policy)"; return 1; }
   login=$(curl -sf -H "Authorization: token ${DEV1_TOKEN}" "${GATEWAY_URL}/api/v1/user" | jq -r .login)
   [ "$login" = dev1 ] || { echo "dev1 PAT rejected"; return 1; }
   echo "org, policy repo (both files), webhook, admin+dev1 PATs all present"
@@ -503,28 +558,89 @@ six_blocked() { # fresh '*'-seeded mirror exposes no six files through the gatew
 six_served() {
   curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/six/" | grep -q 'six-1\.'
 }
+# S13/S14 policy pushes leave webhook syncs (with 2/4/8s retries) in flight; one
+# landing right after the wipe would heal the fresh devpi before the '*' seed
+# can be observed. Quiesce = a successful last sync and none started since.
+PS_LAST_SYNC_PY='import json,urllib.request; d=json.load(urllib.request.urlopen("http://127.0.0.1:8920/healthz", timeout=3)); print(d.get("last_sync_ok"), d.get("last_sync_at"))'
+policy_sync_state() { # "<last_sync_ok> <last_sync_at>" via in-container python
+  if [ "${RUNTIME}" = compose ]; then
+    docker compose exec -T policy-sync python -c "${PS_LAST_SYNC_PY}" 2>/dev/null
+  else
+    kc exec "deploy/${K8S_POLICY_SYNC_DEPLOY}" -- python -c "${PS_LAST_SYNC_PY}" 2>/dev/null
+  fi
+}
+policy_sync_quiesced() {
+  local before after
+  before=$(policy_sync_state) || return 1
+  sleep 5 # longer than the first two retry backoffs (2s/4s)
+  after=$(policy_sync_state) || return 1
+  [ "$after" = "$before" ] && [ "${after%% *}" = "True" ]
+}
 
 s15_fail_closed() {
   local snapshot="${WORK}/npm-rules.snapshot" report="${WORK}/s15-report.json" url
-  # --- npm: policy file lost (simulated policy-sync outage) -----------------
-  # exec as the service user so restored files keep the volume's ownership
-  docker compose exec -T --user policysync policy-sync cat /policy/npm-rules.yaml > "$snapshot" \
-    || { echo "cannot snapshot the live policy file"; return 1; }
-  POLICY_FILE_REMOVED=1
-  docker compose exec -T --user policysync policy-sync rm /policy/npm-rules.yaml || return 1
-  wait_for 30 1 "public npm rejected while the policy file is missing" npm_outage_rejected || return 1
-  echo "outage: tarball -> 503, packument -> zero versions (nothing served unfiltered)"
-  docker compose exec -T --user policysync policy-sync sh -c 'cat > /policy/npm-rules.yaml' < "$snapshot" \
-    || { echo "restoring the policy file failed"; return 1; }
-  wait_for 30 1 "npm recovered after restore, no restart" npm_recovered || return 1
-  POLICY_FILE_REMOVED=0
-  echo "recovery: mtime reload picked the restored file up without a verdaccio restart"
+  # --- npm: policy source lost (simulated policy-sync outage) ----------------
+  if [ "${RUNTIME}" = compose ]; then
+    # file-delivery mode: remove the live /policy file out from under verdaccio.
+    # exec as the service user so restored files keep the volume's ownership
+    docker compose exec -T --user policysync policy-sync cat /policy/npm-rules.yaml > "$snapshot" \
+      || { echo "cannot snapshot the live policy file"; return 1; }
+    POLICY_FILE_REMOVED=1
+    docker compose exec -T --user policysync policy-sync rm /policy/npm-rules.yaml || return 1
+    wait_for 30 1 "public npm rejected while the policy file is missing" npm_outage_rejected || return 1
+    echo "outage: tarball -> 503, packument -> zero versions (nothing served unfiltered)"
+    docker compose exec -T --user policysync policy-sync sh -c 'cat > /policy/npm-rules.yaml' < "$snapshot" \
+      || { echo "restoring the policy file failed"; return 1; }
+    wait_for 30 1 "npm recovered after restore, no restart" npm_recovered || return 1
+    POLICY_FILE_REMOVED=0
+    echo "recovery: mtime reload picked the restored file up without a verdaccio restart"
+  else
+    # HTTP-delivery mode (policy_url): an outage = policy-sync unreachable. The
+    # plugin serves last-known-good until its grace window expires, then fails
+    # closed — the rejected state shows up only after ~POLICY_GRACE_SECS.
+    kc scale "deployment/${K8S_POLICY_SYNC_DEPLOY}" --replicas=0 \
+      || { echo "scaling policy-sync to 0 failed"; return 1; }
+    POLICY_SYNC_SCALED=1
+    wait_for "$((POLICY_GRACE_SECS + 45))" 3 "public npm rejected once the fail-closed grace window expires" \
+      npm_outage_rejected || return 1
+    echo "outage: tarball -> 503, packument -> zero versions (nothing served unfiltered)"
+    kc scale "deployment/${K8S_POLICY_SYNC_DEPLOY}" --replicas=1 \
+      || { echo "scaling policy-sync back up failed"; return 1; }
+    kc rollout status "deployment/${K8S_POLICY_SYNC_DEPLOY}" --timeout=120s >/dev/null \
+      || { echo "policy-sync did not come back"; return 1; }
+    wait_for 45 2 "npm recovered after policy-sync is back" npm_recovered || return 1
+    POLICY_SYNC_SCALED=0
+    echo "recovery: policy_url poll picked the policy back up without a verdaccio restart"
+  fi
 
   # --- pypi: wiped devpi cache comes back fail-closed until policy-sync syncs
+  wait_for 60 1 "policy-sync idle (no in-flight sync to race the wipe)" policy_sync_quiesced || return 1
   DEVPI_WIPED=1
-  docker compose rm -sf devpi >/dev/null || { echo "removing devpi failed"; return 1; }
-  docker volume rm artea_devpi-data >/dev/null || { echo "removing devpi-data failed"; return 1; }
-  docker compose up -d --wait devpi >/dev/null || { echo "recreating devpi failed"; return 1; }
+  if [ "${RUNTIME}" = compose ]; then
+    docker compose rm -sf devpi >/dev/null || { echo "removing devpi failed"; return 1; }
+    docker volume rm artea_devpi-data >/dev/null || { echo "removing devpi-data failed"; return 1; }
+    docker compose up -d --wait devpi >/dev/null || { echo "recreating devpi failed"; return 1; }
+  else
+    # capture a minimal PVC manifest so the wipe can recreate it 1:1
+    kc get pvc "${K8S_DEVPI_PVC}" -o json | jq '{apiVersion, kind,
+        metadata: {name: .metadata.name, namespace: .metadata.namespace,
+                   labels: (.metadata.labels // {})},
+        spec: {accessModes: .spec.accessModes,
+               resources: {requests: .spec.resources.requests},
+               storageClassName: .spec.storageClassName}}' > "${WORK}/devpi-pvc.json" \
+      || { echo "cannot snapshot PVC ${K8S_DEVPI_PVC}"; return 1; }
+    kc scale "deployment/${K8S_DEVPI_DEPLOY}" --replicas=0 \
+      || { echo "scaling devpi to 0 failed"; return 1; }
+    # delete blocks (pvc-protection finalizer) until the devpi pod is gone
+    kc delete pvc "${K8S_DEVPI_PVC}" --timeout=90s >/dev/null \
+      || { echo "removing devpi PVC failed"; return 1; }
+    kc apply -f "${WORK}/devpi-pvc.json" >/dev/null \
+      || { echo "recreating devpi PVC failed"; return 1; }
+    kc scale "deployment/${K8S_DEVPI_DEPLOY}" --replicas=1 \
+      || { echo "scaling devpi back up failed"; return 1; }
+    kc rollout status "deployment/${K8S_DEVPI_DEPLOY}" --timeout=180s >/dev/null \
+      || { echo "devpi did not come back on the fresh PVC"; return 1; }
+  fi
   wait_for 15 1 "fresh mirror serves nothing (entrypoint's '*' seed)" six_blocked || return 1
   # heal via the real trigger: a policy-repo push webhook fires a full sync,
   # and policy-sync compares the LIVE index config, so the unchanged
