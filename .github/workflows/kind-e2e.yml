@@ -189,8 +189,8 @@ jobs:
         # scripts/k8s-e2e.sh); the fallback greps the known keys out of the
         # raw logs
         run: |
+          mkdir -p e2e/tmp # before umask: 177 would strip the dir's x bit
           umask 177
-          mkdir -p e2e/tmp
           kubectl logs -n "$NAMESPACE" "${{ steps.bootstrap.outputs.job }}" --tail=-1 \
             > "$RUNNER_TEMP/bootstrap.log"
           sed -n '/^----- BEGIN ARTEA CREDENTIALS -----$/,/^----- END ARTEA CREDENTIALS -----$/p' \
