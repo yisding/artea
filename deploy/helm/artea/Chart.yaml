@@ -1,0 +1,21 @@
+apiVersion: v2
+name: artea
+description: >-
+  Artea — private npm + PyPI registry with pull-through caching (Gitea +
+  Verdaccio + devpi behind one nginx gateway). Umbrella chart: the official
+  Gitea and Verdaccio charts plus Artea's own templates for devpi,
+  policy-sync, the gateway and the bootstrap Job (docs/ARCHITECTURE.md,
+  "Kubernetes deployment").
+type: application
+version: 0.1.0
+# Tracks the Artea repo, not any single upstream component.
+appVersion: "0.1.0"
+dependencies:
+  # Official Gitea chart (https://gitea.com/gitea/helm-gitea), published as OCI.
+  - name: gitea
+    version: 12.6.0
+    repository: oci://docker.gitea.com/charts
+  # Official Verdaccio chart (https://github.com/verdaccio/charts).
+  - name: verdaccio
+    version: 4.31.0
+    repository: https://charts.verdaccio.org

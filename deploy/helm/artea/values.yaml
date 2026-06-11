@@ -1,0 +1,378 @@
+# Artea umbrella chart values.
+#
+# Naming is a fixed contract (one release per namespace, mirroring the compose
+# "Fixed contracts" table): every workload/Service is named artea-<component>
+# regardless of the release name (subcharts via fullnameOverride, our own
+# templates via templates/_helpers.tpl). The cluster-internal DNS contract:
+#
+#   artea-gateway:80        nginx gateway (the single entrypoint)
+#   artea-gitea-http:3000   Gitea (identity, PATs, private packages)
+#   artea-verdaccio:4873    Verdaccio (npm pull-through)
+#   artea-devpi:3141        devpi (pypi pull-through)
+#   artea-policy-sync:8920  policy-sync (webhook + policy HTTP endpoint)
+#
+# If you rename a component you must update every cross-reference in this file
+# (gateway.upstreams, verdaccio.configMap, gitea webhook ALLOWED_HOST_LIST).
+
+global:
+  # The single public base URL (no trailing slash). Drives Gitea's ROOT_URL and
+  # devpi's --outside-url so generated package/file URLs resolve through the
+  # gateway. Local dev contract: kubectl port-forward svc/artea-gateway 8080:80.
+  baseUrl: http://localhost:8080
+
+# ---- secrets -----------------------------------------------------------------
+# Dev placeholders, mirroring .env.example — CHANGE EVERY VALUE for any
+# non-throwaway install (e.g. helm install -f my-secrets.yaml). Rendered into
+# Secrets artea-admin / artea-secrets / artea-policy-sync (templates/secrets.yaml).
+# POLICY_SYNC_TOKEN is NOT set here: the bootstrap Job mints it and patches the
+# artea-policy-sync Secret in-cluster (helm upgrade preserves it via lookup).
+secrets:
+  # Gitea bootstrap admin (fixed contract: artea-admin). Consumed by the Gitea
+  # subchart (gitea.gitea.admin.existingSecret) and the bootstrap Job.
+  adminUsername: artea-admin
+  adminPassword: change-me-admin
+  # Demo user created by bootstrap for e2e/smoke runs.
+  dev1Password: change-me-dev1
+  # devpi `root` password; also used by policy-sync to push constraints.
+  devpiRootPassword: change-me-devpi
+  # HMAC secret of the Gitea push webhook on artea/registry-policy.
+  webhookSecret: change-me-webhook
+
+# ---- gateway (our template: stock nginx + ConfigMap'd nginx.conf/njs) ---------
+gateway:
+  # Stateless: the only component that defaults to >1 replica. The auth_request
+  # cache is per-pod, which only costs Gitea one extra auth round-trip per pod.
+  replicas: 2
+  image:
+    repository: nginx
+    tag: "1.29.4"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 80
+  # Cluster DNS names baked into nginx.conf (files/gateway/nginx.conf). nginx
+  # resolves them at startup; K8s Service ClusterIPs are stable, so per-request
+  # re-resolution (the docker-compose pattern) is not needed.
+  upstreams:
+    gitea: artea-gitea-http:3000
+    verdaccio: artea-verdaccio:4873
+    devpi: artea-devpi:3141
+  resources: {}
+  # Optional Ingress in front of the gateway: TLS + host routing ONLY — all
+  # routing logic (auth_request, 404-fallback, normalization) stays in nginx
+  # and is never ported into ingress annotations (docs/ARCHITECTURE.md).
+  # Local dev uses port-forward instead.
+  ingress:
+    enabled: false
+    className: ""
+    host: ""
+    annotations: {}
+    # - secretName: artea-tls
+    #   hosts: [registry.example.com]
+    tls: []
+
+# ---- devpi (our template: image ghcr.io/yisding/artea-devpi) ------------------
+devpi:
+  image:
+    repository: ghcr.io/yisding/artea-devpi
+    # CI builds/pushes this image; production should pin `digest` (takes
+    # precedence over tag).
+    tag: main
+    digest: ""
+    pullPolicy: IfNotPresent
+  # Disposable pypi pull-through cache: safe to delete, a fresh volume is
+  # seeded fail-closed ('*' constraint) until policy-sync syncs.
+  persistence:
+    size: 10Gi
+    storageClass: ""
+  resources: {}
+
+# ---- policy-sync (our template: image ghcr.io/yisding/artea-policy-sync) ------
+policySync:
+  image:
+    repository: ghcr.io/yisding/artea-policy-sync
+    tag: main
+    digest: ""
+    pullPolicy: IfNotPresent
+  # Slow-poll fallback interval (seconds) behind the push webhook.
+  pollSeconds: 300
+  resources: {}
+
+# ---- bootstrap Job (post-install/post-upgrade hook) ---------------------------
+bootstrap:
+  enabled: true
+  image:
+    repository: ghcr.io/yisding/artea-bootstrap
+    tag: main
+    digest: ""
+    pullPolicy: IfNotPresent
+  # Bootstrap waits for Gitea health and the first policy sync; on a fresh
+  # cluster image pulls + PVC provisioning can be slow.
+  activeDeadlineSeconds: 1200
+  backoffLimit: 10
+  resources: {}
+
+# ================================================================================
+# Subchart: official Gitea chart (oci://docker.gitea.com/charts/gitea).
+# Translation of gitea/app.ini for the chart-managed (rootless) image — only
+# semantic settings are carried over; filesystem paths, secrets handling and
+# database/cache/session/queue wiring are owned by the chart.
+# ================================================================================
+gitea:
+  fullnameOverride: artea-gitea
+  image:
+    # Keep in sync with GITEA_VERSION in .env / gitea/UPSTREAM.
+    tag: "1.26.2"
+  service:
+    http:
+      # The chart defaults to a headless service (clusterIP: None), which would
+      # make the gateway's startup-time DNS resolution stick to a pod IP.
+      # Empty string = allocate a normal stable ClusterIP.
+      clusterIP: ""
+  ingress:
+    # Never expose Gitea directly; the gateway is the single entrypoint.
+    enabled: false
+  persistence:
+    # gitea-data: THE store of record (users, repos, private packages).
+    claimName: artea-gitea-data
+    size: 10Gi
+  # Mount the Artea custom/ overlay (de-gitted navbar + packages landing page)
+  # over GITEA_CUSTOM/templates (the chart runs with GITEA_CUSTOM=/data/gitea).
+  # The ConfigMap is rendered by templates/gitea-custom-templates.yaml from
+  # files/gitea-templates/ (copies of gitea/custom/templates/ — keep in sync).
+  extraVolumes:
+    - name: artea-custom-templates
+      configMap:
+        name: artea-gitea-custom-templates
+        items:
+          - key: home.tmpl
+            path: home.tmpl
+          - key: base__head_navbar.tmpl
+            path: base/head_navbar.tmpl
+  extraContainerVolumeMounts:
+    - name: artea-custom-templates
+      mountPath: /data/gitea/templates
+      readOnly: true
+  gitea:
+    admin:
+      # Keys `username`/`password` come from our artea-admin Secret
+      # (templates/secrets.yaml) so the bootstrap Job uses the same credential.
+      existingSecret: artea-admin
+      passwordMode: keepUpdated
+    # ROOT_URL must be derived from global.baseUrl; gitea.config is not
+    # templated by the chart but additionalConfigFromEnvs is (tpl), and
+    # GITEA__section__KEY env vars override the generated app.ini.
+    additionalConfigFromEnvs:
+      - name: GITEA__SERVER__ROOT_URL
+        # CRITICAL: the public gateway URL, not the cluster URL — package
+        # tarball/file URLs generated by Gitea must resolve through the gateway.
+        value: '{{ trimSuffix "/" .Values.global.baseUrl }}/'
+      - name: GITEA__SERVER__DOMAIN
+        value: '{{ regexReplaceAll "^https?://([^/:]+).*$" .Values.global.baseUrl "${1}" }}'
+    # Semantic translation of gitea/app.ini (see that file for the rationale of
+    # every key). database/session/cache/queue are auto-wired to the
+    # postgresql/valkey subcharts; security secrets are chart-generated.
+    config:
+      APP_NAME: Artea Package Registry
+      RUN_MODE: prod
+      server:
+        # Force ROOT_URL (env above) instead of deriving from the Host header.
+        PUBLIC_URL_DETECTION: never
+        # Packages-centric landing for anonymous "/" (org artea package list).
+        LANDING_PAGE: /artea/-/packages
+        # De-git: registry-only over HTTP, no SSH clone surface.
+        DISABLE_SSH: true
+        START_SSH_SERVER: false
+        LFS_START_SERVER: false
+      security:
+        INSTALL_LOCK: true
+        # Gitea sits behind the gateway (and optionally an Ingress); affects
+        # logging only — reverse-proxy authentication stays disabled.
+        REVERSE_PROXY_LIMIT: 1
+        REVERSE_PROXY_TRUSTED_PROXIES: "*"
+      service:
+        # Accounts are SSO- or admin-managed only (R1).
+        DISABLE_REGISTRATION: true
+        SHOW_REGISTRATION_BUTTON: false
+        # Anonymous access: none, anywhere.
+        REQUIRE_SIGNIN_VIEW: true
+        SHOW_MILESTONES_DASHBOARD_PAGE: false
+        DEFAULT_ALLOW_CREATE_ORGANIZATION: false
+        DEFAULT_KEEP_EMAIL_PRIVATE: true
+      admin:
+        DISABLE_REGULAR_ORG_CREATION: true
+      openid:
+        ENABLE_OPENID_SIGNIN: false
+        ENABLE_OPENID_SIGNUP: false
+      repository:
+        DEFAULT_BRANCH: main
+        # De-git: code + pulls only (policy changes go through PRs).
+        DISABLED_REPO_UNITS: repo.issues,repo.ext_issues,repo.wiki,repo.ext_wiki,repo.projects,repo.releases,repo.actions
+        DEFAULT_REPO_UNITS: repo.code,repo.pulls
+        DISABLE_MIGRATIONS: true
+        DISABLE_STARS: true
+      mirror:
+        ENABLED: false
+      packages:
+        # The reason this whole service exists.
+        ENABLED: true
+      actions:
+        ENABLED: false
+      webhook:
+        # Gitea refuses webhooks to private hosts unless allowlisted; the
+        # policy push webhook targets the policy-sync Service.
+        ALLOWED_HOST_LIST: artea-policy-sync
+      mailer:
+        ENABLED: false
+      cron.update_checker:
+        ENABLED: false
+      federation:
+        ENABLED: false
+      other:
+        SHOW_FOOTER_VERSION: false
+        SHOW_FOOTER_TEMPLATE_LOAD_TIME: false
+        SHOW_FOOTER_POWERED_BY: false
+        ENABLE_SITEMAP: false
+        ENABLE_FEED: false
+  # Single-node defaults: plain postgresql + standalone valkey (the chart's
+  # simplest sane shape; the chart wires database/cache/session/queue to them).
+  # Production/HA toggle: flip to postgresql-ha + valkey-cluster, set
+  # replicaCount > 1 and a RWX persistence.accessModes — see the gitea chart's
+  # HA documentation. Only one of each pair may be enabled.
+  postgresql:
+    enabled: true
+  postgresql-ha:
+    enabled: false
+  valkey:
+    enabled: true
+    # Cluster-internal cache; override for defense in depth if desired.
+    # (The valkey chart misbehaves with special characters in passwords.)
+  valkey-cluster:
+    enabled: false
+
+# ================================================================================
+# Subchart: official Verdaccio chart (https://charts.verdaccio.org).
+# Stock verdaccio/verdaccio image (R7); our two locally-built plugins are
+# delivered by an init container that copies them from the assets image
+# (deploy/docker/verdaccio-assets) into an emptyDir mounted read-only at
+# /verdaccio/plugins. Config below = verdaccio/config.yaml adapted for K8s:
+# policy via policy_url (HTTP from policy-sync) instead of the shared volume.
+# ================================================================================
+verdaccio:
+  fullnameOverride: artea-verdaccio
+  image:
+    repository: verdaccio/verdaccio
+    # Keep in sync with VERDACCIO_VERSION in .env.
+    tag: "6.7.2"
+  replicaCount: 1
+  service:
+    port: 4873
+  # Custom key (ignored by the upstream chart itself) consumed by the tpl'd
+  # extraInitContainers entry below. CI builds/pushes the assets image from
+  # deploy/docker/verdaccio-assets/Dockerfile; pin `digest` in production.
+  pluginAssets:
+    image:
+      repository: ghcr.io/yisding/artea-verdaccio-assets
+      tag: main
+      digest: ""
+      pullPolicy: IfNotPresent
+  extraInitContainers:
+    - name: copy-plugins
+      image: '{{ .Values.pluginAssets.image.repository }}{{ if .Values.pluginAssets.image.digest }}@{{ .Values.pluginAssets.image.digest }}{{ else }}:{{ .Values.pluginAssets.image.tag }}{{ end }}'
+      imagePullPolicy: '{{ .Values.pluginAssets.image.pullPolicy }}'
+      # cp -a keeps the pnpm-relative symlinks inside the tree intact; chmod
+      # guarantees readability for the verdaccio uid (10001).
+      command: [sh, -ec, "cp -a /plugins/. /target/ && chmod -R a+rX /target"]
+      volumeMounts:
+        - name: plugins
+          mountPath: /target
+  persistence:
+    # Disposable npm pull-through cache (verdaccio-storage in compose).
+    enabled: true
+    size: 8Gi
+    volumes:
+      - name: plugins
+        emptyDir: {}
+    mounts:
+      - name: plugins
+        mountPath: /verdaccio/plugins
+        readOnly: true
+  # No htpasswd: auth is the auth-gitea plugin (secrets.htpasswd stays empty).
+  configMap: |
+    # Verdaccio config for Artea on Kubernetes — read-only npm pull-through
+    # cache behind the gateway. Adapted from verdaccio/config.yaml (compose):
+    # - listen: omitted (the chart's VERDACCIO_PORT env owns it)
+    # - policy_file -> policy_url: policy is fetched over HTTP from policy-sync
+    #   (no shared volume / RWX in K8s); the plugin polls with ETag, keeps
+    #   last-known-good in memory, and fails closed after a grace window.
+
+    # chart-managed PVC mounted at /verdaccio/storage (image default data dir)
+    storage: /verdaccio/storage/data
+
+    # emptyDir populated by the copy-plugins init container — the loader
+    # resolves <dir>/verdaccio-<name>
+    plugins: /verdaccio/plugins
+
+    # gateway serves us at <baseUrl>/npm/ and strips the prefix; url_prefix
+    # makes generated tarball/metadata URLs resolve back through it
+    url_prefix: /npm/
+
+    # no anonymous access anywhere (ARCHITECTURE.md auth model) — the web UI
+    # has no per-user auth gate in verdaccio 6, so it is disabled outright
+    web:
+      enable: false
+
+    auth:
+      # replaces htpasswd entirely: validates user:PAT against Gitea and maps
+      # org/team membership to groups
+      auth-gitea:
+        gitea_url: http://artea-gitea-http:3000
+        # 30s (matches the gateway auth_request cache): keeps worst-case PAT
+        # revocation latency inside the 60s budget (S12)
+        cache_ttl_ms: 30000
+
+    filters:
+      # policy over HTTP from policy-sync; missing/unparsable policy FAILS
+      # CLOSED (public packages rejected)
+      filter-artea:
+        policy_url: http://artea-policy-sync:8920/policy/npm-rules.yaml
+
+    uplinks:
+      npmjs:
+        url: https://registry.npmjs.org/
+        cache: true
+        maxage: 2m
+        max_fails: 5
+        fail_timeout: 5m
+
+    packages:
+      # private scope: defense in depth. Clients route @artea to Gitea
+      # themselves; if one is misconfigured we still deny everything here —
+      # no access, no publish, no proxy, so private names never leak to npmjs.
+      '@artea/*':
+        access: []
+        publish: []
+        unpublish: []
+
+      # everything else: authenticated pull-through of npmjs. Publish is denied
+      # for everyone — Verdaccio is read-only; the only writable surface is Gitea.
+      '**':
+        access: $authenticated
+        publish: []
+        unpublish: []
+        proxy: npmjs
+
+    middlewares:
+      # proxy `npm audit` to the uplink
+      audit:
+        enabled: true
+      # same package as in filters: (one package, two plugin roles) — the
+      # middleware 403s direct tarball downloads of blocked versions (S13) and
+      # 503s them while the policy is unavailable (fail-closed, S15)
+      filter-artea:
+        policy_url: http://artea-policy-sync:8920/policy/npm-rules.yaml
+
+    server:
+      keepAliveTimeout: 60
+
+    log: { type: stdout, format: pretty, level: info }

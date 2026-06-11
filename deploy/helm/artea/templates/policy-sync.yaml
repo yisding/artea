@@ -1,0 +1,91 @@
+# policy-sync: receives the Gitea push webhook, fetches the policy files, and
+# (K8s mode) serves npm-rules.yaml over HTTP to the Verdaccio filter plugin —
+# GET /policy/npm-rules.yaml — instead of writing to a shared volume (no RWX).
+# Constraints are still pushed into devpi. POLICY_SYNC_TOKEN is minted by the
+# bootstrap Job, which patches the artea-policy-sync Secret and restarts this
+# Deployment; until then the service idles with failing syncs.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "artea.fullname" "policy-sync" }}
+  labels:
+    {{- include "artea.labels" (dict "ctx" $ "component" "policy-sync") | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "artea.selectorLabels" (dict "ctx" $ "component" "policy-sync") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "artea.selectorLabels" (dict "ctx" $ "component" "policy-sync") | nindent 8 }}
+      annotations:
+        # roll on webhook-secret/devpi-password changes (the bootstrap-managed
+        # token Secret is excluded: bootstrap restarts the Deployment itself)
+        checksum/secrets: {{ printf "%s/%s" .Values.secrets.webhookSecret .Values.secrets.devpiRootPassword | sha256sum }}
+    spec:
+      containers:
+        - name: policy-sync
+          image: {{ include "artea.image" .Values.policySync.image | quote }}
+          imagePullPolicy: {{ .Values.policySync.image.pullPolicy }}
+          env:
+            # HTTP-only mode: no /policy volume in K8s — an unset path would
+            # make every sync fail trying to write /policy/npm-rules.yaml
+            - name: POLICY_FILE_PATH
+              value: ""
+            - name: GITEA_URL
+              value: {{ include "artea.giteaUrl" . | quote }}
+            - name: DEVPI_URL
+              value: {{ include "artea.devpiUrl" . | quote }}
+            - name: POLICY_SYNC_POLL_SECONDS
+              value: {{ .Values.policySync.pollSeconds | quote }}
+            - name: POLICY_SYNC_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "artea.fullname" "policy-sync" }}
+                  key: POLICY_SYNC_TOKEN
+            - name: POLICY_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "artea.fullname" "secrets" }}
+                  key: POLICY_WEBHOOK_SECRET
+            - name: DEVPI_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "artea.fullname" "secrets" }}
+                  key: DEVPI_ROOT_PASSWORD
+          ports:
+            - name: http
+              containerPort: 8920
+          # /healthz answers 200 even while syncs fail (fail-closed consumers
+          # tolerate that); it only proves the HTTP surface is up.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          {{- with .Values.policySync.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "artea.fullname" "policy-sync" }}
+  labels:
+    {{- include "artea.labels" (dict "ctx" $ "component" "policy-sync") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8920
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "artea.selectorLabels" (dict "ctx" $ "component" "policy-sync") | nindent 4 }}

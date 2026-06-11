@@ -1,0 +1,19 @@
+Artea is deploying. The single entrypoint is the gateway Service:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/artea-gateway 8080:{{ .Values.gateway.service.port }}
+
+Public base URL (global.baseUrl): {{ .Values.global.baseUrl }}
+(Gitea ROOT_URL and devpi outside-url are derived from it; the port-forward
+above must match it for generated package URLs to resolve.)
+
+Bootstrap runs as a post-install/post-upgrade Job; watch it with:
+
+  kubectl -n {{ .Release.Namespace }} logs -f job/artea-bootstrap
+
+When it completes, sign in as {{ .Values.secrets.adminUsername }} and see
+docs/guides/kubernetes.md for client setup, secrets and upgrades.
+{{- if eq .Values.secrets.adminPassword "change-me-admin" }}
+
+WARNING: .Values.secrets.* still hold the dev placeholders — change every
+secret for any non-throwaway install.
+{{- end }}

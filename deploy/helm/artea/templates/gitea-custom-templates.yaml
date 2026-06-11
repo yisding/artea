@@ -1,0 +1,19 @@
+# Gitea custom/ overlay (de-gitted navbar + packages landing page), mounted
+# over GITEA_CUSTOM/templates by the Gitea subchart (gitea.extraVolumes +
+# gitea.extraContainerVolumeMounts in values.yaml).
+#
+# files/gitea-templates/ holds COPIES of gitea/custom/templates/ — Helm cannot
+# read outside the chart root. Keep them in sync when the overlay changes; the
+# key base__head_navbar.tmpl is re-pathed to base/head_navbar.tmpl by the
+# volume items (ConfigMap keys cannot contain '/').
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "artea.fullname" "gitea-custom-templates" }}
+  labels:
+    {{- include "artea.labels" (dict "ctx" $ "component" "gitea") | nindent 4 }}
+data:
+  home.tmpl: |
+{{ .Files.Get "files/gitea-templates/home.tmpl" | indent 4 }}
+  base__head_navbar.tmpl: |
+{{ .Files.Get "files/gitea-templates/base__head_navbar.tmpl" | indent 4 }}

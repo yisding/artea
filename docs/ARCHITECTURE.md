@@ -202,6 +202,44 @@ UI, disable migrations/mirrors, disable RSS/federation surface. Template overlay
 without source patches gets documented in `gitea/README.md` and deferred — repos
 must remain functional anyway for `registry-policy`.
 
+## Kubernetes deployment (`deploy/helm/artea`)
+
+The compose stack is the dev/reference deployment; Kubernetes is the production
+shape. R7 extends to deployment artifacts: **reuse official upstream charts**.
+
+- **Umbrella Helm chart** at `deploy/helm/artea`: dependencies = the official Gitea
+  chart and the official Verdaccio chart; our own templates exist ONLY for devpi,
+  policy-sync, the gateway, and the bootstrap Job/RBAC. The stock Verdaccio *image*
+  is mandatory; if the official chart's values cannot deliver our plugins/config, the
+  documented fallback is a minimal in-house Deployment template using the stock image
+  plus an initContainer that copies built plugins from an assets image.
+- **Gateway stays the routing brain**: a stock-nginx Deployment with the existing
+  `nginx.conf` + njs delivered via ConfigMap (upstream hosts parametrized to cluster
+  DNS names). An Ingress in front does TLS and host routing ONLY — `auth_request`,
+  the Gitea-first 404-fallback, and PEP 503 normalization are never ported into
+  ingress annotations. Single public base URL preserved.
+- **Policy delivery over HTTP in K8s** (no shared volume, no RWX): the filter plugin
+  supports `policy_url` as a first-class alternative to the file — it polls
+  policy-sync's `GET /policy/npm-rules.yaml` every 10s with ETag, keeps
+  last-known-good in memory, and fails closed after a grace window of persistent
+  failure. policy-sync serves that endpoint (cluster-internal). Compose keeps file
+  mode; both modes are tested.
+- **Bootstrap as a Helm hook Job**: same `scripts/bootstrap.sh` logic and idempotency
+  contract, with a token-sink abstraction — `env-file` mode (compose) vs `k8s-secret`
+  mode (patches the policy-sync Secret via the API under a namespace-scoped Role and
+  triggers a rollout). Runs post-install and post-upgrade.
+- **State**: gitea-data PVC is the only store of record; devpi/verdaccio cache PVCs
+  are safe to delete (the fail-closed seed makes cache loss benign). Default
+  `replicas: 1` everywhere except the stateless gateway.
+- **Images**: `ghcr.io/yisding/artea-{devpi,policy-sync,bootstrap,verdaccio-assets}`,
+  digest-pinned in values; CI builds/pushes them. Locally, colima's docker-runtime
+  k3s sees locally-built images directly.
+- **Local dev contract**: `colima start --kubernetes` (k3s), then
+  `kubectl port-forward svc/<gateway> 8080:80` — the e2e suite only knows BASE_URL,
+  so S1–S16 run unchanged against compose or K8s.
+- **CI**: GitHub Actions — GHCR image builds, plus a kind job that helm-installs the
+  chart and runs the full e2e suite against it.
+
 ## Scale-out design (beyond v1 — do not implement, do not preclude)
 
 - **New format recipe**: (1) private publish = enable Gitea's existing endpoint for

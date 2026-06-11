@@ -1,0 +1,44 @@
+{{- if .Values.bootstrap.enabled }}
+# RBAC for the bootstrap Job's k8s-secret token sink: write the freshly minted
+# svc-policy PAT into the artea-policy-sync Secret and rollout-restart the
+# policy-sync Deployment. Namespace-scoped and pinned to those two resource
+# names — bootstrap can touch nothing else. Regular (non-hook) resources so
+# they exist before the post-install hook Job runs.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "artea.fullname" "bootstrap" }}
+  labels:
+    {{- include "artea.labels" (dict "ctx" $ "component" "bootstrap") | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "artea.fullname" "bootstrap" }}
+  labels:
+    {{- include "artea.labels" (dict "ctx" $ "component" "bootstrap") | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [{{ include "artea.fullname" "policy-sync" | quote }}]
+    verbs: [get, patch]
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [{{ include "artea.fullname" "policy-sync" | quote }}]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "artea.fullname" "bootstrap" }}
+  labels:
+    {{- include "artea.labels" (dict "ctx" $ "component" "bootstrap") | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "artea.fullname" "bootstrap" }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "artea.fullname" "bootstrap" }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
