@@ -6,7 +6,14 @@ PROJECT := artea
 UTIL_IMAGE ?= alpine:3.22
 BACKUP_DIR := backups
 
-.PHONY: help render-configs secrets plugins up down logs bootstrap smoke e2e clean destroy backup restore
+.PHONY: help render-configs secrets plugins up down logs bootstrap smoke e2e clean destroy backup restore \
+	k8s-deploy k8s-e2e k8s-down
+
+# kubernetes flow (chart by deploy/helm/artea; see docs/ARCHITECTURE.md)
+HELM_RELEASE ?= artea
+HELM_CHART ?= deploy/helm/artea
+K8S_NAMESPACE ?= artea
+HELM_VALUES ?= deploy/helm/artea/values-local.yaml
 
 help: ## list available targets
 	@grep -E '^[a-z0-9-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "%-10s %s\n", $$1, $$2}'
@@ -40,6 +47,18 @@ smoke: ## gateway-level smoke checks (requires up + bootstrap)
 
 e2e: smoke ## scenario suite S1-S17 (requires up + bootstrap)
 	./e2e/run.sh
+
+k8s-deploy: ## helm install/upgrade the chart (bootstrap runs as a chart hook Job)
+	helm upgrade --install $(HELM_RELEASE) $(HELM_CHART) \
+		--namespace $(K8S_NAMESPACE) --create-namespace \
+		$(if $(wildcard $(HELM_VALUES)),--values $(HELM_VALUES),) \
+		--wait --timeout 10m
+
+k8s-e2e: ## smoke + S1-S16 against the cluster (port-forward, RUNTIME=k8s)
+	K8S_NAMESPACE=$(K8S_NAMESPACE) ./scripts/k8s-e2e.sh
+
+k8s-down: ## uninstall the chart (PVCs survive; delete the namespace to wipe)
+	helm uninstall $(HELM_RELEASE) --namespace $(K8S_NAMESPACE)
 
 # clean wipes only what refills itself; gitea-data (users, private packages,
 # PATs — the store of record) survives. Full wipe = `make destroy`.

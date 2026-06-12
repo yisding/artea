@@ -2,7 +2,7 @@
   "name": "verdaccio-filter-artea",
   "version": "0.1.0",
   "private": true,
-  "description": "Verdaccio metadata filter + tarball middleware: blocks packages, scopes and semver ranges listed in /policy/npm-rules.yaml, failing closed when the policy is unavailable",
+  "description": "Verdaccio metadata filter + tarball middleware: blocks packages, scopes and semver ranges listed in npm-rules.yaml (policy_file on the shared volume, or policy_url polled from policy-sync), failing closed when the policy is unavailable",
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

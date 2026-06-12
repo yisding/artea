@@ -102,6 +102,17 @@ export function isVersionBlocked(policy: CompiledPolicy, name: string, version: 
 }
 
 /**
+ * Policy source shared by the filter and middleware roles: both call current()
+ * per request and act on the same PolicyState semantics, regardless of whether
+ * the policy comes from a file (compose) or over HTTP (K8s).
+ */
+export interface PolicyLoader {
+  current(): PolicyState;
+  /** Stops background work (HTTP polling). No-op for the file loader. */
+  stop(): void;
+}
+
+/**
  * Loads and caches the policy file — the single code path shared by the filter and
  * middleware roles. Re-reads when the mtime changes (cheap stat per request).
  * Default is fail-closed: a missing or unparsable file yields { ok: false } and
@@ -109,7 +120,7 @@ export function isVersionBlocked(policy: CompiledPolicy, name: string, version: 
  * fail_open restores the legacy behavior (missing = empty policy, unparsable = keep
  * the last good policy).
  */
-export class PolicyLoader {
+export class FilePolicyLoader implements PolicyLoader {
   private readonly policyFile: string;
   private readonly failOpen: boolean;
   private readonly logger: Logger;
@@ -179,4 +190,204 @@ export class PolicyLoader {
     this.lastMtimeMs = mtimeMs;
     return this.state;
   }
+
+  public stop(): void {
+    // nothing to stop: the file loader has no background work
+  }
+}
+
+export interface HttpLoaderOptions {
+  url: string;
+  pollIntervalMs: number;
+  /** How long polls may keep failing before fail-closed kicks in. */
+  failGraceMs: number;
+  failOpen: boolean;
+  now?: () => number; // injectable clock so tests control the grace window
+}
+
+/**
+ * Polls a policy-sync HTTP endpoint (K8s mode: no shared volume) with
+ * ETag/If-None-Match. Failure semantics differ from the file loader because the
+ * network makes transient failures normal:
+ * - cold start with nothing fetched yet = fail closed immediately;
+ * - 200 swaps the active policy, 304 keeps it;
+ * - any failed refresh (network error, non-2xx, unparsable body) keeps the
+ *   last-known-good policy until failures persist past failGraceMs, then fail
+ *   closed; the next successful poll recovers automatically.
+ * fail_open never rejects: cold start serves an empty policy and last-known-good
+ * is kept indefinitely.
+ */
+export class HttpPolicyLoader implements PolicyLoader {
+  private readonly url: string;
+  private readonly failGraceMs: number;
+  private readonly failOpen: boolean;
+  private readonly requestTimeoutMs: number;
+  private readonly now: () => number;
+  private readonly logger: Logger;
+  private readonly timer: ReturnType<typeof setInterval>;
+  private state: PolicyState;
+  private hasPolicy = false; // at least one successful fetch+parse so far
+  private etag: string | null = null; // only ever the ETag of a successfully parsed body
+  private failingSince: number | null = null; // start of the current failure streak
+  private closedLogged = false; // log the grace-expired transition only once
+  private pending: Promise<void> | null = null; // coalesces overlapping polls
+
+  public constructor(opts: HttpLoaderOptions, logger: Logger) {
+    this.url = opts.url;
+    this.failGraceMs = opts.failGraceMs;
+    this.failOpen = opts.failOpen;
+    // a hung request must not stall polling forever, but never time out faster than a poll
+    this.requestTimeoutMs = Math.max(opts.pollIntervalMs, 1000);
+    this.now = opts.now ?? Date.now;
+    this.logger = logger;
+    this.state = this.failOpen
+      ? { ok: true, policy: emptyPolicy() }
+      : { ok: false, reason: `no policy fetched from ${this.url} yet` };
+    if (this.failOpen) {
+      this.logger.warn(
+        { url: this.url },
+        'filter-artea: fail_open is set; serving with an EMPTY policy until @{url} answers',
+      );
+    }
+    void this.poll(); // eager first fetch so a healthy endpoint opens the registry quickly
+    this.timer = setInterval(() => void this.poll(), opts.pollIntervalMs);
+    this.timer.unref?.(); // polling must never keep the process alive
+  }
+
+  public current(): PolicyState {
+    if (
+      !this.failOpen &&
+      this.hasPolicy &&
+      this.failingSince !== null &&
+      this.now() - this.failingSince >= this.failGraceMs
+    ) {
+      if (!this.closedLogged) {
+        this.closedLogged = true;
+        this.logger.error(
+          { url: this.url, grace: this.failGraceMs },
+          'filter-artea: policy refresh from @{url} failing for over @{grace}ms; failing closed until it recovers',
+        );
+      }
+      return { ok: false, reason: `policy refresh from ${this.url} failing for over ${this.failGraceMs}ms` };
+    }
+    return this.state;
+  }
+
+  /** One refresh; concurrent callers share the in-flight request (also used by tests). */
+  public poll(): Promise<void> {
+    if (this.pending === null) {
+      this.pending = this.refresh().finally(() => {
+        this.pending = null;
+      });
+    }
+    return this.pending;
+  }
+
+  public stop(): void {
+    clearInterval(this.timer);
+  }
+
+  private async refresh(): Promise<void> {
+    try {
+      const headers: Record<string, string> = {};
+      if (this.etag !== null) {
+        headers['if-none-match'] = this.etag;
+      }
+      const res = await fetch(this.url, { headers, signal: AbortSignal.timeout(this.requestTimeoutMs) });
+      if (res.status === 304) {
+        this.recordSuccess();
+        return;
+      }
+      const text = await res.text(); // always drain the body, even on errors
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const policy = compilePolicy(yamlLoad(text), this.logger);
+      this.etag = res.headers.get('etag'); // after the parse: a bad body must be re-fetched
+      this.state = { ok: true, policy };
+      this.hasPolicy = true;
+      this.recordSuccess();
+      this.logger.info(
+        { url: this.url, names: policy.names.size, scopes: policy.scopes.size, ranged: policy.ranges.size },
+        'filter-artea: loaded policy from @{url} (@{names} blocked names, @{scopes} scopes, @{ranged} ranged rules)',
+      );
+    } catch (err) {
+      this.recordFailure(err as Error);
+    }
+  }
+
+  private recordSuccess(): void {
+    if (this.failingSince !== null) {
+      this.logger.info({ url: this.url }, 'filter-artea: policy refresh from @{url} recovered');
+    }
+    this.failingSince = null;
+    this.closedLogged = false;
+  }
+
+  private recordFailure(err: Error): void {
+    if (this.failingSince === null) {
+      this.failingSince = this.now();
+      this.logger.warn(
+        { url: this.url, msg: err.message },
+        'filter-artea: policy refresh from @{url} failed: @{msg}; keeping last-known-good policy',
+      );
+    } else {
+      this.logger.debug?.(
+        { url: this.url, msg: err.message },
+        'filter-artea: policy refresh from @{url} still failing: @{msg}',
+      );
+    }
+    if (!this.hasPolicy && !this.failOpen) {
+      // cold start: nothing good to serve, so the reason carries the live error
+      this.state = { ok: false, reason: `no policy fetched from ${this.url} yet (${err.message})` };
+    }
+  }
+}
+
+export const DEFAULT_POLL_INTERVAL_MS = 10_000;
+export const DEFAULT_FAIL_GRACE_MS = 60_000;
+
+export interface PolicySourceConfig {
+  policy_file?: string;
+  policy_url?: string;
+  poll_interval_ms?: number;
+  fail_grace_ms?: number;
+  fail_open?: boolean;
+}
+
+function positiveMs(key: string, value: number | undefined, fallback: number): number {
+  if (value == null) {
+    return fallback;
+  }
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    throw new Error(`filter-artea: ${key} must be a positive number of milliseconds`);
+  }
+  return value;
+}
+
+/** Validates the config and returns the matching loader. Throws on misconfiguration. */
+export function createPolicyLoader(config: PolicySourceConfig, logger: Logger): PolicyLoader {
+  const file = config.policy_file;
+  const url = config.policy_url;
+  if (file && url) {
+    throw new Error('filter-artea: policy_file and policy_url are mutually exclusive; configure exactly one');
+  }
+  if (!file && !url) {
+    throw new Error(
+      'filter-artea: configure exactly one of policy_file (shared /policy volume, compose) or policy_url (policy-sync HTTP endpoint, K8s)',
+    );
+  }
+  const failOpen = config.fail_open === true;
+  if (url) {
+    return new HttpPolicyLoader(
+      {
+        url,
+        pollIntervalMs: positiveMs('poll_interval_ms', config.poll_interval_ms, DEFAULT_POLL_INTERVAL_MS),
+        failGraceMs: positiveMs('fail_grace_ms', config.fail_grace_ms, DEFAULT_FAIL_GRACE_MS),
+        failOpen,
+      },
+      logger,
+    );
+  }
+  return new FilePolicyLoader(file!, failOpen, logger);
 }

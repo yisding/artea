@@ -8,16 +8,20 @@ import type {
   Package,
   PluginOptions,
 } from '@verdaccio/types';
-import { PolicyLoader, SEMVER_OPTS, isNameBlocked, isVersionBlocked } from './policy';
+import { type PolicyLoader, SEMVER_OPTS, createPolicyLoader, isNameBlocked, isVersionBlocked } from './policy';
 
 export interface FilterArteaConfig {
-  /** Path to the policy file (default /policy/npm-rules.yaml, the shared policy volume). */
+  /** Path to the policy file (compose: the shared /policy volume). Mutually exclusive with policy_url. */
   policy_file?: string;
+  /** policy-sync HTTP endpoint to poll (K8s: no shared volume). Mutually exclusive with policy_file. */
+  policy_url?: string;
+  /** policy_url mode only: poll period in ms (default 10000). */
+  poll_interval_ms?: number;
+  /** policy_url mode only: how long polls may keep failing before fail-closed (default 60000). */
+  fail_grace_ms?: number;
   /** Escape hatch: true restores the legacy fail-open behavior (missing/broken policy = allow). */
   fail_open?: boolean;
 }
-
-const DEFAULT_POLICY_FILE = '/policy/npm-rules.yaml';
 
 // minimal structural express types — keeps the plugin free of an express dependency
 interface HttpRequest {
@@ -100,7 +104,12 @@ export default class FilterArtea
 
   public constructor(config: FilterArteaConfig, options: PluginOptions<FilterArteaConfig>) {
     this.logger = options.logger;
-    this.policyLoader = new PolicyLoader(config.policy_file || DEFAULT_POLICY_FILE, config.fail_open === true, this.logger);
+    this.policyLoader = createPolicyLoader(config, this.logger);
+  }
+
+  /** Not part of the verdaccio plugin API; lets tests/embedders stop URL polling. */
+  public stop(): void {
+    this.policyLoader.stop();
   }
 
   public async filter_metadata(metadata: Package): Promise<Package> {
