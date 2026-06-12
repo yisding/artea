@@ -91,7 +91,7 @@ describe('verdaccio-filter-artea', () => {
 
     it('removes versions younger than the configured upstream minimum age', async () => {
       const file = tmpPolicyPath();
-      writePolicy(file, 'upstream:\n  min_age: 3d\nblocked: {}\n');
+      writePolicy(file, 'upstream:\n  min_age: P3D\nblocked: {}\n');
       const plugin = makePlugin(file);
       const now = Date.now();
       const old = new Date(now - 4 * 24 * 60 * 60 * 1000).toISOString();
@@ -107,12 +107,25 @@ describe('verdaccio-filter-artea', () => {
 
     it('hides versions with unknown publish time when an age gate is active', async () => {
       const file = tmpPolicyPath();
-      writePolicy(file, 'upstream:\n  min_age: 1ms\nblocked: {}\n');
+      writePolicy(file, 'upstream:\n  min_age: PT0.001S\nblocked: {}\n');
       const plugin = makePlugin(file);
       const input = packument('left-pad', ['1.3.0']);
       delete (input.time as Record<string, string>)['1.3.0'];
 
       const output = await plugin.filter_metadata(input);
+
+      expect(output.versions).toEqual({});
+    });
+
+    it('uses the shared upstream policy file for minimum age', async () => {
+      const file = tmpPolicyPath();
+      const upstreamFile = tmpPolicyPath();
+      writePolicy(file, 'upstream:\n  min_age: P0D\nblocked: {}\n');
+      writePolicy(upstreamFile, 'upstream:\n  min_age: P3D\n');
+      const plugin = makePlugin(file, { upstream_policy_file: upstreamFile });
+      const recent = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+
+      const output = await plugin.filter_metadata(packument('left-pad', ['1.3.0'], '1.3.0', { '1.3.0': recent }));
 
       expect(output.versions).toEqual({});
     });
@@ -260,7 +273,7 @@ describe('verdaccio-filter-artea', () => {
 
     it('rejects too-new tarballs after metadata has populated publish times', async () => {
       const file = tmpPolicyPath();
-      writePolicy(file, 'upstream:\n  min_age: 3d\nblocked: {}\n');
+      writePolicy(file, 'upstream:\n  min_age: P3D\nblocked: {}\n');
       const plugin = makePlugin(file);
       const recent = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
 
@@ -273,7 +286,7 @@ describe('verdaccio-filter-artea', () => {
 
     it('looks up npm metadata for cold direct tarball age checks', async () => {
       const file = tmpPolicyPath();
-      writePolicy(file, 'upstream:\n  min_age: 3d\nblocked: {}\n');
+      writePolicy(file, 'upstream:\n  min_age: P3D\nblocked: {}\n');
       const plugin = makePlugin(file, { npm_registry_url: 'http://npm.example.test' });
       const old = new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString();
       const fetchMock = vi.fn(async () => ({

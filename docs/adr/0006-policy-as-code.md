@@ -17,24 +17,24 @@ files baked into the deployment repo (every block requires a redeploy).
 ## Decision
 
 Policy lives in the Gitea repository `${ARTEA_NAMESPACE}/registry-policy` as
-two files:
+three files:
 
-- `npm-rules.yaml` — blocked npm names, scopes, semver ranges, and the optional
-  public-version age gate (`upstream.min_age`, e.g. `3d`), consumed by our
+- `npm-rules.yaml` — blocked npm names, scopes, and semver ranges, consumed by our
   Verdaccio filter plugin (re-read from `/policy` on mtime change, no restart).
+- `upstream-policy.yaml` — shared public-upstream policy. v1 defines
+  `upstream.min_age` as an ISO 8601 duration such as `P3D` or `PT72H`; npm,
+  PyPI, and future artifact types must consume this same value.
 - `pypi-constraints.txt` — devpi-constrained format (`name<2`,
-  `name ==1.2.3`, `*` default-deny), plus an Artea comment directive for the
-  public-file age gate (`# artea: min-upstream-age=3d`). The constraints are
-  applied to the `root/constrained` index; the age directive is enforced by
-  policy-sync's PyPI guard on simple pages and file downloads.
+  `name ==1.2.3`, `*` default-deny). The constraints are applied to the
+  `root/constrained` index, alongside `min_upstream_age` from
+  `upstream-policy.yaml`.
 
 The `policy-sync` service turns repo state into enforcement: it receives the
 repo's push webhook (plus a startup sync and a slow poll as fallback), fetches
-both files via Gitea's raw-content API, writes `npm-rules.yaml` and
-`pypi-constraints.txt` to the shared `policy-data` volume in compose, and
-pushes the constraints into devpi. In Kubernetes, where there is no shared
-volume, the npm policy is served over HTTP to Verdaccio and the PyPI policy is
-kept in policy-sync memory after sync. It authenticates as `svc-policy`, a
+all three files via Gitea's raw-content API, writes them to the shared
+`policy-data` volume in compose, serves npm and upstream policy over HTTP to
+Verdaccio in Kubernetes, and pushes the PyPI constraints plus
+`min_upstream_age` into devpi. It authenticates as `svc-policy`, a
 dedicated non-admin service account whose only access is read-only on the
 policy repo (via the `policy-readers` team) with a PAT scoped to
 `read:repository` — a leaked policy-sync credential cannot write anything.
@@ -56,7 +56,7 @@ Owners — so no developer credential can bypass the PR path (e2e scenario S14).
   backup).
 - Two enforcement dialects must stay semantically aligned by convention; e2e
   scenarios S5 and S10 guard the version-policy wiring, while unit tests cover
-  the age-gate parsing and hot-path enforcement.
+  the shared age-gate parsing and hot-path enforcement in Verdaccio and devpi.
 - policy-sync needs the `svc-policy` account, its PAT, and webhook plumbing —
   bootstrap steps (scenario S1); the admin allowlist on the protected branch
   also keeps the e2e suite's direct policy edits (as the configured admin)

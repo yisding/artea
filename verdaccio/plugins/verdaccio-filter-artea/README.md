@@ -1,6 +1,7 @@
 # verdaccio-filter-artea
 
-One package, two Verdaccio plugin roles, enforcing Artea's npm block/age policy
+One package, two Verdaccio plugin roles, enforcing Artea's npm block policy and
+the shared upstream age policy
 (requirement R3). Wire it under **both** `filters:` and `middlewares:`:
 
 - **Metadata filter** (`IPluginStorageFilter`, `filter_metadata` hook): rewrites
@@ -32,27 +33,27 @@ request, re-parse only on mtime change.
 filters:
   filter-artea:
     policy_file: /policy/npm-rules.yaml   # default; the shared policy-data volume
+    upstream_policy_file: /policy/upstream-policy.yaml
     npm_registry_url: https://registry.npmjs.org
 
 middlewares:
   filter-artea:                           # same package, middleware role (S13)
     policy_file: /policy/npm-rules.yaml
+    upstream_policy_file: /policy/upstream-policy.yaml
     npm_registry_url: https://registry.npmjs.org
 ```
 
-## Policy file schema (`npm-rules.yaml`)
+In Kubernetes, use `policy_url` and `upstream_policy_url` instead.
+
+## Policy file schema
 
 The file lives in the configured Gitea policy repo
 `${ARTEA_NAMESPACE}/registry-policy` (or explicit `POLICY_REPO`) and is written
-into the `/policy` volume by policy-sync. Top-level key `blocked` with two
-optional lists and an optional upstream-age gate:
+into the `/policy` volume by policy-sync.
+
+`npm-rules.yaml` owns npm-specific blocks:
 
 ```yaml
-upstream:
-  # Hide/reject public versions until they have been upstream for at least this
-  # long. Units: ms, s, m, h, d. Use 0d or omit to disable.
-  min_age: 3d
-
 blocked:
   # Block every package in a scope. Leading "@" is optional.
   scopes:
@@ -74,12 +75,21 @@ blocked:
       reason: "CVE-2021-23337"
 ```
 
+`upstream-policy.yaml` owns the cross-format public upstream recency gate:
+
+```yaml
+upstream:
+  # ISO 8601 duration. P3D = three days; P0D disables the age gate.
+  min_age: P3D
+```
+
 Semantics:
 
 - Multiple `packages` entries for the same name are OR-ed together.
-- `upstream.min_age` accepts `ms`, `s`, `m`, `h`, or `d` durations. When it is
-  active, a version without a parseable `time[version]` publish timestamp is
-  treated as blocked.
+- `upstream.min_age` accepts ISO 8601 week/day/time durations (`P3D`, `PT72H`,
+  `P1DT12H`). Month/year units are intentionally unsupported because their
+  duration depends on a calendar. When the gate is active, a version without a
+  parseable `time[version]` publish timestamp is treated as blocked.
 - Range matching uses `{ includePrerelease: true, loose: true }`, so `<2` also blocks
   `2.0.0-beta`-style prereleases of blocked ranges — a blocklist should over-block.
 - Entries that are malformed (missing `name`, invalid semver range, non-string scope)
@@ -95,9 +105,9 @@ job, not the plugin's.
 
 ## Failure mode: fail-closed (default)
 
-If the policy file is **missing or unparsable** (invalid YAML or wrong structure),
-the plugin rejects public-package traffic instead of silently serving everything
-unfiltered (e2e scenario S15):
+If a configured policy file is **missing or unparsable** (invalid YAML or wrong
+structure), the plugin rejects public-package traffic instead of silently
+serving everything unfiltered (e2e scenario S15):
 
 - the middleware answers tarball requests with
   `503 {"error": "policy unavailable: ..."}`;

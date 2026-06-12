@@ -5,9 +5,10 @@ client's /+api discovery rewrites its target URL to the gateway origin, which
 is not devpi (and not reachable) from inside the compose network — see
 devpi/README.md. Raw HTTP against http://devpi:3141 is unaffected.
 
-devpi-constrained stores constraints as an index property; replacing the whole
-property is idempotent, and the raw pypi-constraints.txt text can be pushed
-as-is (blank lines and # comments are part of the format).
+The Artea devpi policy plugin stores constraints and minimum upstream age as
+index properties. Replacing those properties is idempotent, and the raw
+pypi-constraints.txt text can be pushed as-is (blank lines and # comments are
+part of the format).
 
 The index config fetched from devpi — not any local state — decides whether a
 PATCH is needed: a wiped devpi-data volume comes back with the entrypoint's
@@ -45,7 +46,7 @@ def _request(req: urllib.request.Request, timeout: float = 30.0) -> dict:
 
 
 def _effective_lines(value) -> list[str] | None:
-    """Constraints reduced to devpi-constrained's effective form: stripped
+    """Constraints reduced to the constrained index's effective form: stripped
     lines minus blanks and #-comment lines (verified against a live server,
     which stores/returns exactly that). Accepts the raw file text (str) or
     the stored index value (list); None for anything else, which never
@@ -59,19 +60,31 @@ def _effective_lines(value) -> list[str] | None:
     return [s for s in (line.strip() for line in lines) if s and not s.startswith("#")]
 
 
-def apply_constraints(cfg: Config, constraints_text: str) -> bool:
-    """Ensure the index holds constraints_text. Returns True if devpi was
-    PATCHed, False if it already held the same effective constraints."""
+def apply_constraints(cfg: Config, constraints_text: str | None, min_upstream_age: str) -> bool:
+    """Ensure the index holds constraints_text and min_upstream_age.
+
+    If constraints_text is None, preserve the existing constraints and only
+    synchronize min_upstream_age. Returns True if devpi was PATCHed.
+    """
     url = f"{cfg.devpi_url}/{CONSTRAINED_INDEX}"
     config = _request(urllib.request.Request(url, headers={"Accept": "application/json"})).get("result")
     if not isinstance(config, dict):
         raise DevpiError(f"GET {url}: response has no index config in .result")
 
-    if _effective_lines(config.get("constraints")) == _effective_lines(constraints_text):
+    constraints_match = (
+        constraints_text is None
+        or _effective_lines(config.get("constraints")) == _effective_lines(constraints_text)
+    )
+    if (
+        constraints_match
+        and config.get("min_upstream_age", "P0D") == min_upstream_age
+    ):
         log.debug("%s already holds these constraints; no PATCH", CONSTRAINED_INDEX)
         return False
 
-    config["constraints"] = constraints_text
+    if constraints_text is not None:
+        config["constraints"] = constraints_text
+    config["min_upstream_age"] = min_upstream_age
     auth = base64.b64encode(f"root:{cfg.devpi_root_password}".encode()).decode()
     _request(
         urllib.request.Request(

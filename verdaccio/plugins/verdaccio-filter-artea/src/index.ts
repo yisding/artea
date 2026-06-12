@@ -15,6 +15,10 @@ export interface FilterArteaConfig {
   policy_file?: string;
   /** policy-sync HTTP endpoint to poll (K8s: no shared volume). Mutually exclusive with policy_file. */
   policy_url?: string;
+  /** Shared upstream package policy path (compose). Mutually exclusive with upstream_policy_url. */
+  upstream_policy_file?: string;
+  /** Shared upstream package policy URL (K8s). Mutually exclusive with upstream_policy_file. */
+  upstream_policy_url?: string;
   /** policy_url mode only: poll period in ms (default 10000). */
   poll_interval_ms?: number;
   /** policy_url mode only: how long polls may keep failing before fail-closed (default 60000). */

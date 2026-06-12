@@ -52,13 +52,13 @@ check "npm private scope routed to Gitea: unknown name 404s, never Verdaccio" 40
 check "pypi simple w/o auth gets Basic challenge" 401 "$(code "${GATEWAY_URL}/pypi/simple/six/")"
 www=$(curl -s -o /dev/null -w '%{http_code} %header{www-authenticate}' "${GATEWAY_URL}/pypi/simple/six/")
 check "401 carries WWW-Authenticate Basic" '401 Basic realm="Artea"' "${www}"
-check "pypi simple for unpublished name falls through to guarded public mirror" 200 \
+check "pypi simple for unpublished name falls through to public mirror" 200 \
   "$(code -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/six/")"
 # file links inside the fallthrough page must stay on the gateway origin via
-# policy-sync's guarded public-file route.
+# devpi's public mirror file route.
 links=$(curl -s -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/six/" \
-  | grep -c "href=\"${GATEWAY_URL}/pypi/files/six/root/pypi/" || true)
-check "pypi simple page links route via guarded gateway file path" yes "$([ "${links}" -gt 0 ] && echo yes || echo no)"
+  | grep -c "href=\"${GATEWAY_URL}/root/pypi/" || true)
+check "pypi simple page links route via gateway file path" yes "$([ "${links}" -gt 0 ] && echo yes || echo no)"
 check "public pypi file path w/o auth is denied" 401 "$(code "${GATEWAY_URL}/root/pypi/")"
 
 # 4. gitea package API direct paths (npm scope registry / pypi upload target)

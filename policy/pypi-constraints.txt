@@ -9,12 +9,6 @@
 # packages with no matching line are unrestricted. Lines starting with `#`
 # and blank lines are ignored.
 #
-# Artea additionally recognizes this comment directive before forwarding the
-# file to devpi-constrained; devpi still ignores it as a comment:
-#
-#   # artea: min-upstream-age=3d   # hide/reject public files until this old
-#                                  # units: ms, s, m, h, d. Use 0d to disable.
-#
 #   urllib3<2              # only versions < 2 are visible to pip
 #   requests ==2.31.0      # pin a package to exactly one version
 #   pyyaml>=5.4,<7         # compound specifiers are allowed
@@ -24,5 +18,7 @@
 # Only pull-through of public PyPI packages is affected. Private packages are
 # served by Gitea and never pass through devpi.
 #
+# Public upstream recency gates live in upstream-policy.yaml and apply across
+# formats.
+#
 # Default policy: no constraints (everything on PyPI allowed).
-# artea: min-upstream-age=0d

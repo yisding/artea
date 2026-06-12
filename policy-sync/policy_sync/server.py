@@ -18,7 +18,6 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .config import Config
-from .pypi import PypiProxy
 from .store import PolicyStore
 from .sync import Syncer
 
@@ -28,6 +27,7 @@ MAX_BODY = 10 * 1024 * 1024  # webhook payloads are small; cap reads defensively
 LISTEN_PORT = 8920
 
 POLICY_ENDPOINT = "/policy/npm-rules.yaml"
+UPSTREAM_POLICY_ENDPOINT = "/policy/upstream-policy.yaml"
 
 
 def etag_matches(if_none_match: str, etag: str) -> bool:
@@ -71,22 +71,24 @@ class PolicySyncHandler(BaseHTTPRequestHandler):
         if self.path == "/healthz":
             self._respond(200, {"status": "ok", **self.server.state.snapshot()})
         elif self.path == POLICY_ENDPOINT:
-            self._serve_policy()
-        elif self.server.pypi_proxy.matches(self.path):
-            self.server.pypi_proxy.serve(self)
+            self._serve_policy(self.server.store, "npm")
+        elif self.path == UPSTREAM_POLICY_ENDPOINT:
+            self._serve_policy(self.server.upstream_store, "upstream")
         else:
             self._respond(404, {"error": "not found"})
 
     def do_HEAD(self) -> None:  # noqa: N802
-        if self.server.pypi_proxy.matches(self.path):
-            self.server.pypi_proxy.serve(self, head=True)
+        if self.path == POLICY_ENDPOINT:
+            self._serve_policy(self.server.store, "npm")
+        elif self.path == UPSTREAM_POLICY_ENDPOINT:
+            self._serve_policy(self.server.upstream_store, "upstream")
         else:
             self._respond(404, {"error": "not found"})
 
-    def _serve_policy(self) -> None:
-        got = self.server.store.get()
+    def _serve_policy(self, store: PolicyStore, label: str) -> None:
+        got = store.get()
         if got is None:
-            self._respond(404, {"error": "no npm policy has been synced yet; check Gitea connectivity and /healthz"})
+            self._respond(404, {"error": f"no {label} policy has been synced yet; check Gitea connectivity and /healthz"})
             return
         content, etag = got
         if_none_match = self.headers.get("If-None-Match")
@@ -100,7 +102,8 @@ class PolicySyncHandler(BaseHTTPRequestHandler):
         self.send_header("ETag", etag)
         self.send_header("Content-Length", str(len(content)))
         self.end_headers()
-        self.wfile.write(content)
+        if self.command != "HEAD":
+            self.wfile.write(content)
 
     def do_POST(self) -> None:  # noqa: N802
         if self.path != "/hooks/policy":
@@ -144,14 +147,14 @@ class PolicySyncHTTPServer(ThreadingHTTPServer):
         trigger_sync,
         state: SyncState,
         store: PolicyStore,
-        pypi_proxy: PypiProxy,
+        upstream_store: PolicyStore,
     ):
         super().__init__(addr, PolicySyncHandler)
         self.webhook_secret = webhook_secret
         self.trigger_sync = trigger_sync
         self.state = state
         self.store = store
-        self.pypi_proxy = pypi_proxy
+        self.upstream_store = upstream_store
 
 
 def make_http_server(
@@ -161,9 +164,9 @@ def make_http_server(
     trigger_sync,
     state: SyncState,
     store: PolicyStore,
-    pypi_proxy: PypiProxy,
+    upstream_store: PolicyStore,
 ) -> PolicySyncHTTPServer:
-    return PolicySyncHTTPServer((host, port), webhook_secret, trigger_sync, state, store, pypi_proxy)
+    return PolicySyncHTTPServer((host, port), webhook_secret, trigger_sync, state, store, upstream_store)
 
 
 def run_sync_worker(syncer: Syncer, state: SyncState, wake: threading.Event, poll_interval: float, stop: threading.Event) -> None:
@@ -191,9 +194,8 @@ def main() -> None:
     # the file fallback keeps the endpoint serving across restarts in compose,
     # where the volume still holds the last synced policy
     store = PolicyStore(fallback_path=cfg.policy_file_path)
-    pypi_store = PolicyStore(fallback_path=cfg.pypi_policy_file_path)
-    pypi_proxy = PypiProxy(cfg, pypi_store)
-    syncer = Syncer(cfg, store=store, pypi_store=pypi_store)
+    upstream_store = PolicyStore(fallback_path=cfg.upstream_policy_file_path)
+    syncer = Syncer(cfg, store=store, upstream_store=upstream_store)
 
     worker = threading.Thread(
         target=run_sync_worker,
@@ -203,7 +205,7 @@ def main() -> None:
     )
     worker.start()
 
-    httpd = make_http_server("0.0.0.0", LISTEN_PORT, cfg.webhook_secret, wake.set, state, store, pypi_proxy)
+    httpd = make_http_server("0.0.0.0", LISTEN_PORT, cfg.webhook_secret, wake.set, state, store, upstream_store)
     log.info("policy-sync listening on :%d (gitea=%s devpi=%s poll=%.0fs file=%s)",
              LISTEN_PORT, cfg.gitea_url, cfg.devpi_url, cfg.poll_interval,
              cfg.policy_file_path or "<disabled: HTTP-only>")

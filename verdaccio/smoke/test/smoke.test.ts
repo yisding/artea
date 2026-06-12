@@ -58,8 +58,11 @@ describe('verdaccio 6 boots with our config and plugins', () => {
     config.plugins = PLUGINS_DIR;
     config.auth['auth-gitea'].gitea_url = giteaUrl;
     config.filters['filter-artea'].policy_file = join(tmp, 'npm-rules.yaml');
+    config.filters['filter-artea'].upstream_policy_file = join(tmp, 'upstream-policy.yaml');
     config.middlewares['filter-artea'].policy_file = join(tmp, 'npm-rules.yaml');
+    config.middlewares['filter-artea'].upstream_policy_file = join(tmp, 'upstream-policy.yaml');
     writeFileSync(join(tmp, 'npm-rules.yaml'), 'blocked:\n  packages:\n    - left-pad\n');
+    writeFileSync(join(tmp, 'upstream-policy.yaml'), 'upstream:\n  min_age: P0D\n');
     delete config.listen;
     // bundled audit middleware does not resolve under pnpm's isolated node_modules
     delete config.middlewares.audit;

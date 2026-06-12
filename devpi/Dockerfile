@@ -1,4 +1,4 @@
-# Artea devpi image: PyPI pull-through cache + devpi-constrained filtering.
+# Artea devpi image: PyPI pull-through cache + Artea policy filtering.
 # Internal-only service; the gateway enforces auth (see docs/ARCHITECTURE.md).
 # Base = python:3.12-slim, digest-pinned (ADR-0004); bump procedure in
 # docs/guides/operations.md ("Base-image digest pins").
@@ -6,11 +6,12 @@ FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dc
 
 # Exact pins; docker compose overrides these from .env so all pins live there.
 ARG DEVPI_SERVER_VERSION=6.20.1
-ARG DEVPI_CONSTRAINED_VERSION=2.1.0
 
+COPY artea_devpi_policy /tmp/artea_devpi_policy
 RUN pip install --no-cache-dir \
       "devpi-server==${DEVPI_SERVER_VERSION}" \
-      "devpi-constrained==${DEVPI_CONSTRAINED_VERSION}"
+      /tmp/artea_devpi_policy \
+ && rm -rf /tmp/artea_devpi_policy
 
 # non-root; a named volume mounted at /devpi/server inherits this ownership
 RUN useradd --uid 1000 --create-home devpi \

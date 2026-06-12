@@ -227,6 +227,7 @@ seed_file() { # <local path> <path in repo>
   log "seeded $2"
 }
 seed_file policy/npm-rules.yaml npm-rules.yaml
+seed_file policy/upstream-policy.yaml upstream-policy.yaml
 seed_file policy/pypi-constraints.txt pypi-constraints.txt
 
 # ---- push webhook -> policy-sync ------------------------------------------------

@@ -82,8 +82,8 @@ class MockDevpi:
     """Minimal in-process devpi serving the root/constrained index JSON API."""
 
     def __init__(self):
-        # shape of a real devpi-constrained index config (subset)
-        self.config: dict = {"type": "constrained", "bases": ["root/pypi"], "constraints": []}
+        # shape of the Artea constrained index config (subset)
+        self.config: dict = {"type": "constrained", "bases": ["root/pypi"], "constraints": [], "min_upstream_age": "P0D"}
         self.requests: list[dict] = []
         self.fail_remaining = 0  # respond 500 to the next N requests
         mock = self
@@ -171,11 +171,10 @@ def make_config(mock_gitea, mock_devpi, policy_file_path: str) -> Config:
         webhook_secret=TEST_SECRET,
         policy_repo=TEST_REPO,
         policy_file_path=policy_file_path,
+        upstream_policy_file_path=str(Path(policy_file_path).with_name("upstream-policy.yaml")) if policy_file_path else "",
         pypi_policy_file_path=str(Path(policy_file_path).with_name("pypi-constraints.txt")) if policy_file_path else "",
         devpi_url=mock_devpi.url,
         devpi_root_password=TEST_DEVPI_PASSWORD,
-        pypi_json_url="https://pypi.example.test/pypi",
-        pypi_metadata_cache_seconds=300,
         poll_interval=300,
     )
 

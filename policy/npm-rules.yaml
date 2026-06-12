@@ -6,10 +6,6 @@
 #
 # Schema (enforced by verdaccio-filter-artea, see its README):
 #
-#   upstream:
-#     min_age: 3d        # optional; hide/reject public versions until this old
-#                        # units: ms, s, m, h, d. Use 0d to disable.
-#
 #   blocked:
 #     scopes:            # block every package in a scope; leading "@" optional
 #       - "@evil-corp"
@@ -23,14 +19,13 @@
 # - `name` is the full npm name, including scope if any (e.g. "@acme/utils").
 # - Omitting `versions` blocks all versions; `reason` is free text for humans.
 # - Multiple `packages` entries for the same name are OR-ed together.
-# - `upstream.min_age` also only affects pull-through public packages. Private
-#   packages in the configured namespace are routed to Gitea before Verdaccio.
+# - Public upstream recency gates live in upstream-policy.yaml and apply across
+#   formats. Private packages in the configured namespace are routed to Gitea
+#   before Verdaccio.
 # - Blocking only affects pull-through of public packages via Verdaccio.
 #   Private packages in the configured namespace never pass through Verdaccio.
 #
 # Default policy: block nothing.
-upstream:
-  min_age: 0d
 blocked:
   scopes: []
   packages: []

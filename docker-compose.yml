@@ -79,7 +79,6 @@ services:
       context: ./devpi
       args:
         DEVPI_SERVER_VERSION: ${DEVPI_SERVER_VERSION}
-        DEVPI_CONSTRAINED_VERSION: ${DEVPI_CONSTRAINED_VERSION}
     container_name: devpi
     environment:
       DEVPI_ROOT_PASSWORD: ${DEVPI_ROOT_PASSWORD}
@@ -100,8 +99,6 @@ services:
       ARTEA_NAMESPACE: ${ARTEA_NAMESPACE:-artea}
       POLICY_REPO: ${POLICY_REPO:-}
       DEVPI_ROOT_PASSWORD: ${DEVPI_ROOT_PASSWORD}
-      PYPI_JSON_URL: ${PYPI_JSON_URL:-https://pypi.org/pypi}
-      PYPI_METADATA_CACHE_SECONDS: ${PYPI_METADATA_CACHE_SECONDS:-300}
     volumes:
       - policy-data:/policy
     depends_on:
@@ -116,4 +113,4 @@ volumes:
   gitea-data:        # store of record: users, repos, private packages
   verdaccio-storage: # disposable npm pull-through cache
   devpi-data:        # disposable pypi pull-through cache
-  policy-data:       # npm-rules.yaml handoff: policy-sync writes, verdaccio reads
+  policy-data:       # policy file handoff: policy-sync writes, Verdaccio reads
