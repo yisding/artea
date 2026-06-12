@@ -48,10 +48,16 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-          # the services are stdlib-only (AGENTS.md); the only dep is the
-          # pytest pin below, so key the pip cache on this workflow file
-          cache-dependency-path: .github/workflows/ci.yml
-      - run: python -m pip install pytest==9.0.3
+          # policy-sync is stdlib-only; the devpi plugin tests need the
+          # same devpi-server pin as the image.
+          cache-dependency-path: |
+            .github/workflows/ci.yml
+            devpi/Dockerfile
+            devpi/artea_devpi_policy/pyproject.toml
+      - name: install python test deps
+        run: |
+          DEVPI_SERVER_VERSION="$(sed -n 's/^ARG DEVPI_SERVER_VERSION=//p' devpi/Dockerfile)"
+          python -m pip install pytest==9.0.3 "devpi-server==${DEVPI_SERVER_VERSION}" ./devpi/artea_devpi_policy
       - name: policy-sync tests
         working-directory: policy-sync
         run: python -m pytest

@@ -9,7 +9,7 @@ description = "Artea devpi constrained-index policy plugin"
 requires-python = ">=3.12"
 dependencies = ["devpi-server>=6.10.0"]
 
-[project.entry-points.devpiserver]
+[project.entry-points.devpi_server]
 artea-devpi-policy = "artea_devpi_policy.main"
 
 [tool.setuptools.packages.find]

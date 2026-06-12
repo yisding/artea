@@ -1,5 +1,6 @@
 import sys
 import time
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -42,6 +43,14 @@ def make_stage(min_age="P3D"):
         "pypi_json_url": "https://pypi.example.test/pypi",
     })
     return customizer
+
+
+def test_plugin_declares_devpi_server_entry_point():
+    pyproject = tomllib.loads((PLUGIN_SRC.parent / "pyproject.toml").read_text())
+
+    assert pyproject["project"]["entry-points"]["devpi_server"]["artea-devpi-policy"] == (
+        "artea_devpi_policy.main"
+    )
 
 
 def test_parse_iso_duration_seconds():
