@@ -12,9 +12,19 @@ Syncs registry policy from the Gitea repo `${ARTEA_NAMESPACE}/registry-policy`
     in-memory copy served at `GET /policy/npm-rules.yaml`, which the plugin
     polls (`policy_url` mode). Set `POLICY_FILE_PATH=""` to skip the file write
     entirely — required in K8s where no `/policy` volume exists.
-- `pypi-constraints.txt` → applied to the devpi index `root/constrained` via
+- `upstream-policy.yaml` → delivered to consumers two ways:
+  - **file (compose)**: written atomically to `$UPSTREAM_POLICY_FILE_PATH`
+    (default: `/policy/upstream-policy.yaml` next to `npm-rules.yaml`).
+  - **HTTP (K8s)**: served at `GET /policy/upstream-policy.yaml`, which the
+    Verdaccio filter plugin polls via `upstream_policy_url`.
+  - The same `upstream.min_age` ISO 8601 duration is applied to devpi's
+    `root/constrained` index as `min_upstream_age`.
+- `pypi-constraints.txt` → written to `$PYPI_POLICY_FILE_PATH` in compose
+  (default: next to `npm-rules.yaml` as `/policy/pypi-constraints.txt`) and
+  applied to the devpi index `root/constrained` via
   devpi's JSON HTTP API (`GET` the index config, `PATCH` it back with the
-  `constraints` key replaced, Basic auth `root:$DEVPI_ROOT_PASSWORD`).
+  `constraints` and `min_upstream_age` keys replaced, Basic auth
+  `root:$DEVPI_ROOT_PASSWORD`).
   devpi-client cannot be used: with `--outside-url` set, its `/+api` discovery
   rewrites the client's target URL to the gateway origin (see devpi/README.md).
   Replacing the whole property makes the apply idempotent; the `PATCH` is
@@ -44,6 +54,7 @@ uid.
 | `POST /hooks/policy` | Gitea push webhook. The `X-Gitea-Signature` header (hex HMAC-SHA256 of the raw body, keyed with `POLICY_WEBHOOK_SECRET`) is verified with a constant-time compare. Valid push → `202` and a sync is scheduled. Bad/missing signature → `403`. Non-push events → `200` ignored. |
 | `GET /healthz` | Always `200` while the process is up. JSON body: `status`, `last_sync_ok` (`true`/`false`/`null` before first sync finishes), `last_sync_at` (epoch seconds). |
 | `GET /policy/npm-rules.yaml` | The npm policy from the last successful sync, served from memory with a **strong ETag** (quoted SHA-256 of the content) and `If-None-Match`/`304` support. Falls back to reading `$POLICY_FILE_PATH` when memory is empty (compose restart: the volume still holds the last synced file). `404` with a clear JSON body if no policy has ever been synced. **No auth**: the service is cluster-internal and the body is block rules, not secrets — never expose this port publicly. |
+| `GET /policy/upstream-policy.yaml` | The shared upstream policy from the last successful sync, with the same ETag behavior as the npm endpoint. Used by the Verdaccio filter in K8s. |
 
 ## Environment variables
 
@@ -58,6 +69,8 @@ uid.
 | `POLICY_REPO` | no | `${ARTEA_NAMESPACE}/registry-policy` | `owner/repo` of the policy repo |
 | `POLICY_DIR` | no | `/policy` | Mount point of the shared `policy-data` volume (compose) |
 | `POLICY_FILE_PATH` | no | `$POLICY_DIR/npm-rules.yaml` | Where to write the npm policy file. Set to the empty string for **HTTP-only mode** (K8s: no volume, no file write; the `GET /policy/npm-rules.yaml` endpoint is the only npm-policy output). A custom path gets its parent directory created automatically |
+| `UPSTREAM_POLICY_FILE_PATH` | no | sibling `upstream-policy.yaml` next to `$POLICY_FILE_PATH`, or empty when `POLICY_FILE_PATH=""` | Where to write the shared upstream policy file in compose mode |
+| `PYPI_POLICY_FILE_PATH` | no | sibling `pypi-constraints.txt` next to `$POLICY_FILE_PATH`, or empty when `POLICY_FILE_PATH=""` | Optional compose-mode copy of the PyPI constraints file for debugging/inspection |
 | `POLICY_SYNC_POLL_SECONDS` | no | `300` | Fallback poll interval |
 
 ## Failure behavior
@@ -73,8 +86,8 @@ uid.
   other file still syncs. (To clear policy, push an empty file instead of
   deleting it.)
 - **devpi apply fails**: the sync is marked failed and retried, but
-  `npm-rules.yaml` is still written — one ecosystem failing never blocks the
-  other.
+  `npm-rules.yaml`, `upstream-policy.yaml`, and the PyPI constraints file are
+  still written — one ecosystem failing never blocks the other.
 - **Half-written files**: impossible by construction; the rename is atomic and
   the tmp file lives in the same directory/filesystem.
 

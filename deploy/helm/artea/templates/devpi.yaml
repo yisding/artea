@@ -1,7 +1,7 @@
-# devpi: PyPI pull-through cache + devpi-constrained filtering (our image,
+# devpi: PyPI pull-through cache + Artea devpi policy filtering (our image,
 # ghcr.io/yisding/artea-devpi). Internal-only; the gateway enforces auth. The
 # PVC is a DISPOSABLE cache: a wiped volume re-initializes fail-closed (the
-# entrypoint seeds root/constrained with '*' until policy-sync syncs).
+# entrypoint seeds root/constrained with '*' until policy-sync syncs policy).
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

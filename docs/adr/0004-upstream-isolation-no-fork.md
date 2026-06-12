@@ -19,8 +19,9 @@ through supported extension surfaces:
    supported `custom/` overlay directory (`gitea/custom/` templates rendered
    into `.generated/`).
 2. **Verdaccio / devpi**: consumed as released artifacts; our code is plugins
-   against their stable plugin APIs (`verdaccio/plugins/*`; devpi needs the
-   `devpi-constrained` plugin only, no custom plugin in v1).
+   against their stable plugin APIs (`verdaccio/plugins/*`;
+   `devpi/artea_devpi_policy`). The Artea devpi plugin is derived from the
+   small `devpi-constrained` plugin but does not vendor or patch devpi itself.
 3. **Escape hatch**: `gitea/patches/` — a quilt-style patch queue, empty in
    v1, with an apply script and a documented bump procedure. Adding a patch
    requires an ADR. First expected candidate: PAT expiry dates.

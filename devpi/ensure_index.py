@@ -1,9 +1,9 @@
 """Idempotently ensure the root/constrained index exists on a local devpi.
 
-A *freshly created* index is seeded with the `*` constraint —
-devpi-constrained's block-everything sentinel — so a wiped devpi-data volume
-is fail-closed (serves nothing from the mirror) until policy-sync's next
-successful sync replaces the constraints with the real policy (R3, e2e S15).
+A *freshly created* index is seeded with the `*` constraint — the
+block-everything sentinel — so a wiped devpi-data volume is fail-closed
+(serves nothing from the mirror) until policy-sync's next successful sync
+replaces the constraints with the real policy (R3, e2e S15).
 An existing index is never modified here: its constraints are owned by
 policy-sync.
 
@@ -27,7 +27,7 @@ import urllib.error
 import urllib.request
 
 INDEX = "root/constrained"
-KVDICT = {"type": "constrained", "bases": "root/pypi", "constraints": ["*"]}
+KVDICT = {"type": "constrained", "bases": "root/pypi", "constraints": ["*"], "min_upstream_age": "P0D"}
 
 
 def log(msg):
@@ -73,7 +73,7 @@ def main():
         log(f"ERROR: PUT {url} -> {e.code}: {e.read().decode(errors='replace')[:500]}")
         return 1
     log(f"created index {INDEX} (type=constrained, bases=root/pypi, "
-        "constraints=['*'] fail-closed until policy-sync syncs)")
+        "constraints=['*'], min_upstream_age=P0D fail-closed until policy-sync syncs)")
     return 0
 
 

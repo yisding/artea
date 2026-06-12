@@ -1,9 +1,9 @@
 import { mkdtempSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import FilterArtea, { parseTarballPath, type FilterArteaConfig } from '../src/index';
-import { makeLogger, packument, runMiddleware } from './helpers';
+import { makeLogger, packument, runMiddleware, runMiddlewareAsync } from './helpers';
 
 function makePlugin(policyFile: string, extra: Omit<FilterArteaConfig, 'policy_file'> = {}): FilterArtea {
   return new FilterArtea({ policy_file: policyFile, ...extra }, { config: {}, logger: makeLogger() } as never);
@@ -34,6 +34,7 @@ describe('verdaccio-filter-artea', () => {
   }
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     for (const dir of tmpDirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -86,6 +87,47 @@ describe('verdaccio-filter-artea', () => {
       // input packument must not be mutated
       expect(Object.keys(input.versions)).toContain('2.0.0');
       expect(input['dist-tags'].latest).toBe('2.0.0');
+    });
+
+    it('removes versions younger than the configured upstream minimum age', async () => {
+      const file = tmpPolicyPath();
+      writePolicy(file, 'upstream:\n  min_age: P3D\nblocked: {}\n');
+      const plugin = makePlugin(file);
+      const now = Date.now();
+      const old = new Date(now - 4 * 24 * 60 * 60 * 1000).toISOString();
+      const recent = new Date(now - 6 * 60 * 60 * 1000).toISOString();
+      const input = packument('left-pad', ['1.2.0', '1.3.0'], '1.3.0', { '1.2.0': old, '1.3.0': recent });
+
+      const output = await plugin.filter_metadata(input);
+
+      expect(Object.keys(output.versions)).toEqual(['1.2.0']);
+      expect(output['dist-tags'].latest).toBe('1.2.0');
+      expect((output.time as Record<string, string>)['1.3.0']).toBeUndefined();
+    });
+
+    it('hides versions with unknown publish time when an age gate is active', async () => {
+      const file = tmpPolicyPath();
+      writePolicy(file, 'upstream:\n  min_age: PT0.001S\nblocked: {}\n');
+      const plugin = makePlugin(file);
+      const input = packument('left-pad', ['1.3.0']);
+      delete (input.time as Record<string, string>)['1.3.0'];
+
+      const output = await plugin.filter_metadata(input);
+
+      expect(output.versions).toEqual({});
+    });
+
+    it('uses the shared upstream policy file for minimum age', async () => {
+      const file = tmpPolicyPath();
+      const upstreamFile = tmpPolicyPath();
+      writePolicy(file, 'upstream:\n  min_age: P0D\nblocked: {}\n');
+      writePolicy(upstreamFile, 'upstream:\n  min_age: P3D\n');
+      const plugin = makePlugin(file, { upstream_policy_file: upstreamFile });
+      const recent = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+
+      const output = await plugin.filter_metadata(packument('left-pad', ['1.3.0'], '1.3.0', { '1.3.0': recent }));
+
+      expect(output.versions).toEqual({});
     });
 
     it('leaves non-matching packages untouched when ranges exist for other names', async () => {
@@ -227,6 +269,38 @@ describe('verdaccio-filter-artea', () => {
       expect(result.status).toBe(403);
       expect(result.body!.error).toContain('left-pad@1.3.0');
       expect(result.nexted).toBe(false);
+    });
+
+    it('rejects too-new tarballs after metadata has populated publish times', async () => {
+      const file = tmpPolicyPath();
+      writePolicy(file, 'upstream:\n  min_age: P3D\nblocked: {}\n');
+      const plugin = makePlugin(file);
+      const recent = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+
+      await plugin.filter_metadata(packument('left-pad', ['1.3.0'], '1.3.0', { '1.3.0': recent }));
+      const result = await runMiddlewareAsync(plugin, '/left-pad/-/left-pad-1.3.0.tgz');
+
+      expect(result.status).toBe(403);
+      expect(result.body!.error).toContain('minimum upstream age');
+    });
+
+    it('looks up npm metadata for cold direct tarball age checks', async () => {
+      const file = tmpPolicyPath();
+      writePolicy(file, 'upstream:\n  min_age: P3D\nblocked: {}\n');
+      const plugin = makePlugin(file, { npm_registry_url: 'http://npm.example.test' });
+      const old = new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString();
+      const fetchMock = vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ name: 'left-pad', time: { '1.2.0': old } }),
+      }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const result = await runMiddlewareAsync(plugin, '/left-pad/-/left-pad-1.2.0.tgz');
+
+      expect(result.nexted).toBe(true);
+      expect(fetchMock).toHaveBeenCalledWith('http://npm.example.test/left-pad', { headers: { accept: 'application/json' } });
+      vi.unstubAllGlobals();
     });
 
     it('lets non-blocked versions of the same (hyphenated) name through', () => {

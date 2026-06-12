@@ -19,6 +19,8 @@ class Config:
     webhook_secret: str
     policy_repo: str
     policy_file_path: str  # "" = HTTP-only mode (no file write, K8s has no /policy volume)
+    upstream_policy_file_path: str  # "" = HTTP-only mode
+    pypi_policy_file_path: str
     devpi_url: str
     devpi_root_password: str
     poll_interval: float
@@ -43,6 +45,12 @@ class Config:
         if policy_file_path is None:
             policy_dir = env.get("POLICY_DIR", "/policy").rstrip("/")
             policy_file_path = f"{policy_dir}/npm-rules.yaml"
+        upstream_policy_file_path = env.get("UPSTREAM_POLICY_FILE_PATH")
+        if upstream_policy_file_path is None:
+            upstream_policy_file_path = str(os.path.join(os.path.dirname(policy_file_path), "upstream-policy.yaml")) if policy_file_path else ""
+        pypi_policy_file_path = env.get("PYPI_POLICY_FILE_PATH")
+        if pypi_policy_file_path is None:
+            pypi_policy_file_path = str(os.path.join(os.path.dirname(policy_file_path), "pypi-constraints.txt")) if policy_file_path else ""
         namespace = env.get("ARTEA_NAMESPACE", "artea")
 
         return cls(
@@ -51,6 +59,8 @@ class Config:
             webhook_secret=env["POLICY_WEBHOOK_SECRET"],
             policy_repo=env.get("POLICY_REPO") or f"{namespace}/registry-policy",
             policy_file_path=policy_file_path,
+            upstream_policy_file_path=upstream_policy_file_path,
+            pypi_policy_file_path=pypi_policy_file_path,
             devpi_url=env.get("DEVPI_URL", "http://devpi:3141").rstrip("/"),
             devpi_root_password=env["DEVPI_ROOT_PASSWORD"],
             poll_interval=poll_interval,

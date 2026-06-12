@@ -32,6 +32,7 @@ filters:
   # FAILS CLOSED (public packages rejected).
   filter-artea:
     policy_file: /policy/npm-rules.yaml
+    upstream_policy_file: /policy/upstream-policy.yaml
 
 uplinks:
   npmjs:
@@ -70,6 +71,7 @@ middlewares:
   # 503s them while the policy file is missing/unparsable (fail-closed, S15)
   filter-artea:
     policy_file: /policy/npm-rules.yaml
+    upstream_policy_file: /policy/upstream-policy.yaml
 
 server:
   keepAliveTimeout: 60

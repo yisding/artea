@@ -21,8 +21,8 @@ gateway:
 `.generated/gateway/nginx.conf` using `ARTEA_NAMESPACE` from `.env`.
 
 The config relies on Docker's embedded DNS (`resolver 127.0.0.11`) and resolves
-upstream names per-request, so the gateway starts and stays up regardless of the
-other containers' state (no `depends_on` ordering required for nginx itself).
+upstream names per-request, so nginx tolerates container re-creation. Compose
+still waits for the hot-path upstreams before marking the gateway healthy.
 
 ## Routing table
 
@@ -30,9 +30,9 @@ other containers' state (no `depends_on` ordering required for nginx itself).
 |------|----------|----------------|
 | `/npm/@${ARTEA_NAMESPACE}/**` and `/npm/-/package/@${ARTEA_NAMESPACE}/**` (dist-tag API; scope literal or `%40`-encoded, separator `/` or `%2f`, any letter case) | `gitea:3000` → `/api/packages/${ARTEA_NAMESPACE}/npm/...`. The regex location matches literal and encoded `@` / scope-separator spellings case-insensitively; npm publish/packument paths use `%2f`, which nginx keeps encoded during location matching. The forwarded path comes from a `map` over the **raw** `$request_uri`, so `%2f`/`%40` reach Gitea byte-for-byte. A scoped-location match without a raw-map match, including double-encoded separators (`%252f`/`%2540`), returns `400`, reaching neither upstream. All methods (publish `PUT` included) route identically | none at the gateway — Gitea enforces its own auth (Basic `user:PAT` or token); no `auth_request` |
 | `/npm/**` (everything outside the configured private scope) | `verdaccio:4873` (prefix stripped; Verdaccio `url_prefix=/npm/`) | gateway `auth_request` → Gitea `GET /api/v1/user` (same guard + 30s cache as pypi), so Verdaccio service endpoints (`/-/ping`, `/-/v1/search`, audit) are not anonymous; the `Authorization` header still passes through so Verdaccio's auth plugin authorizes npm-level access against Gitea |
-| `/pypi/simple/{name}[/]` | name PEP 503-normalized + trailing slash appended **in the gateway** (see below), then `gitea:3000` → `/api/packages/${ARTEA_NAMESPACE}/pypi/simple/{norm}/`; **on Gitea 404 only** → `devpi:3141` → `/root/constrained/+simple/{norm}/` (same normalized name) | gateway `auth_request` → Gitea `GET /api/v1/user` (Basic `user:PAT`); 200s cached 30s keyed on the `Authorization` header |
+| `/pypi/simple/{name}[/]` | name PEP 503-normalized + trailing slash appended **in the gateway** (see below), then `gitea:3000` → `/api/packages/${ARTEA_NAMESPACE}/pypi/simple/{norm}/`; **on Gitea 404 only** → `devpi:3141` → `/root/constrained/+simple/{norm}/`, where the Artea devpi policy plugin applies PyPI constraints and the shared upstream age gate | gateway `auth_request` → Gitea `GET /api/v1/user` (Basic `user:PAT`); 200s cached 30s keyed on the `Authorization` header |
 | `/pypi/simple/` (bare full-index page) | `devpi:3141` → `/root/constrained/+simple/` directly (Gitea has no list-all route) | gateway `auth_request` (same guard) |
-| `/root/**` (devpi simple pages, file downloads) | `devpi:3141` (path unchanged) | gateway `auth_request` (same guard; devpi itself has no auth) |
+| `/root/**` (public devpi file/simple paths) | `devpi:3141` (path unchanged). The Artea devpi policy plugin guards direct `root/pypi/+f/...` and `root/pypi/+e/...` public file URLs when age verification is required | gateway `auth_request` (same guard; devpi itself has no auth) |
 | `/-/artea-gateway/health` | none (gateway-local liveness, for compose healthchecks) | none |
 | `/**` (everything else: UI, `/api/v1/...`, `/api/packages/${ARTEA_NAMESPACE}/npm/...`, `/api/packages/${ARTEA_NAMESPACE}/pypi/...` uploads + files) | `gitea:3000` (raw URI, byte-for-byte) | Gitea enforces its own auth; no gateway guard |
 
@@ -77,17 +77,16 @@ via `error_page 404 = @public_pypi`:
   request — a privately published name fully shadows the public one
   (dependency-confusion protection, e2e scenario S9).
 - Gitea **404** (name not privately published) → proxied to devpi's
-  `root/constrained` index, which mirrors pypi.org filtered by
-  `pypi-constraints.txt` (R3), asked with the same normalized name.
+  `root/constrained` index with the same normalized name. The Artea devpi policy
+  plugin applies `pypi-constraints.txt` and the shared `upstream-policy.yaml`
+  age gate.
 - Any other Gitea status (401/403/5xx) does **not** fall through; 401/403
   short-circuit into the gateway's Basic challenge (the public mirror is never
   consulted for an unauthenticated/unauthorized request), 5xx pass to the
   client.
-- Should devpi ever answer the fallback with a redirect, a `proxy_redirect`
-  regex maps its `Location` back into `/pypi/simple/...` so a
-  redirect-following client re-enters this precedence check instead of hitting
-  `/root/...` directly. (It shouldn't happen: the gateway only sends devpi
-  canonical names with trailing slashes.)
+- Public devpi-shaped `/root/...` URLs also go to devpi. With a PyPI age gate
+  active, the devpi policy plugin rejects unknown direct public file URLs unless
+  devpi can associate them with a project and verify the upload time.
 
 ## npm scope routing (gateway-enforced)
 
@@ -139,8 +138,8 @@ CLIENT CAVEAT comment in `nginx.conf.template`.
 - `absolute_redirect off` — the container listens on 80 but is published as 8080;
   relative `Location` headers avoid emitting `http://localhost/...` (port lost).
 - `X-Forwarded-For/-Proto/-Host`, `X-Real-IP`, `Host $http_host` set for all
-  upstreams; `X-outside-url` is set for devpi (its documented reverse-proxy
-  mechanism; Gitea/Verdaccio ignore it).
+  upstreams; `X-outside-url` is set for devpi paths so generated public package
+  links stay on the gateway origin.
 
 ## Auth-result cache
 
@@ -182,11 +181,9 @@ Trade-offs, accepted and documented:
    — one path segment deeper. If devpi emits *relative* file hrefs
    (`../../+f/...`), pip resolves them to `/pypi/+f/...`, which routes to Gitea
    and 404s. The gateway already sends `X-outside-url`; **devpi must be run with
-   `--absolute-urls`** so file links come out as
-   `http://localhost:8080/root/constrained/+f/...`, which the `/root/` location
-   serves. S8 is the canary. (Fallback mitigations if needed: a
-   `/pypi/+...` → `/root/constrained/+...` compatibility location, or switching
-   the fallback from proxy to a 302 redirect into `/root/...`.)
+   `--absolute-urls`** so file links come out as gateway-origin `/root/...`
+   URLs. The `/root/` location is a guarded path to devpi, and the devpi policy
+   plugin enforces public-file age policy there. S8 is the canary.
 4. **PEP 503 name normalization happens in the gateway.** The Gitea-first
    lookup and the devpi fallback both use the njs-normalized name (see "PEP 503
    name normalization" above) — shadowing no longer relies on the client, Gitea,

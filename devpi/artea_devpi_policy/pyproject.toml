@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "artea-devpi-policy"
+version = "0.1.0"
+description = "Artea devpi constrained-index policy plugin"
+requires-python = ">=3.12"
+dependencies = ["devpi-server>=6.10.0"]
+
+[project.entry-points.devpi_server]
+artea-devpi-policy = "artea_devpi_policy.main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

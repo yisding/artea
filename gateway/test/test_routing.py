@@ -349,12 +349,13 @@ class GatewayTest(unittest.TestCase):
         # the precedence guarantee: devpi never consulted for a private name
         self.assertFalse([p for p in self.seen("devpi") if "private-pkg" in p])
 
-    def test_pypi_404_falls_through_to_devpi_constrained(self):
+    def test_pypi_404_falls_through_to_devpi_constrained_index(self):
         status, body, _ = self._raw("GET", "/pypi/simple/six/", auth=GOOD_AUTH)
         self.assertEqual(status, 200)
         self.assertEqual(body, "devpi /root/constrained/+simple/six/")
         # Gitea really was asked first, under the org pypi endpoint
         self.assertIn(f"/api/packages/{TEST_NAMESPACE}/pypi/simple/six/", self.seen("gitea"))
+        self.assertIn("/root/constrained/+simple/six/", self.seen("devpi"))
 
     def test_pypi_name_normalized_before_gitea_lookup(self):
         # S16: non-canonical spellings of a private name must still resolve to
@@ -390,15 +391,7 @@ class GatewayTest(unittest.TestCase):
         status, body, _ = self._raw("GET", "/pypi/simple/", auth=GOOD_AUTH)
         self.assertEqual((status, body), (200, "devpi /root/constrained/+simple/"))
 
-    def test_pypi_devpi_redirect_mapped_back_into_gateway(self):
-        # belt-and-braces: a devpi Location header may never point the client
-        # at /root/... directly — it must re-enter the precedence check
-        status, _, headers = self._raw("GET", "/pypi/simple/redirector/",
-                                       auth=GOOD_AUTH)
-        self.assertEqual(status, 302)
-        self.assertEqual(headers["Location"], "/pypi/simple/target/")
-
-    def test_devpi_file_downloads_guarded_and_passed_through(self):
+    def test_devpi_file_downloads_guarded_and_passed_to_devpi(self):
         path = "/root/constrained/+f/abc/six.whl"
         status, _, _ = self._raw("GET", path)
         self.assertEqual(status, 401)

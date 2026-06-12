@@ -1,4 +1,4 @@
-"""One policy sync: fetch both policy files from Gitea and apply them.
+"""One policy sync: fetch policy files from Gitea and apply them.
 
 Failure semantics:
 - a missing file (404) is a warning and is skipped — deleting one policy file
@@ -23,17 +23,35 @@ log = logging.getLogger(__name__)
 
 NPM_RULES_FILE = "npm-rules.yaml"
 PYPI_CONSTRAINTS_FILE = "pypi-constraints.txt"
+UPSTREAM_POLICY_FILE = "upstream-policy.yaml"
+DEFAULT_MIN_UPSTREAM_AGE = "P0D"
 
 
 class Syncer:
-    def __init__(self, cfg: Config, sleep=time.sleep, store: PolicyStore | None = None):
+    def __init__(
+        self,
+        cfg: Config,
+        sleep=time.sleep,
+        store: PolicyStore | None = None,
+        upstream_store: PolicyStore | None = None,
+    ):
         self.cfg = cfg
         self.sleep = sleep
         self.store = store
+        self.upstream_store = upstream_store
+        self.min_upstream_age = self._initial_min_upstream_age()
 
     @property
     def npm_dest(self) -> Path | None:
         return Path(self.cfg.policy_file_path) if self.cfg.policy_file_path else None
+
+    @property
+    def pypi_dest(self) -> Path | None:
+        return Path(self.cfg.pypi_policy_file_path) if self.cfg.pypi_policy_file_path else None
+
+    @property
+    def upstream_dest(self) -> Path | None:
+        return Path(self.cfg.upstream_policy_file_path) if self.cfg.upstream_policy_file_path else None
 
     def _fetch(self, path: str) -> bytes | None:
         """Returns file bytes, or None if the file should be skipped (404)."""
@@ -42,6 +60,53 @@ class Syncer:
         except GiteaNotFound:
             log.warning("%s not found in %s; skipping (existing policy untouched)", path, self.cfg.policy_repo)
             return None
+
+    def _extract_min_upstream_age(self, data: bytes) -> str:
+        in_upstream = False
+        for raw_line in data.decode("utf-8", errors="replace").splitlines():
+            line = raw_line.split("#", 1)[0].rstrip()
+            if not line.strip():
+                continue
+            indent = len(line) - len(line.lstrip(" "))
+            stripped = line.strip()
+            if indent == 0:
+                in_upstream = stripped == "upstream:"
+                continue
+            if in_upstream and indent > 0:
+                key, sep, value = stripped.partition(":")
+                if sep and key in {"min_age", "minimum_age", "min_upstream_age"}:
+                    return value.strip().strip("\"'")
+        return DEFAULT_MIN_UPSTREAM_AGE
+
+    def _initial_min_upstream_age(self) -> str:
+        if self.upstream_store is not None:
+            got = self.upstream_store.get()
+            if got is not None:
+                return self._extract_min_upstream_age(got[0])
+        dest = self.upstream_dest
+        if dest is not None:
+            try:
+                return self._extract_min_upstream_age(dest.read_bytes())
+            except OSError:
+                pass
+        return DEFAULT_MIN_UPSTREAM_AGE
+
+    def _sync_upstream(self) -> None:
+        data = self._fetch(UPSTREAM_POLICY_FILE)
+        if data is None:
+            return
+        self.min_upstream_age = self._extract_min_upstream_age(data)
+        if self.upstream_store is not None:
+            self.upstream_store.set(data)
+        dest = self.upstream_dest
+        if dest is None:
+            log.debug("UPSTREAM_POLICY_FILE_PATH empty; HTTP-only mode, no upstream policy file written")
+            return
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if write_atomic(dest, data):
+            log.info("wrote %s (%d bytes)", dest, len(data))
+        else:
+            log.debug("%s unchanged", dest)
 
     def _sync_npm(self) -> None:
         data = self._fetch(NPM_RULES_FILE)
@@ -61,20 +126,34 @@ class Syncer:
 
     def _sync_pypi(self) -> None:
         data = self._fetch(PYPI_CONSTRAINTS_FILE)
-        if data is None:
-            return
+        constraints_text = data.decode("utf-8", errors="replace") if data is not None else None
+        dest = self.pypi_dest
+        if data is not None and dest is not None:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if write_atomic(dest, data):
+                log.info("wrote %s (%d bytes)", dest, len(data))
+            else:
+                log.debug("%s unchanged", dest)
         # apply_constraints skips the PATCH when devpi already holds these
         # constraints — the live index config, not a local hash, is the
         # idempotency source of truth, so a wiped+recreated devpi (fail-closed
         # '*' seed) is healed by the next poll even with an unchanged policy
-        if apply_constraints(self.cfg, data.decode("utf-8", errors="replace")):
-            log.info("applied %d bytes of constraints to %s", len(data), CONSTRAINED_INDEX)
+        if apply_constraints(self.cfg, constraints_text, self.min_upstream_age):
+            if data is None:
+                log.info("applied min_upstream_age=%s to %s", self.min_upstream_age, CONSTRAINED_INDEX)
+            else:
+                log.info("applied %d bytes of constraints to %s", len(data), CONSTRAINED_INDEX)
         else:
             log.debug("constraints unchanged; devpi untouched")
 
     def sync_once(self) -> bool:
         """Run one sync. Returns True if nothing retryable failed."""
         ok = True
+        try:
+            self._sync_upstream()
+        except (GiteaError, OSError) as e:
+            log.error("upstream policy sync failed: %s", e)
+            ok = False
         try:
             self._sync_npm()
         except (GiteaError, OSError) as e:

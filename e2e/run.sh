@@ -150,6 +150,7 @@ trap cleanup EXIT
 log "run id ${RUN_ID}; work dir ${WORK}"
 
 ORIG_NPM_RULES=$(get_policy_file npm-rules.yaml) || die "cannot read npm-rules.yaml from the policy repo"
+ORIG_UPSTREAM_POLICY=$(get_policy_file upstream-policy.yaml) || die "cannot read upstream-policy.yaml from the policy repo"
 ORIG_CONSTRAINTS=$(get_policy_file pypi-constraints.txt) || die "cannot read pypi-constraints.txt from the policy repo"
 
 write_npmrc "${NPMRC}" "${DEV1_TOKEN}"
@@ -228,6 +229,8 @@ s1_bootstrap() {
   [ "$(echo "$API_BODY" | jq -r .visibility)" = private ] || { echo "org ${ARTEA_NAMESPACE} is not private"; return 1; }
   admin_api GET "/repos/${POLICY_REPO}/contents/npm-rules.yaml"
   [ "$API_CODE" = 200 ] || { echo "npm-rules.yaml not seeded"; return 1; }
+  admin_api GET "/repos/${POLICY_REPO}/contents/upstream-policy.yaml"
+  [ "$API_CODE" = 200 ] || { echo "upstream-policy.yaml not seeded"; return 1; }
   admin_api GET "/repos/${POLICY_REPO}/contents/pypi-constraints.txt"
   [ "$API_CODE" = 200 ] || { echo "pypi-constraints.txt not seeded"; return 1; }
   admin_api GET "/repos/${POLICY_REPO}/hooks"
@@ -340,7 +343,7 @@ s8_pip_install_public() {
   url=$(jq -r '.install[0].download_info.url' "$report")
   echo "downloaded from: ${url}"
   case "$url" in
-    */root/pypi/*) ;; # devpi mirror file path through the gateway
+    */root/pypi/*) ;; # public PyPI mirror path through the gateway
     *) echo "six did not come through the devpi pull-through path"; return 1 ;;
   esac
 }

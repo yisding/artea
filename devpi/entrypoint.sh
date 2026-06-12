@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Artea devpi entrypoint: idempotent init, server start, ensure root/constrained.
-# devpi is ONLY a disposable pull-through cache of pypi.org with constraints
+# devpi is ONLY a disposable pull-through cache of pypi.org with policy
 # filtering. Private packages live in Gitea; auth is enforced by the gateway.
 set -euo pipefail
 

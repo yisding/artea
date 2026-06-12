@@ -188,19 +188,18 @@ http {
             proxy_pass http://$gitea_upstream;
         }
 
-        # Fallback: devpi's constrained index (pypi.org mirror filtered by policy,
-        # R3), asked with the SAME normalized name. $pypi_project survives the
-        # internal redirect because no capturing regex runs in between.
+        # Fallback: ask devpi's constrained index with the SAME normalized name.
+        # $pypi_project survives the internal redirect because no capturing regex
+        # runs in between.
         location @public_pypi {
             rewrite ^ /root/constrained/+simple/$pypi_project/ break;
-            # devpi receives the canonical form (normalized + trailing slash), so it
-            # has no reason to redirect; if it ever does, route the client back
-            # through the gateway's precedence check, never into /root/ directly.
-            proxy_redirect ~*^(?:https?://[^/]+)?/root/constrained/\+simple/(.*)$ /pypi/simple/$1;
             proxy_pass http://$devpi_upstream;
         }
 
-        # ---- devpi file downloads (URLs inside its simple pages) -------------------
+        # ---- devpi simple/file paths ------------------------------------------------
+        # devpi is internal-only and has no auth of its own. The Artea devpi
+        # policy plugin filters the constrained index and guards root/pypi files
+        # from bypassing upstream age policy.
         location /root/ {
             auth_request /_registry_auth;
             error_page 401 403 = @registry_unauthorized;

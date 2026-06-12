@@ -14,7 +14,7 @@ If implementation reality forces a deviation, document it in `docs/adr/`.
 |----|-------------|
 | R1 | Unified auth across all registries; SSO via Okta/OIDC for humans |
 | R2 | Private publish + pull-through of public packages; private names take absolute precedence |
-| R3 | Ability to block public packages and specific versions from pull-through |
+| R3 | Ability to block public packages and specific versions from pull-through, including recency gates |
 | R4 | Standard Python (pip/uv/poetry/twine) and JS (npm/pnpm/yarn) tooling works unmodified |
 | R5 | Long-lived credentials (up to ~1 year) for pull and publish |
 | R6 | The same credential works for both publishing and downloading |
@@ -33,9 +33,9 @@ One public entrypoint (the gateway). Everything else is internal.
                   │ gitea :3000  │  │ verdaccio    │  │ devpi :3141  │
                   │ identity,    │  │ :4873        │  │ PyPI pull-   │
                   │ PATs, private│  │ npm pull-    │  │ through cache│
-                  │ packages, UI │  │ through cache│  │ + constraints│
+                  │ packages, UI │  │ through cache│  │ + policy     │
                   └──────▲───────┘  └───────▲──────┘  └────▲─────────┘
-                         │ webhook          │ policy file  │ constraints push
+                         │ webhook          │ policy files │ index config
                        ┌─┴──────────────────┴──────────────┴─┐
                        │            policy-sync :8920          │
                        └────────────────────────────────────────┘
@@ -49,10 +49,10 @@ One public entrypoint (the gateway). Everything else is internal.
 | Gateway container/port | `gateway`, listens on 80, published as 8080 |
 | Gitea container/port | `gitea`, 3000 (stock `gitea/gitea` image, exact tag pinned in `.env`) |
 | Verdaccio container/port | `verdaccio`, 4873 (stock `verdaccio/verdaccio:6` image, exact tag pinned) |
-| devpi container/port | `devpi`, 3141 (our `devpi/Dockerfile`: python-slim + devpi-server + devpi-constrained) |
+| devpi container/port | `devpi`, 3141 (our `devpi/Dockerfile`: python-slim + devpi-server + Artea devpi policy plugin) |
 | policy-sync container/port | `policy-sync`, 8920 (our `policy-sync/` Python service) |
 | Private namespace org | `ARTEA_NAMESPACE` (default `artea`; Gitea organization and npm scope `@${ARTEA_NAMESPACE}`) |
-| Policy repo | Gitea repo `${ARTEA_NAMESPACE}/registry-policy` containing `npm-rules.yaml`, `pypi-constraints.txt` |
+| Policy repo | Gitea repo `${ARTEA_NAMESPACE}/registry-policy` containing `npm-rules.yaml`, `upstream-policy.yaml`, `pypi-constraints.txt` |
 | Shared policy volume | named volume `policy-data`, mounted at `/policy` in verdaccio and policy-sync |
 | Bootstrap admin | `ARTEA_ADMIN_USER` (default `${ARTEA_NAMESPACE}-admin` when unset), password from `.env` (`ARTEA_ADMIN_PASSWORD`) |
 | Env file | `.env` at repo root (`.env.example` committed); all version pins, secrets, and namespace settings live here |
@@ -136,9 +136,9 @@ Gateway logic for `GET /pypi/simple/{name}/`:
 2. If Gitea returns **200** → serve it. Done. PyPI is never consulted for this name —
    this is the dependency-confusion guarantee (R2): a private name fully shadows public.
 3. If Gitea returns **404** → nginx `proxy_intercept_errors` + named fallback location →
-   proxy to devpi `root/constrained` index (PyPI mirror filtered by constraints, R3).
-   Only a true 404 falls through; 401/403 short-circuit and never reach the public
-   mirror.
+   proxy to devpi's `root/constrained` simple page (PyPI mirror filtered by
+   constraints and upstream age policy, R3). Only a true 404 falls through;
+   401/403 short-circuit and never reach the public mirror.
 
 The gateway PEP 503-normalizes the project name (lowercase, collapse `[-_.]+` to `-`)
 before the Gitea-first lookup, so non-canonical spellings cannot dodge the private
@@ -147,8 +147,10 @@ devpi redirect that would skip the precedence check.
 
 - Publishes: `twine upload` → `https://host/api/packages/${ARTEA_NAMESPACE}/pypi/` (Gitea direct).
   **Artifacts/wheels live in Gitea**, never in devpi. devpi is a disposable cache.
-- devpi file URLs (`/root/...`) are routed by the gateway to devpi; Gitea file URLs
-  (`/api/packages/...`) route to Gitea.
+- devpi file URLs (`/root/...`) are routed by the gateway to devpi. The Artea
+  devpi policy plugin guards public mirror files (`root/pypi/+f/...` and
+  `root/pypi/+e/...`) so direct URLs cannot bypass an active upstream age
+  policy. Gitea file URLs (`/api/packages/...`) route to Gitea.
 - devpi has no auth of its own and is not exposed; the gateway enforces auth on all
   devpi-bound paths via nginx `auth_request` subrequests to Gitea `/api/v1/user`,
   forwarding the client's Authorization header (R1).
@@ -179,32 +181,49 @@ devpi redirect that would skip the precedence check.
 
 Policy-as-code in the Gitea repo `${ARTEA_NAMESPACE}/registry-policy`:
 
-- `npm-rules.yaml` — blocked package names, scopes, and semver ranges. Consumed by our
-  Verdaccio **filter plugin**, which re-reads the file from `/policy` when its mtime
-  changes (no restart needed).
-- `pypi-constraints.txt` — devpi-constrained format (pip-constraints-like; supports
-  `name<2`, `name ==1.2.3`, and `*` default-deny). Applied by policy-sync to the
-  `root/constrained` index.
+- `npm-rules.yaml` — blocked npm package names, scopes, and semver ranges.
+  Consumed by our Verdaccio **filter plugin**, which re-reads the file from
+  `/policy` when its mtime changes (no restart needed).
+- `upstream-policy.yaml` — pull-through policy shared by all public upstream
+  caches. v1 defines `upstream.min_age` as an ISO 8601 duration such as `P3D`
+  or `PT72H`; `P0D` disables the gate. npm and PyPI consume the same value, and
+  future formats must do the same rather than inventing per-format age knobs.
+- `pypi-constraints.txt` — devpi-constrained-compatible format
+  (pip-constraints-like; supports `name<2`, `name ==1.2.3`, and `*`
+  default-deny). Applied by policy-sync to the `root/constrained` index.
 
 `policy-sync` receives a Gitea push webhook (plus a startup sync and a slow poll as
-fallback), fetches the two files via Gitea's raw-content API using a dedicated
+fallback), fetches the three files via Gitea's raw-content API using a dedicated
 low-privilege service account PAT (`svc-policy`, read-only on the policy repo),
-writes `npm-rules.yaml` into the shared `/policy` volume, and pushes the constraints
-into devpi.
+writes `npm-rules.yaml`, `upstream-policy.yaml`, and `pypi-constraints.txt` into
+the shared `/policy` volume when present, serves the npm and upstream policies
+over HTTP for Kubernetes, and pushes the PyPI constraints plus
+`min_upstream_age` into devpi.
 
 **Enforcement depth (npm):** the filter plugin filters packuments (metadata) AND the
 same package registers a Verdaccio middleware that rejects tarball downloads
-(`GET .../-/<file>.tgz`) of blocked versions with 403 — blocks cannot be bypassed by
-constructing the tarball URL directly.
+(`GET .../-/<file>.tgz`) of blocked or too-new versions with 403 — blocks cannot
+be bypassed by constructing the tarball URL directly. For cold direct tarball
+requests under an active age gate, the middleware fetches npm registry metadata
+for publish timestamps and fails closed if it cannot verify the version age.
 
-**Failure mode is fail-closed:** if `/policy/npm-rules.yaml` is missing or unparsable,
+**Enforcement depth (PyPI):** Artea's devpi policy plugin keeps the
+`type=constrained` index contract and filters the public simple index by version
+constraints and upstream upload time. It also guards direct `root/pypi` public
+file URLs inside devpi; when an age gate is active, a file without known
+project/upload-time context is rejected rather than served unverified.
+
+**Failure mode is fail-closed:** if `/policy/npm-rules.yaml` or
+`/policy/upstream-policy.yaml` is missing or unparsable,
 the middleware rejects tarball downloads with 503 and the filter serves packuments
 with zero versions (Verdaccio swallows filter exceptions, so stripping every version
 is the fail-closed packument shape) rather than silently allowing everything; a
-stale-but-valid file keeps serving as last-known-good. On the
-Python side, the devpi entrypoint seeds a freshly created `root/constrained` index
-with the `*` constraint (block everything) so a wiped cache volume is closed until
-policy-sync's next successful sync replaces it with the real policy.
+stale-but-valid file keeps serving as last-known-good. On the Python side, the
+devpi entrypoint seeds a freshly created `root/constrained` index with the `*`
+constraint (block everything) and `min_upstream_age=P0D` so a wiped cache volume
+is closed until policy-sync's next successful sync replaces it with the real
+policy. With an active age gate, the devpi policy plugin rejects public versions
+or direct file URLs whose upload time cannot be verified from PyPI metadata.
 
 **Governance:** policy changes go through PRs and are enforceably auditable:
 `registry-policy`'s default branch carries branch protection (no direct pushes except
@@ -218,8 +237,10 @@ the admin allowlist, ≥1 required approval), and developers are members of a
    `gitea/custom/` templates (Gitea's supported
    `custom/` directory: template/asset overrides). No source patches in v1.
 2. **Verdaccio and devpi are consumed as released artifacts.** Our code is plugins
-   against their stable plugin APIs (`verdaccio/plugins/*` as npm packages; devpi
-   needs none in v1).
+   against their stable plugin APIs (`verdaccio/plugins/*` as npm packages;
+   `devpi/artea_devpi_policy` as a Python package). Artea's devpi plugin is
+   derived from the small devpi-constrained plugin, but devpi itself is not
+   vendored or patched.
 3. **`gitea/patches/`** is an empty quilt-style patch queue with an apply script and a
    documented bump procedure — the escape hatch for the day we need a source patch
    (first candidate: PAT expiry dates). Until then, upgrades = bump pin in `.env`,
@@ -256,11 +277,14 @@ shape. R7 extends to deployment artifacts: **reuse official upstream charts**.
   the Gitea-first 404-fallback, and PEP 503 normalization are never ported into
   ingress annotations. Single public base URL preserved.
 - **Policy delivery over HTTP in K8s** (no shared volume, no RWX): the filter plugin
-  supports `policy_url` as a first-class alternative to the file — it polls
-  policy-sync's `GET /policy/npm-rules.yaml` every 10s with ETag, keeps
-  last-known-good in memory, and fails closed after a grace window of persistent
-  failure. policy-sync serves that endpoint (cluster-internal). Compose keeps file
-  mode; both modes are tested.
+  supports `policy_url` and `upstream_policy_url` as first-class alternatives to
+  files — it polls policy-sync's `GET /policy/npm-rules.yaml` and
+  `GET /policy/upstream-policy.yaml` every 10s with ETags, keeps last-known-good
+  in memory, and fails closed after a grace window of persistent failure.
+  policy-sync serves those endpoints (cluster-internal). Compose keeps file mode
+  for npm/upstream policy and also writes `pypi-constraints.txt` for
+  debugging. PyPI enforcement state lives in devpi index config (`constraints`
+  and `min_upstream_age`) after each successful sync.
 - **Bootstrap as a Helm hook Job**: same `scripts/bootstrap.sh` logic and idempotency
   contract, with a token-sink abstraction — `env-file` mode (compose) vs `k8s-secret`
   mode (patches the policy-sync Secret via the API under a namespace-scoped Role and
@@ -297,7 +321,7 @@ shape. R7 extends to deployment artifacts: **reuse official upstream charts**.
 |-----|-----------|--------------|
 | R1 | Gitea OIDC (Okta) + plugins/auth_request validate everything against Gitea | S11, S12 (+ docs) |
 | R2 | npm gateway scope routing → Gitea (scope match, never a fallback); pypi gateway 404-fallback (200 = never consult public) | S2–S4, S6–S9, S17 |
-| R3 | Verdaccio filter plugin + tarball middleware + devpi-constrained, fail-closed | S5, S10, S13, S15 |
+| R3 | Verdaccio filter plugin + tarball middleware + Artea devpi policy plugin, fail-closed | S5, S10, S13, S15 |
 | R4 | Stock protocols: npm/pnpm/yarn vs Verdaccio+Gitea; pip/uv/twine vs gateway+Gitea | S2–S10 |
 | R5 | Gitea PATs (non-expiring today) | S11 |
 | R6 | One PAT publishes (Gitea) and pulls (everywhere) | S2/S3, S6/S7, S11 |

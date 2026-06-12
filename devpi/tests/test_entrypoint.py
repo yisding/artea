@@ -136,6 +136,7 @@ def test_first_boot_inits_and_creates_index(env):
     assert '"bases": "root/pypi"' in creates[0]
     # fail-closed seed (S15): a fresh index blocks everything until policy-sync
     assert '"constraints": ["*"]' in creates[0]
+    assert '"min_upstream_age": "P0D"' in creates[0]
     server = [c for c in lines if c.startswith("devpi-server ")]
     assert len(server) == 1
     assert "--host 0.0.0.0" in server[0]

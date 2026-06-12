@@ -338,6 +338,7 @@ verdaccio:
       # CLOSED (public packages rejected)
       filter-artea:
         policy_url: http://artea-policy-sync:8920/policy/npm-rules.yaml
+        upstream_policy_url: http://artea-policy-sync:8920/policy/upstream-policy.yaml
 
     uplinks:
       npmjs:
@@ -374,6 +375,7 @@ verdaccio:
       # 503s them while the policy is unavailable (fail-closed, S15)
       filter-artea:
         policy_url: http://artea-policy-sync:8920/policy/npm-rules.yaml
+        upstream_policy_url: http://artea-policy-sync:8920/policy/upstream-policy.yaml
 
     server:
       keepAliveTimeout: 60

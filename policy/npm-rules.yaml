@@ -19,6 +19,9 @@
 # - `name` is the full npm name, including scope if any (e.g. "@acme/utils").
 # - Omitting `versions` blocks all versions; `reason` is free text for humans.
 # - Multiple `packages` entries for the same name are OR-ed together.
+# - Public upstream recency gates live in upstream-policy.yaml and apply across
+#   formats. Private packages in the configured namespace are routed to Gitea
+#   before Verdaccio.
 # - Blocking only affects pull-through of public packages via Verdaccio.
 #   Private packages in the configured namespace never pass through Verdaccio.
 #

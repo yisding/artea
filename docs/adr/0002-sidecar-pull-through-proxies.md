@@ -44,9 +44,10 @@ convention:
   Client-side scope routing (`@${ARTEA_NAMESPACE}:registry=...`) remains supported as
   optional legacy.
 - **PyPI** (no scopes in PEP 503): the gateway proxies `/pypi/simple/{name}/`
-  to Gitea first and only falls back to devpi's `root/constrained` index on a
-  Gitea 404. A 200 from Gitea means the public index is never consulted for
-  that name.
+  to Gitea first and only falls back on a Gitea 404. The fallback goes to
+  devpi's `root/constrained` index, where the Artea devpi policy plugin applies
+  PyPI constraints and the shared upstream age gate. A 200 from Gitea means the
+  public index is never consulted for that name.
 - Auth is uniform (R1): Verdaccio validates Basic credentials against Gitea
   via a plugin; devpi-bound paths are guarded by nginx `auth_request`
   subrequests to Gitea `/api/v1/user`.

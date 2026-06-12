@@ -32,7 +32,7 @@ verdaccio config and the gateway nginx.conf, and other tooling relies on them:
 | gitea | `artea-gitea-http:3000` | subchart `fullnameOverride: artea-gitea`; PVC `artea-gitea-data` is the only store of record |
 | verdaccio | `artea-verdaccio:4873` | subchart `fullnameOverride`; PVC is a disposable cache |
 | devpi | `artea-devpi:3141` | PVC `artea-devpi-data` is a disposable cache (fail-closed re-seed) |
-| policy-sync | `artea-policy-sync:8920` | webhook receiver + `GET /policy/npm-rules.yaml` |
+| policy-sync | `artea-policy-sync:8920` | webhook receiver + `GET /policy/npm-rules.yaml` and `/policy/upstream-policy.yaml` |
 | secrets | `artea-admin`, `artea-secrets`, `artea-policy-sync` | see below |
 | bootstrap | Job/SA/Role/RoleBinding `artea-bootstrap` | post-install/post-upgrade hook |
 
@@ -57,9 +57,9 @@ the architecture doc), because its values cover everything we need:
 
 The verdaccio *image* is stock (R7); only the plugin bits ride in via the init
 container. K8s config differences vs `verdaccio/config.yaml` (compose):
-`listen` omitted (chart-owned), and the filter plugin uses
-`policy_url: http://artea-policy-sync:8920/policy/npm-rules.yaml` instead of
-`policy_file` — policy is delivered over HTTP, there is no shared volume.
+`listen` omitted (chart-owned), and the filter plugin uses `policy_url` plus
+`upstream_policy_url` against policy-sync instead of local `policy_file` paths —
+policy is delivered over HTTP, there is no shared volume.
 
 ## Secrets
 

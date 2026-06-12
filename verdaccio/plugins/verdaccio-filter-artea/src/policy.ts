@@ -7,6 +7,7 @@ export interface CompiledPolicy {
   scopes: Set<string>; // '@scope' — every package in the scope is blocked
   names: Set<string>; // full package names blocked in all versions
   ranges: Map<string, string[]>; // package name -> blocked semver ranges
+  minAgeMs: number; // public versions younger than this are hidden/rejected
 }
 
 /** ok=false means the policy could not be loaded and callers must fail closed. */
@@ -16,12 +17,46 @@ export type PolicyState = { ok: true; policy: CompiledPolicy } | { ok: false; re
 export const SEMVER_OPTS = { includePrerelease: true, loose: true } as const;
 
 export function emptyPolicy(): CompiledPolicy {
-  return { scopes: new Set(), names: new Set(), ranges: new Map() };
+  return { scopes: new Set(), names: new Set(), ranges: new Map(), minAgeMs: 0 };
 }
 
 interface RawPackageRule {
   name?: unknown;
   versions?: unknown;
+}
+
+const ISO_DURATION_RE = /^P(?:(\d+(?:\.\d+)?)W)?(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?$/i;
+const ISO_DURATION_FACTORS = [
+  7 * 24 * 60 * 60 * 1000,
+  24 * 60 * 60 * 1000,
+  60 * 60 * 1000,
+  60 * 1000,
+  1000,
+];
+
+function parseIsoDurationMs(raw: string): number {
+  const match = ISO_DURATION_RE.exec(raw.trim());
+  if (!match || match.slice(1).every((v) => v == null)) {
+    throw new Error('"upstream.min_age" must use ISO 8601 duration syntax such as "P3D" or "PT72H"');
+  }
+  const ms = match.slice(1).reduce((sum, value, index) => sum + (value == null ? 0 : Number(value) * ISO_DURATION_FACTORS[index]!), 0);
+  if (!Number.isFinite(ms) || ms < 0) {
+    throw new Error('"upstream.min_age" must be a non-negative duration');
+  }
+  return ms;
+}
+
+export function parseDurationMs(raw: unknown): number {
+  if (raw == null) {
+    return 0;
+  }
+  if (raw === 0) {
+    return 0;
+  }
+  if (typeof raw !== 'string') {
+    throw new Error('"upstream.min_age" must be an ISO 8601 duration string such as "P3D" or "PT72H"');
+  }
+  return parseIsoDurationMs(raw);
 }
 
 /** Validates and compiles the parsed YAML document. Throws on structural errors. */
@@ -34,6 +69,15 @@ export function compilePolicy(doc: unknown, logger: Logger): CompiledPolicy {
     throw new Error('policy root must be a mapping');
   }
   const blocked = (doc as { blocked?: unknown }).blocked;
+  const upstream = (doc as { upstream?: unknown }).upstream;
+  if (upstream != null) {
+    if (typeof upstream !== 'object' || Array.isArray(upstream)) {
+      throw new Error('"upstream" must be a mapping');
+    }
+    const raw = (upstream as { min_age?: unknown; minimum_age?: unknown }).min_age
+      ?? (upstream as { minimum_age?: unknown }).minimum_age;
+    policy.minAgeMs = parseDurationMs(raw);
+  }
   if (blocked == null) {
     return policy;
   }
@@ -309,12 +353,44 @@ export class HttpPolicyLoader implements PolicyLoader {
   }
 }
 
+export class CompositePolicyLoader implements PolicyLoader {
+  public constructor(
+    private readonly npmLoader: PolicyLoader,
+    private readonly upstreamLoader: PolicyLoader,
+  ) {}
+
+  public current(): PolicyState {
+    const npmState = this.npmLoader.current();
+    if (!npmState.ok) {
+      return npmState;
+    }
+    const upstreamState = this.upstreamLoader.current();
+    if (!upstreamState.ok) {
+      return { ok: false, reason: `upstream policy unavailable: ${upstreamState.reason}` };
+    }
+    return {
+      ok: true,
+      policy: {
+        ...npmState.policy,
+        minAgeMs: upstreamState.policy.minAgeMs,
+      },
+    };
+  }
+
+  public stop(): void {
+    this.npmLoader.stop();
+    this.upstreamLoader.stop();
+  }
+}
+
 export const DEFAULT_POLL_INTERVAL_MS = 10_000;
 export const DEFAULT_FAIL_GRACE_MS = 60_000;
 
 export interface PolicySourceConfig {
   policy_file?: string;
   policy_url?: string;
+  upstream_policy_file?: string;
+  upstream_policy_url?: string;
   poll_interval_ms?: number;
   fail_grace_ms?: number;
 }
@@ -329,17 +405,14 @@ function positiveMs(key: string, value: number | undefined, fallback: number): n
   return value;
 }
 
-/** Validates the config and returns the matching loader. Throws on misconfiguration. */
-export function createPolicyLoader(config: PolicySourceConfig, logger: Logger): PolicyLoader {
-  const file = config.policy_file;
-  const url = config.policy_url;
+function createSinglePolicyLoader(config: PolicySourceConfig, logger: Logger, fileKey: 'policy_file' | 'upstream_policy_file', urlKey: 'policy_url' | 'upstream_policy_url'): PolicyLoader | null {
+  const file = config[fileKey];
+  const url = config[urlKey];
   if (file && url) {
-    throw new Error('filter-artea: policy_file and policy_url are mutually exclusive; configure exactly one');
+    throw new Error(`filter-artea: ${fileKey} and ${urlKey} are mutually exclusive`);
   }
   if (!file && !url) {
-    throw new Error(
-      'filter-artea: configure exactly one of policy_file (shared /policy volume, compose) or policy_url (policy-sync HTTP endpoint, K8s)',
-    );
+    return null;
   }
   if (url) {
     return new HttpPolicyLoader(
@@ -352,4 +425,16 @@ export function createPolicyLoader(config: PolicySourceConfig, logger: Logger): 
     );
   }
   return new FilePolicyLoader(file!, logger);
+}
+
+/** Validates the config and returns the matching loader. Throws on misconfiguration. */
+export function createPolicyLoader(config: PolicySourceConfig, logger: Logger): PolicyLoader {
+  const npmLoader = createSinglePolicyLoader(config, logger, 'policy_file', 'policy_url');
+  if (npmLoader === null) {
+    throw new Error(
+      'filter-artea: configure exactly one of policy_file (shared /policy volume, compose) or policy_url (policy-sync HTTP endpoint, K8s)',
+    );
+  }
+  const upstreamLoader = createSinglePolicyLoader(config, logger, 'upstream_policy_file', 'upstream_policy_url');
+  return upstreamLoader === null ? npmLoader : new CompositePolicyLoader(npmLoader, upstreamLoader);
 }
