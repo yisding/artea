@@ -19,6 +19,8 @@ services:
     depends_on:
       gitea:
         condition: service_healthy
+      policy-sync:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1/-/artea-gateway/health"]
       interval: 10s
@@ -98,6 +100,8 @@ services:
       ARTEA_NAMESPACE: ${ARTEA_NAMESPACE:-artea}
       POLICY_REPO: ${POLICY_REPO:-}
       DEVPI_ROOT_PASSWORD: ${DEVPI_ROOT_PASSWORD}
+      PYPI_JSON_URL: ${PYPI_JSON_URL:-https://pypi.org/pypi}
+      PYPI_METADATA_CACHE_SECONDS: ${PYPI_METADATA_CACHE_SECONDS:-300}
     volumes:
       - policy-data:/policy
     depends_on:

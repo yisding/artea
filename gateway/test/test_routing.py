@@ -140,7 +140,7 @@ class GatewayTest(unittest.TestCase):
         (tmp / "logs").mkdir()
         (tmp / "cache").mkdir()
 
-        cls.upstreams = {t: Upstream(t) for t in ("gitea", "verdaccio", "devpi")}
+        cls.upstreams = {t: Upstream(t) for t in ("gitea", "verdaccio", "devpi", "policy-sync")}
         for up in cls.upstreams.values():
             threading.Thread(target=up.serve_forever, daemon=True).start()
 
@@ -161,6 +161,7 @@ class GatewayTest(unittest.TestCase):
             "gitea:3000": "127.0.0.1:%d" % cls.upstreams["gitea"].server_port,
             "verdaccio:4873": "127.0.0.1:%d" % cls.upstreams["verdaccio"].server_port,
             "devpi:3141": "127.0.0.1:%d" % cls.upstreams["devpi"].server_port,
+            "policy-sync:8920": "127.0.0.1:%d" % cls.upstreams["policy-sync"].server_port,
             "/var/log/nginx": str(tmp / "logs"),
             "/var/cache/nginx": str(tmp / "cache"),
             "/var/run/nginx.pid": str(tmp / "nginx.pid"),
@@ -349,12 +350,13 @@ class GatewayTest(unittest.TestCase):
         # the precedence guarantee: devpi never consulted for a private name
         self.assertFalse([p for p in self.seen("devpi") if "private-pkg" in p])
 
-    def test_pypi_404_falls_through_to_devpi_constrained(self):
+    def test_pypi_404_falls_through_to_policy_sync(self):
         status, body, _ = self._raw("GET", "/pypi/simple/six/", auth=GOOD_AUTH)
         self.assertEqual(status, 200)
-        self.assertEqual(body, "devpi /root/constrained/+simple/six/")
+        self.assertEqual(body, "policy-sync /pypi/simple/six/")
         # Gitea really was asked first, under the org pypi endpoint
         self.assertIn(f"/api/packages/{TEST_NAMESPACE}/pypi/simple/six/", self.seen("gitea"))
+        self.assertFalse([p for p in self.seen("devpi") if "six" in p])
 
     def test_pypi_name_normalized_before_gitea_lookup(self):
         # S16: non-canonical spellings of a private name must still resolve to
@@ -370,7 +372,7 @@ class GatewayTest(unittest.TestCase):
         status, body, _ = self._raw("GET", "/pypi/simple/Some_Public.Pkg/",
                                     auth=GOOD_AUTH)
         self.assertEqual(status, 200)
-        self.assertEqual(body, "devpi /root/constrained/+simple/some-public-pkg/")
+        self.assertEqual(body, "policy-sync /pypi/simple/some-public-pkg/")
         self.assertIn(f"/api/packages/{TEST_NAMESPACE}/pypi/simple/some-public-pkg/",
                       self.seen("gitea"))
 
@@ -380,7 +382,7 @@ class GatewayTest(unittest.TestCase):
         # redirect, letting redirect-following clients skip the check)
         status, body, _ = self._raw("GET", "/pypi/simple/six", auth=GOOD_AUTH)
         self.assertEqual(status, 200)
-        self.assertEqual(body, "devpi /root/constrained/+simple/six/")
+        self.assertEqual(body, "policy-sync /pypi/simple/six/")
         self.assertIn(f"/api/packages/{TEST_NAMESPACE}/pypi/simple/six/", self.seen("gitea"))
         self.assertNotIn("/root/constrained/+simple/six", self.seen("devpi"))
 
@@ -390,21 +392,21 @@ class GatewayTest(unittest.TestCase):
         status, body, _ = self._raw("GET", "/pypi/simple/", auth=GOOD_AUTH)
         self.assertEqual((status, body), (200, "devpi /root/constrained/+simple/"))
 
-    def test_pypi_devpi_redirect_mapped_back_into_gateway(self):
-        # belt-and-braces: a devpi Location header may never point the client
-        # at /root/... directly — it must re-enter the precedence check
-        status, _, headers = self._raw("GET", "/pypi/simple/redirector/",
-                                       auth=GOOD_AUTH)
-        self.assertEqual(status, 302)
-        self.assertEqual(headers["Location"], "/pypi/simple/target/")
-
-    def test_devpi_file_downloads_guarded_and_passed_through(self):
+    def test_devpi_file_downloads_guarded_and_passed_to_policy_sync(self):
         path = "/root/constrained/+f/abc/six.whl"
         status, _, _ = self._raw("GET", path)
         self.assertEqual(status, 401)
         status, body, _ = self._raw("GET", path, auth=GOOD_AUTH)
         self.assertEqual(status, 200)
-        self.assertEqual(body, f"devpi {path}")
+        self.assertEqual(body, f"policy-sync {path}")
+
+    def test_pypi_guarded_file_downloads_guarded_and_passed_to_policy_sync(self):
+        path = "/pypi/files/six/root/pypi/+f/abc/six.whl"
+        status, _, _ = self._raw("GET", path)
+        self.assertEqual(status, 401)
+        status, body, _ = self._raw("GET", path, auth=GOOD_AUTH)
+        self.assertEqual(status, 200)
+        self.assertEqual(body, f"policy-sync {path}")
 
     def test_auth_result_cached(self):
         for _ in range(3):

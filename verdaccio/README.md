@@ -8,7 +8,7 @@ file and two plugins loaded through Verdaccio's stable plugin API.
 |-------|---------|
 | `config.yaml.template` | Verdaccio config template: `/npm/` url_prefix, npmjs uplink, package rules, plugin wiring |
 | `plugins/verdaccio-auth-gitea/` | auth plugin — validates `user:PAT` against Gitea, maps orgs to groups (paginated), 30s positive cache |
-| `plugins/verdaccio-filter-artea/` | metadata filter + tarball middleware — enforces `/policy/npm-rules.yaml` (blocked names/scopes/semver ranges, mtime hot-reload, fail-closed) |
+| `plugins/verdaccio-filter-artea/` | metadata filter + tarball middleware — enforces `/policy/npm-rules.yaml` (blocked names/scopes/semver ranges, minimum upstream age, mtime hot-reload, fail-closed) |
 | `smoke/` | dev-only: boots verdaccio 6 in-process with `config.yaml.template` + built plugins and asserts the auth/deny contract; **not mounted** into the container |
 
 Design (see `docs/ARCHITECTURE.md`): Verdaccio is **read-only** — publish is denied
@@ -84,10 +84,10 @@ within a minute (e2e S12). There is no local user database and `npm adduser` fai
 policy-sync writes `npm-rules.yaml` from the `${ARTEA_NAMESPACE}/registry-policy` repo into the
 shared `/policy` volume; the filter plugin hot-reloads it on mtime change — no
 container restart. The same package is also wired as a middleware that rejects
-direct tarball downloads of blocked versions with 403 (S13). A missing or
-unparsable policy file **fails closed**: packuments are served with no versions and
-tarballs get 503 until the file is restored (S15). Schema and fail-closed semantics
-are documented in `plugins/verdaccio-filter-artea/README.md`.
+direct tarball downloads of blocked or too-new versions with 403 (S13). A
+missing or unparsable policy file **fails closed**: packuments are served with no
+versions and tarballs get 503 until the file is restored (S15). Schema and
+fail-closed semantics are documented in `plugins/verdaccio-filter-artea/README.md`.
 
 ## Upgrading verdaccio
 

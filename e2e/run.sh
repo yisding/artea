@@ -340,7 +340,7 @@ s8_pip_install_public() {
   url=$(jq -r '.install[0].download_info.url' "$report")
   echo "downloaded from: ${url}"
   case "$url" in
-    */root/pypi/*) ;; # devpi mirror file path through the gateway
+    */pypi/files/six/root/pypi/*|*/root/pypi/*) ;; # public PyPI mirror path through the gateway
     *) echo "six did not come through the devpi pull-through path"; return 1 ;;
   esac
 }
@@ -669,7 +669,7 @@ s15_fail_closed() {
   url=$(jq -r '.install[0].download_info.url' "$report")
   echo "post-recovery six downloaded from: ${url}"
   case "$url" in
-    */root/pypi/*) ;;
+    */pypi/files/six/root/pypi/*|*/root/pypi/*) ;;
     *) echo "six did not come through the devpi pull-through path"; return 1 ;;
   esac
 }

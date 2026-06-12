@@ -8,6 +8,7 @@ import urllib.request
 import pytest
 
 from policy_sync.server import SyncState, make_http_server
+from policy_sync.pypi import PypiProxy
 from policy_sync.store import PolicyStore, etag_for
 from tests.conftest import TEST_SECRET
 
@@ -21,11 +22,12 @@ def sign(body: bytes, secret: str = TEST_SECRET) -> str:
 
 
 @pytest.fixture
-def service(tmp_path):
+def service(tmp_path, cfg):
     triggers = []
     state = SyncState()
     store = PolicyStore(fallback_path=str(tmp_path / "npm-rules.yaml"))
-    httpd = make_http_server("127.0.0.1", 0, TEST_SECRET, lambda: triggers.append(1), state, store)
+    pypi_proxy = PypiProxy(cfg, PolicyStore(fallback_path=cfg.pypi_policy_file_path))
+    httpd = make_http_server("127.0.0.1", 0, TEST_SECRET, lambda: triggers.append(1), state, store, pypi_proxy)
     thread = threading.Thread(target=lambda: httpd.serve_forever(poll_interval=0.01), daemon=True)
     thread.start()
     url = f"http://127.0.0.1:{httpd.server_address[1]}"
@@ -38,6 +40,15 @@ def get_policy(url: str, if_none_match: str | None = None) -> tuple[int, dict, b
     """GET /policy/npm-rules.yaml -> (status, headers, body)."""
     headers = {"If-None-Match": if_none_match} if if_none_match else {}
     req = urllib.request.Request(url + "/policy/npm-rules.yaml", headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status, dict(resp.headers), resp.read()
+    except urllib.error.HTTPError as e:
+        return e.code, dict(e.headers), e.read()
+
+
+def head(url: str, path: str) -> tuple[int, dict, bytes]:
+    req = urllib.request.Request(url + path, method="HEAD")
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             return resp.status, dict(resp.headers), resp.read()
@@ -109,6 +120,14 @@ def test_unknown_paths_404(service):
     assert exc.value.code == 404
     status, _ = post(url, PAYLOAD, {"X-Gitea-Signature": sign(PAYLOAD)}, path="/nope")
     assert status == 404
+
+
+def test_head_error_responses_have_no_body(service):
+    url, _, _, _ = service
+    status, headers, body = head(url, "/nope")
+    assert status == 404
+    assert headers["Content-Type"] == "application/json"
+    assert body == b""
 
 
 def test_policy_404_before_first_sync(service):

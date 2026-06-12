@@ -15,6 +15,9 @@ def test_defaults_match_architecture_contract():
     assert cfg.devpi_url == "http://devpi:3141"
     assert cfg.policy_repo == "artea/registry-policy"
     assert cfg.policy_file_path == "/policy/npm-rules.yaml"
+    assert cfg.pypi_policy_file_path == "/policy/pypi-constraints.txt"
+    assert cfg.pypi_json_url == "https://pypi.org/pypi"
+    assert cfg.pypi_metadata_cache_seconds == 300
     assert cfg.poll_interval == 300
 
 
@@ -36,11 +39,18 @@ def test_policy_dir_env_still_sets_the_file_location():
 def test_policy_file_path_overrides_policy_dir():
     cfg = Config.from_env(dict(REQUIRED, POLICY_DIR="/data", POLICY_FILE_PATH="/tmp/private/rules.yaml"))
     assert cfg.policy_file_path == "/tmp/private/rules.yaml"
+    assert cfg.pypi_policy_file_path == "/tmp/private/pypi-constraints.txt"
 
 
 def test_empty_policy_file_path_means_http_only_mode():
     cfg = Config.from_env(dict(REQUIRED, POLICY_FILE_PATH=""))
     assert cfg.policy_file_path == ""
+    assert cfg.pypi_policy_file_path == ""
+
+
+def test_pypi_policy_file_path_can_be_overridden():
+    cfg = Config.from_env(dict(REQUIRED, PYPI_POLICY_FILE_PATH="/tmp/pypi.txt"))
+    assert cfg.pypi_policy_file_path == "/tmp/pypi.txt"
 
 
 @pytest.mark.parametrize("missing", sorted(REQUIRED))
@@ -61,3 +71,8 @@ def test_trailing_slashes_stripped():
 def test_invalid_poll_interval_raises():
     with pytest.raises(ConfigError):
         Config.from_env(dict(REQUIRED, POLICY_SYNC_POLL_SECONDS="nope"))
+
+
+def test_invalid_pypi_metadata_cache_raises():
+    with pytest.raises(ConfigError):
+        Config.from_env(dict(REQUIRED, PYPI_METADATA_CACHE_SECONDS="nope"))

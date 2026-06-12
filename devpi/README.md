@@ -44,10 +44,11 @@ Because the server runs with `--outside-url http://localhost:8080` **and
 the gateway origin, verified live: `http://localhost:8080/root/pypi/+f/...`.
 (Without `--absolute-urls` devpi emits relative hrefs like `../../../pypi/+f/...`,
 which break behind the gateway's `/pypi/simple/` → `/root/constrained/+simple/`
-path translation — do not remove that flag.) The gateway must route the
-**entire `/root/` prefix** to `devpi:3141` unchanged (after its auth_request guard),
-per `docs/ARCHITECTURE.md`. Gitea-stored files use `/api/packages/...` paths and
-route to Gitea instead.
+path translation — do not remove that flag.) The gateway routes the
+**entire `/root/` prefix** to policy-sync (after its auth_request guard), and
+policy-sync proxies allowed requests to `devpi:3141`. This keeps direct
+devpi-shaped file URLs from bypassing Artea's PyPI minimum-upstream-age guard.
+Gitea-stored files use `/api/packages/...` paths and route to Gitea instead.
 
 Two more gateway notes, both verified against the real server:
 
@@ -57,11 +58,10 @@ Two more gateway notes, both verified against the real server:
   devpi-shaped absolute URL on the gateway origin. A client following it skips the
   Gitea-first precedence check for that request, so the gateway's fallback proxy
   should append the slash itself rather than relay the redirect.
-- **Hardening (optional):** the only paths clients legitimately reach on devpi are
+- The only paths clients legitimately reach on devpi-shaped URLs are
   `/root/constrained/+simple/...` and the file routes `/root/pypi/+f/...` (and
-  `/root/pypi/+e/...`, devpi's external-link route). Restricting the gateway's
-  `/root/` location to those keeps anyone from browsing the unfiltered
-  `root/pypi/+simple/` mirror through the gateway.
+  `/root/pypi/+e/...`, devpi's external-link route). The gateway sends those to
+  policy-sync so direct file URLs cannot bypass a configured age gate.
 
 First-boot note: the container reports healthy as soon as `/+status` responds, which
 can be a second or two before `root/constrained` exists on the very first boot; a

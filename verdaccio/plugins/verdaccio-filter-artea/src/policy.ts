@@ -7,6 +7,7 @@ export interface CompiledPolicy {
   scopes: Set<string>; // '@scope' — every package in the scope is blocked
   names: Set<string>; // full package names blocked in all versions
   ranges: Map<string, string[]>; // package name -> blocked semver ranges
+  minAgeMs: number; // public versions younger than this are hidden/rejected
 }
 
 /** ok=false means the policy could not be loaded and callers must fail closed. */
@@ -16,12 +17,44 @@ export type PolicyState = { ok: true; policy: CompiledPolicy } | { ok: false; re
 export const SEMVER_OPTS = { includePrerelease: true, loose: true } as const;
 
 export function emptyPolicy(): CompiledPolicy {
-  return { scopes: new Set(), names: new Set(), ranges: new Map() };
+  return { scopes: new Set(), names: new Set(), ranges: new Map(), minAgeMs: 0 };
 }
 
 interface RawPackageRule {
   name?: unknown;
   versions?: unknown;
+}
+
+const DURATION_RE = /^\s*(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)\s*$/i;
+const DURATION_UNITS: Record<string, number> = {
+  ms: 1,
+  s: 1000,
+  m: 60 * 1000,
+  h: 60 * 60 * 1000,
+  d: 24 * 60 * 60 * 1000,
+};
+
+export function parseDurationMs(raw: unknown): number {
+  if (raw == null) {
+    return 0;
+  }
+  if (raw === 0) {
+    return 0;
+  }
+  if (typeof raw !== 'string') {
+    throw new Error('"upstream.min_age" must be a duration string such as "3d" or "72h"');
+  }
+  const match = DURATION_RE.exec(raw);
+  if (!match) {
+    throw new Error('"upstream.min_age" must use units ms, s, m, h, or d');
+  }
+  const amount = Number(match[1]);
+  const unit = match[2]!.toLowerCase();
+  const ms = amount * DURATION_UNITS[unit]!;
+  if (!Number.isFinite(ms) || ms < 0) {
+    throw new Error('"upstream.min_age" must be a non-negative duration');
+  }
+  return ms;
 }
 
 /** Validates and compiles the parsed YAML document. Throws on structural errors. */
@@ -34,6 +67,15 @@ export function compilePolicy(doc: unknown, logger: Logger): CompiledPolicy {
     throw new Error('policy root must be a mapping');
   }
   const blocked = (doc as { blocked?: unknown }).blocked;
+  const upstream = (doc as { upstream?: unknown }).upstream;
+  if (upstream != null) {
+    if (typeof upstream !== 'object' || Array.isArray(upstream)) {
+      throw new Error('"upstream" must be a mapping');
+    }
+    const raw = (upstream as { min_age?: unknown; minimum_age?: unknown }).min_age
+      ?? (upstream as { minimum_age?: unknown }).minimum_age;
+    policy.minAgeMs = parseDurationMs(raw);
+  }
   if (blocked == null) {
     return policy;
   }

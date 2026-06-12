@@ -74,6 +74,7 @@ http {
         set $gitea_upstream     gitea:3000;
         set $verdaccio_upstream verdaccio:4873;
         set $devpi_upstream     devpi:3141;
+        set $policy_sync_upstream policy-sync:8920;
 
         # npm publish / twine upload of large artifacts pass through here.
         client_max_body_size 512m;
@@ -188,23 +189,29 @@ http {
             proxy_pass http://$gitea_upstream;
         }
 
-        # Fallback: devpi's constrained index (pypi.org mirror filtered by policy,
-        # R3), asked with the SAME normalized name. $pypi_project survives the
+        # Fallback: policy-sync asks devpi's constrained index with the SAME
+        # normalized name, then applies any PyPI age gate and rewrites public file
+        # links through its guarded download route. $pypi_project survives the
         # internal redirect because no capturing regex runs in between.
         location @public_pypi {
-            rewrite ^ /root/constrained/+simple/$pypi_project/ break;
-            # devpi receives the canonical form (normalized + trailing slash), so it
-            # has no reason to redirect; if it ever does, route the client back
-            # through the gateway's precedence check, never into /root/ directly.
-            proxy_redirect ~*^(?:https?://[^/]+)?/root/constrained/\+simple/(.*)$ /pypi/simple/$1;
-            proxy_pass http://$devpi_upstream;
+            rewrite ^ /pypi/simple/$pypi_project/ break;
+            proxy_pass http://$policy_sync_upstream;
         }
 
-        # ---- devpi file downloads (URLs inside its simple pages) -------------------
+        # ---- devpi simple/file paths guarded by policy-sync ------------------------
+        # Public PyPI file URLs must not bypass policy by going directly to devpi's
+        # base index. policy-sync proxies allowed files and fails closed when an age
+        # gate is active but the project/upload time cannot be proven.
         location /root/ {
             auth_request /_registry_auth;
             error_page 401 403 = @registry_unauthorized;
-            proxy_pass http://$devpi_upstream;
+            proxy_pass http://$policy_sync_upstream;
+        }
+
+        location /pypi/files/ {
+            auth_request /_registry_auth;
+            error_page 401 403 = @registry_unauthorized;
+            proxy_pass http://$policy_sync_upstream;
         }
 
         # ---- auth_request guard (R1) ------------------------------------------------

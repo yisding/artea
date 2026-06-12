@@ -1,6 +1,7 @@
 import base64
 import json
 import threading
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -170,8 +171,11 @@ def make_config(mock_gitea, mock_devpi, policy_file_path: str) -> Config:
         webhook_secret=TEST_SECRET,
         policy_repo=TEST_REPO,
         policy_file_path=policy_file_path,
+        pypi_policy_file_path=str(Path(policy_file_path).with_name("pypi-constraints.txt")) if policy_file_path else "",
         devpi_url=mock_devpi.url,
         devpi_root_password=TEST_DEVPI_PASSWORD,
+        pypi_json_url="https://pypi.example.test/pypi",
+        pypi_metadata_cache_seconds=300,
         poll_interval=300,
     )
 

@@ -14,7 +14,7 @@ If implementation reality forces a deviation, document it in `docs/adr/`.
 |----|-------------|
 | R1 | Unified auth across all registries; SSO via Okta/OIDC for humans |
 | R2 | Private publish + pull-through of public packages; private names take absolute precedence |
-| R3 | Ability to block public packages and specific versions from pull-through |
+| R3 | Ability to block public packages and specific versions from pull-through, including recency gates |
 | R4 | Standard Python (pip/uv/poetry/twine) and JS (npm/pnpm/yarn) tooling works unmodified |
 | R5 | Long-lived credentials (up to ~1 year) for pull and publish |
 | R6 | The same credential works for both publishing and downloading |
@@ -136,9 +136,11 @@ Gateway logic for `GET /pypi/simple/{name}/`:
 2. If Gitea returns **200** → serve it. Done. PyPI is never consulted for this name —
    this is the dependency-confusion guarantee (R2): a private name fully shadows public.
 3. If Gitea returns **404** → nginx `proxy_intercept_errors` + named fallback location →
-   proxy to devpi `root/constrained` index (PyPI mirror filtered by constraints, R3).
-   Only a true 404 falls through; 401/403 short-circuit and never reach the public
-   mirror.
+   proxy to policy-sync's PyPI guard. policy-sync fetches devpi's
+   `root/constrained` simple page (PyPI mirror filtered by constraints, R3),
+   applies any minimum-upstream-age rule, and rewrites public file links through
+   its guarded download route. Only a true 404 falls through; 401/403
+   short-circuit and never reach the public mirror.
 
 The gateway PEP 503-normalizes the project name (lowercase, collapse `[-_.]+` to `-`)
 before the Gitea-first lookup, so non-canonical spellings cannot dodge the private
@@ -147,8 +149,9 @@ devpi redirect that would skip the precedence check.
 
 - Publishes: `twine upload` → `https://host/api/packages/${ARTEA_NAMESPACE}/pypi/` (Gitea direct).
   **Artifacts/wheels live in Gitea**, never in devpi. devpi is a disposable cache.
-- devpi file URLs (`/root/...`) are routed by the gateway to devpi; Gitea file URLs
-  (`/api/packages/...`) route to Gitea.
+- devpi file URLs (`/root/...`) and policy-sync's guarded public file URLs
+  (`/pypi/files/...`) are routed by the gateway to policy-sync, which proxies
+  allowed files to devpi. Gitea file URLs (`/api/packages/...`) route to Gitea.
 - devpi has no auth of its own and is not exposed; the gateway enforces auth on all
   devpi-bound paths via nginx `auth_request` subrequests to Gitea `/api/v1/user`,
   forwarding the client's Authorization header (R1).
@@ -179,32 +182,45 @@ devpi redirect that would skip the precedence check.
 
 Policy-as-code in the Gitea repo `${ARTEA_NAMESPACE}/registry-policy`:
 
-- `npm-rules.yaml` — blocked package names, scopes, and semver ranges. Consumed by our
-  Verdaccio **filter plugin**, which re-reads the file from `/policy` when its mtime
-  changes (no restart needed).
+- `npm-rules.yaml` — blocked package names, scopes, semver ranges, and optional
+  `upstream.min_age` (for example `3d`). Consumed by our Verdaccio **filter
+  plugin**, which re-reads the file from `/policy` when its mtime changes (no
+  restart needed).
 - `pypi-constraints.txt` — devpi-constrained format (pip-constraints-like; supports
-  `name<2`, `name ==1.2.3`, and `*` default-deny). Applied by policy-sync to the
-  `root/constrained` index.
+  `name<2`, `name ==1.2.3`, and `*` default-deny), plus an Artea comment directive
+  `# artea: min-upstream-age=3d`. Applied by policy-sync to the
+  `root/constrained` index and read by policy-sync's PyPI guard.
 
 `policy-sync` receives a Gitea push webhook (plus a startup sync and a slow poll as
 fallback), fetches the two files via Gitea's raw-content API using a dedicated
 low-privilege service account PAT (`svc-policy`, read-only on the policy repo),
-writes `npm-rules.yaml` into the shared `/policy` volume, and pushes the constraints
-into devpi.
+writes `npm-rules.yaml` and `pypi-constraints.txt` into the shared `/policy`
+volume when present, and pushes the constraints into devpi.
 
 **Enforcement depth (npm):** the filter plugin filters packuments (metadata) AND the
 same package registers a Verdaccio middleware that rejects tarball downloads
-(`GET .../-/<file>.tgz`) of blocked versions with 403 — blocks cannot be bypassed by
-constructing the tarball URL directly.
+(`GET .../-/<file>.tgz`) of blocked or too-new versions with 403 — blocks cannot
+be bypassed by constructing the tarball URL directly. For cold direct tarball
+requests under an active age gate, the middleware fetches npm registry metadata
+for publish timestamps and fails closed if it cannot verify the version age.
+
+**Enforcement depth (PyPI):** devpi-constrained filters the public simple index
+by version constraints. policy-sync then filters that constrained simple page by
+upstream upload time, rewrites visible file links to `/pypi/files/{project}/...`,
+and proxies allowed downloads. Direct `/root/...` public file URLs also route to
+policy-sync; when an age gate is active, a file without known project/upload-time
+context is rejected rather than served unverified.
 
 **Failure mode is fail-closed:** if `/policy/npm-rules.yaml` is missing or unparsable,
 the middleware rejects tarball downloads with 503 and the filter serves packuments
 with zero versions (Verdaccio swallows filter exceptions, so stripping every version
 is the fail-closed packument shape) rather than silently allowing everything; a
-stale-but-valid file keeps serving as last-known-good. On the
-Python side, the devpi entrypoint seeds a freshly created `root/constrained` index
-with the `*` constraint (block everything) so a wiped cache volume is closed until
-policy-sync's next successful sync replaces it with the real policy.
+stale-but-valid file keeps serving as last-known-good. On the Python side, the
+devpi entrypoint seeds a freshly created `root/constrained` index with the `*`
+constraint (block everything) so a wiped cache volume is closed until
+policy-sync's next successful sync replaces it with the real policy; policy-sync's
+PyPI guard also fails closed when no `pypi-constraints.txt` policy has ever been
+synced or an active age gate cannot be verified from PyPI metadata.
 
 **Governance:** policy changes go through PRs and are enforceably auditable:
 `registry-policy`'s default branch carries branch protection (no direct pushes except
@@ -260,7 +276,9 @@ shape. R7 extends to deployment artifacts: **reuse official upstream charts**.
   policy-sync's `GET /policy/npm-rules.yaml` every 10s with ETag, keeps
   last-known-good in memory, and fails closed after a grace window of persistent
   failure. policy-sync serves that endpoint (cluster-internal). Compose keeps file
-  mode; both modes are tested.
+  mode for npm and also writes `pypi-constraints.txt` as the PyPI guard's restart
+  fallback. In K8s, policy-sync keeps the PyPI policy in memory after startup sync.
+  Both npm policy modes and the PyPI guard are tested.
 - **Bootstrap as a Helm hook Job**: same `scripts/bootstrap.sh` logic and idempotency
   contract, with a token-sink abstraction — `env-file` mode (compose) vs `k8s-secret`
   mode (patches the policy-sync Secret via the API under a namespace-scoped Role and
@@ -297,7 +315,7 @@ shape. R7 extends to deployment artifacts: **reuse official upstream charts**.
 |-----|-----------|--------------|
 | R1 | Gitea OIDC (Okta) + plugins/auth_request validate everything against Gitea | S11, S12 (+ docs) |
 | R2 | npm gateway scope routing → Gitea (scope match, never a fallback); pypi gateway 404-fallback (200 = never consult public) | S2–S4, S6–S9, S17 |
-| R3 | Verdaccio filter plugin + tarball middleware + devpi-constrained, fail-closed | S5, S10, S13, S15 |
+| R3 | Verdaccio filter plugin + tarball middleware + devpi-constrained + policy-sync PyPI guard, fail-closed | S5, S10, S13, S15 |
 | R4 | Stock protocols: npm/pnpm/yarn vs Verdaccio+Gitea; pip/uv/twine vs gateway+Gitea | S2–S10 |
 | R5 | Gitea PATs (non-expiring today) | S11 |
 | R6 | One PAT publishes (Gitea) and pulls (everywhere) | S2/S3, S6/S7, S11 |

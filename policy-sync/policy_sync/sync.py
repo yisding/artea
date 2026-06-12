@@ -26,14 +26,25 @@ PYPI_CONSTRAINTS_FILE = "pypi-constraints.txt"
 
 
 class Syncer:
-    def __init__(self, cfg: Config, sleep=time.sleep, store: PolicyStore | None = None):
+    def __init__(
+        self,
+        cfg: Config,
+        sleep=time.sleep,
+        store: PolicyStore | None = None,
+        pypi_store: PolicyStore | None = None,
+    ):
         self.cfg = cfg
         self.sleep = sleep
         self.store = store
+        self.pypi_store = pypi_store
 
     @property
     def npm_dest(self) -> Path | None:
         return Path(self.cfg.policy_file_path) if self.cfg.policy_file_path else None
+
+    @property
+    def pypi_dest(self) -> Path | None:
+        return Path(self.cfg.pypi_policy_file_path) if self.cfg.pypi_policy_file_path else None
 
     def _fetch(self, path: str) -> bytes | None:
         """Returns file bytes, or None if the file should be skipped (404)."""
@@ -63,6 +74,15 @@ class Syncer:
         data = self._fetch(PYPI_CONSTRAINTS_FILE)
         if data is None:
             return
+        if self.pypi_store is not None:
+            self.pypi_store.set(data)
+        dest = self.pypi_dest
+        if dest is not None:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if write_atomic(dest, data):
+                log.info("wrote %s (%d bytes)", dest, len(data))
+            else:
+                log.debug("%s unchanged", dest)
         # apply_constraints skips the PATCH when devpi already holds these
         # constraints — the live index config, not a local hash, is the
         # idempotency source of truth, so a wiped+recreated devpi (fail-closed

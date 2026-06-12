@@ -14,7 +14,12 @@ export function makeLogger(): Logger {
   } as unknown as Logger;
 }
 
-export function packument(name: string, versions: string[], latest = versions[versions.length - 1]): Package {
+export function packument(
+  name: string,
+  versions: string[],
+  latest = versions[versions.length - 1],
+  publishTimes: Record<string, string> = {},
+): Package {
   const pkg: Record<string, unknown> = {
     name,
     'dist-tags': { latest },
@@ -23,7 +28,7 @@ export function packument(name: string, versions: string[], latest = versions[ve
   };
   for (const v of versions) {
     (pkg.versions as Record<string, unknown>)[v] = { name, version: v };
-    (pkg.time as Record<string, string>)[v] = '2020-01-01T12:00:00.000Z';
+    (pkg.time as Record<string, string>)[v] = publishTimes[v] ?? '2020-01-01T12:00:00.000Z';
   }
   return pkg as unknown as Package;
 }
@@ -51,6 +56,33 @@ export function runMiddleware(plugin: FilterArtea, path: string, method = 'GET')
   };
   handler!({ method, path }, res, () => {
     result.nexted = true;
+  });
+  return result;
+}
+
+export async function runMiddlewareAsync(plugin: FilterArtea, path: string, method = 'GET'): Promise<MiddlewareResult> {
+  let handler: ((req: unknown, res: unknown, next: () => void) => void | Promise<void>) | undefined;
+  const app = { use: (h: typeof handler) => (handler = h) };
+  plugin.register_middlewares(app as never, undefined as never, undefined as never);
+  const result: MiddlewareResult = { status: null, body: undefined, nexted: false };
+  await new Promise<void>((resolve) => {
+    const res = {
+      status(code: number) {
+        result.status = code;
+        return this;
+      },
+      json(body: MiddlewareResult['body']) {
+        result.body = body;
+        resolve();
+      },
+    };
+    const maybe = handler!({ method, path }, res, () => {
+      result.nexted = true;
+      resolve();
+    });
+    if (maybe && typeof (maybe as Promise<void>).then === 'function') {
+      void (maybe as Promise<void>).catch(resolve);
+    }
   });
   return result;
 }

@@ -8,9 +8,9 @@ NPM = b"blocked:\n  packages: []\n"
 PYPI = b"# constraints\nurllib3<2\n"
 
 
-def make_syncer(cfg, store=None):
+def make_syncer(cfg, store=None, pypi_store=None):
     sleeps = []
-    syncer = Syncer(cfg, sleep=sleeps.append, store=store)
+    syncer = Syncer(cfg, sleep=sleeps.append, store=store, pypi_store=pypi_store)
     return syncer, sleeps
 
 
@@ -21,6 +21,7 @@ def test_full_sync_writes_npm_and_applies_constraints(cfg, mock_gitea, mock_devp
 
     assert syncer.sync_once() is True
     assert (Path(cfg.policy_file_path)).read_bytes() == NPM
+    assert (Path(cfg.pypi_policy_file_path)).read_bytes() == PYPI
     assert mock_devpi.config["constraints"] == PYPI.decode()
 
 
@@ -30,11 +31,14 @@ def test_resync_unchanged_is_idempotent(cfg, mock_gitea, mock_devpi):
     syncer, _ = make_syncer(cfg)
     syncer.sync_once()
     npm_path = Path(cfg.policy_file_path)
+    pypi_path = Path(cfg.pypi_policy_file_path)
     mtime = npm_path.stat().st_mtime_ns
+    pypi_mtime = pypi_path.stat().st_mtime_ns
     patches = len(mock_devpi.patches)
 
     assert syncer.sync_once() is True
     assert npm_path.stat().st_mtime_ns == mtime  # no spurious mtime bump
+    assert pypi_path.stat().st_mtime_ns == pypi_mtime
     assert len(mock_devpi.patches) == patches  # no devpi churn
 
 
@@ -68,6 +72,7 @@ def test_missing_file_skipped_without_failing(cfg, mock_gitea, mock_devpi):
 
     assert syncer.sync_once() is True
     assert not (Path(cfg.policy_file_path)).exists()
+    assert Path(cfg.pypi_policy_file_path).read_bytes() == PYPI
     assert mock_devpi.config["constraints"] == PYPI.decode()
 
 
@@ -100,6 +105,7 @@ def test_devpi_failure_marks_sync_failed_but_npm_still_written(cfg, mock_gitea, 
 
     assert syncer.sync_once() is False
     assert (Path(cfg.policy_file_path)).read_bytes() == NPM
+    assert (Path(cfg.pypi_policy_file_path)).read_bytes() == PYPI
 
 
 def test_http_only_mode_updates_store_and_writes_no_file(cfg_http_only, mock_gitea, mock_devpi, tmp_path):
@@ -113,6 +119,18 @@ def test_http_only_mode_updates_store_and_writes_no_file(cfg_http_only, mock_git
     assert content == NPM
     assert etag.startswith('"') and etag.endswith('"')
     assert list(tmp_path.iterdir()) == []  # no file write anywhere
+
+
+def test_http_only_mode_updates_pypi_store(cfg_http_only, mock_gitea, mock_devpi):
+    mock_gitea.files["npm-rules.yaml"] = NPM
+    mock_gitea.files["pypi-constraints.txt"] = PYPI
+    pypi_store = PolicyStore()
+    syncer, _ = make_syncer(cfg_http_only, pypi_store=pypi_store)
+
+    assert syncer.sync_once() is True
+    content, etag = pypi_store.get()
+    assert content == PYPI
+    assert etag.startswith('"') and etag.endswith('"')
 
 
 def test_file_and_http_modes_serve_identical_bytes(cfg, mock_gitea, mock_devpi):

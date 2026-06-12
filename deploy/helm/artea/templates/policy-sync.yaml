@@ -41,6 +41,10 @@ spec:
               value: {{ include "artea.privateNamespace" . | quote }}
             - name: POLICY_SYNC_POLL_SECONDS
               value: {{ .Values.policySync.pollSeconds | quote }}
+            - name: PYPI_JSON_URL
+              value: {{ .Values.policySync.pypiJsonUrl | quote }}
+            - name: PYPI_METADATA_CACHE_SECONDS
+              value: {{ .Values.policySync.pypiMetadataCacheSeconds | quote }}
             - name: POLICY_SYNC_TOKEN
               valueFrom:
                 secretKeyRef:

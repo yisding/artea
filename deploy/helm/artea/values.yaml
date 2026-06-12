@@ -60,6 +60,7 @@ gateway:
     gitea: artea-gitea-http:3000
     verdaccio: artea-verdaccio:4873
     devpi: artea-devpi:3141
+    policySync: artea-policy-sync:8920
   resources: {}
   # Optional Ingress in front of the gateway: TLS + host routing ONLY — all
   # routing logic (auth_request, 404-fallback, normalization) stays in nginx
@@ -99,6 +100,10 @@ policySync:
     pullPolicy: IfNotPresent
   # Slow-poll fallback interval (seconds) behind the push webhook.
   pollSeconds: 300
+  # PyPI JSON metadata source used only when pypi-constraints.txt configures
+  # `# artea: min-upstream-age=...`.
+  pypiJsonUrl: https://pypi.org/pypi
+  pypiMetadataCacheSeconds: 300
   resources: {}
 
 # ---- bootstrap Job (post-install/post-upgrade hook) ---------------------------

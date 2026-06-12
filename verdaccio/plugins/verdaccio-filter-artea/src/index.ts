@@ -19,6 +19,8 @@ export interface FilterArteaConfig {
   poll_interval_ms?: number;
   /** policy_url mode only: how long polls may keep failing before fail-closed (default 60000). */
   fail_grace_ms?: number;
+  /** Registry metadata source for cold direct tarball age checks. */
+  npm_registry_url?: string;
 }
 
 // minimal structural express types — keeps the plugin free of an express dependency
@@ -32,7 +34,7 @@ interface HttpResponse {
 }
 type HttpNext = () => void;
 interface ExpressApp {
-  use(handler: (req: HttpRequest, res: HttpResponse, next: HttpNext) => void): void;
+  use(handler: (req: HttpRequest, res: HttpResponse, next: HttpNext) => void | Promise<void>): void;
 }
 
 export interface TarballRef {
@@ -67,6 +69,25 @@ export function parseTarballPath(rawPath: string): TarballRef | null {
   return { name, version };
 }
 
+function publishTimeMs(metadata: Package, version: string): number | null {
+  const raw = (metadata.time as Record<string, unknown> | undefined)?.[version];
+  if (typeof raw !== 'string') {
+    return null;
+  }
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function isTooYoung(publishedAtMs: number | null, minAgeMs: number, nowMs = Date.now()): boolean {
+  if (minAgeMs <= 0) {
+    return false;
+  }
+  if (publishedAtMs === null) {
+    return true;
+  }
+  return nowMs - publishedAtMs < minAgeMs;
+}
+
 /** Drops dist-tags that point at removed versions and re-points `latest`. */
 function repairDistTags(pkg: Package, removed: Set<string>): void {
   const tags = pkg['dist-tags'];
@@ -99,10 +120,13 @@ export default class FilterArtea
   public version?: string;
   private readonly logger: Logger;
   private readonly policyLoader: PolicyLoader;
+  private readonly npmRegistryUrl: string;
+  private readonly publishTimes = new Map<string, Map<string, number>>();
 
   public constructor(config: FilterArteaConfig, options: PluginOptions<FilterArteaConfig>) {
     this.logger = options.logger;
     this.policyLoader = createPolicyLoader(config, this.logger);
+    this.npmRegistryUrl = (config.npm_registry_url ?? 'https://registry.npmjs.org').replace(/\/+$/, '');
   }
 
   /** Not part of the verdaccio plugin API; lets tests/embedders stop URL polling. */
@@ -120,16 +144,18 @@ export default class FilterArtea
       return this.blockAll(metadata);
     }
     const policy = state.policy;
+    this.rememberPublishTimes(metadata);
     if (isNameBlocked(policy, name)) {
       this.logger.info({ name }, 'filter-artea: blocked package @{name} entirely');
       return this.blockAll(metadata);
     }
-    const ranges = policy.ranges.get(name);
-    if (!ranges || !metadata.versions) {
+    const ranges = policy.ranges.get(name) ?? [];
+    if ((!ranges.length && policy.minAgeMs <= 0) || !metadata.versions) {
       return metadata;
     }
     const removed = Object.keys(metadata.versions).filter((v) =>
-      ranges.some((range) => semver.satisfies(v, range, SEMVER_OPTS)),
+      ranges.some((range) => semver.satisfies(v, range, SEMVER_OPTS))
+        || isTooYoung(publishTimeMs(metadata, v), policy.minAgeMs),
     );
     if (removed.length === 0) {
       return metadata;
@@ -153,11 +179,16 @@ export default class FilterArtea
     _auth: IBasicAuth<FilterArteaConfig>,
     _storage: IStorageManager<FilterArteaConfig>,
   ): void {
-    app.use((req, res, next) => this.guardTarball(req, res, next));
+    app.use((req, res, next) => {
+      void this.guardTarball(req, res, next).catch((err) => {
+        this.logger.warn({ msg: (err as Error).message }, 'filter-artea: tarball age check failed: @{msg}');
+        res.status(503).json({ error: `policy unavailable: ${(err as Error).message}; registry is failing closed` });
+      });
+    });
     this.logger.info({}, 'filter-artea: tarball download guard registered');
   }
 
-  private guardTarball(req: HttpRequest, res: HttpResponse, next: HttpNext): void {
+  private async guardTarball(req: HttpRequest, res: HttpResponse, next: HttpNext): Promise<void> {
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       return next();
     }
@@ -181,7 +212,60 @@ export default class FilterArtea
       res.status(403).json({ error: `forbidden: ${ref.name}@${ref.version} is blocked by registry policy` });
       return;
     }
+    if (state.policy.minAgeMs > 0) {
+      if (ref.version === null) {
+        this.logger.info({ name: ref.name }, 'filter-artea: blocked tarball download of @{name}: version unknown');
+        res.status(403).json({ error: `forbidden: ${ref.name} has no parseable version and registry policy requires upstream age verification` });
+        return;
+      }
+      const publishedAt = await this.publishTimeFor(ref.name, ref.version);
+      if (isTooYoung(publishedAt, state.policy.minAgeMs)) {
+        this.logger.info({ name: ref.name, version: ref.version }, 'filter-artea: blocked too-new tarball download of @{name}@@{version}');
+        res.status(403).json({ error: `forbidden: ${ref.name}@${ref.version} is newer than the registry minimum upstream age` });
+        return;
+      }
+    }
     next();
+  }
+
+  private rememberPublishTimes(metadata: Package): void {
+    const times = metadata.time as Record<string, unknown> | undefined;
+    if (!times) {
+      return;
+    }
+    const byVersion = this.publishTimes.get(metadata.name) ?? new Map<string, number>();
+    for (const [version, raw] of Object.entries(times)) {
+      if (version === 'created' || version === 'modified' || typeof raw !== 'string') {
+        continue;
+      }
+      const ms = Date.parse(raw);
+      if (Number.isFinite(ms)) {
+        byVersion.set(version, ms);
+      }
+    }
+    if (byVersion.size > 0) {
+      this.publishTimes.set(metadata.name, byVersion);
+    }
+  }
+
+  private async publishTimeFor(name: string, version: string): Promise<number | null> {
+    const cached = this.publishTimes.get(name)?.get(version);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const packument = await this.fetchNpmPackument(name);
+    this.rememberPublishTimes(packument);
+    return this.publishTimes.get(name)?.get(version) ?? null;
+  }
+
+  private async fetchNpmPackument(name: string): Promise<Package> {
+    const encoded = encodeURIComponent(name);
+    const url = `${this.npmRegistryUrl}/${encoded}`;
+    const res = await fetch(url, { headers: { accept: 'application/json' } });
+    if (!res.ok) {
+      throw new Error(`npm metadata lookup for ${name} returned HTTP ${res.status}`);
+    }
+    return (await res.json()) as Package;
   }
 
   /** Blocked names keep their packument shell but lose every version, so installs fail cleanly. */

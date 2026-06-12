@@ -143,6 +143,6 @@ using any spelling; the index entry is the normalized one.
 | `401`/`403` on `twine upload` | Token is `read:package` only, or user lacks write permission in the configured namespace org |
 | `404` for a private package | Not published yet, or name-normalization mismatch — check `http://localhost:8080/pypi/simple/<normalized-name>/` |
 | pip resolves a *public* version of a private name | Should never happen — check for stray `extra-index-url` config on the client; if absent, report it (gateway precedence bug) |
-| A public package/version refuses to install | Blocked by `pypi-constraints.txt` policy — intentional |
+| A public package/version refuses to install | Blocked or still too new under `pypi-constraints.txt` policy — intentional |
 
 See also [operations.md](operations.md).
