@@ -36,8 +36,10 @@ middlewares:
 
 ## Policy file schema (`npm-rules.yaml`)
 
-The file lives in the Gitea repo `artea/registry-policy` and is written into the
-`/policy` volume by policy-sync. Top-level key `blocked` with two optional lists:
+The file lives in the configured Gitea policy repo
+`${ARTEA_NAMESPACE}/registry-policy` (or explicit `POLICY_REPO`) and is written
+into the `/policy` volume by policy-sync. Top-level key `blocked` with two
+optional lists:
 
 ```yaml
 blocked:

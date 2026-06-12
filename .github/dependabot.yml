@@ -1,0 +1,35 @@
+# Weekly bumps for everything this repo pins (R7 pin-everything,
+# docs/ARCHITECTURE.md): actions are pinned to commit SHAs, Dockerfile bases
+# to digests, and the plugin deps via the pnpm lockfile — dependabot is what
+# moves those pins. Commit-message prefixes follow Conventional Commits.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+      include: scope
+
+  # base-image digest pins (all four service/deploy Dockerfiles)
+  - package-ecosystem: docker
+    directories:
+      - "/devpi"
+      - "/policy-sync"
+      - "/scripts"
+      - "/deploy/docker/verdaccio-assets"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: build
+      include: scope
+
+  # pnpm workspace root covers both verdaccio plugin packages
+  - package-ecosystem: npm
+    directory: "/verdaccio/plugins"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope

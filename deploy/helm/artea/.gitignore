@@ -1,0 +1,2 @@
+# pulled by `helm dependency update`; Chart.lock is committed, tarballs are not
+charts/

@@ -22,8 +22,8 @@ Per-component notes:
 
 | Component | What it is | Bump notes |
 |-----------|------------|------------|
-| `gitea` | stock `gitea/gitea` image + mounted `gitea/app.ini` + `gitea/custom/` overlay | Read upstream release notes for breaking `app.ini` changes; check that template overrides in `gitea/custom/templates/` still match the upstream templates of the new version (they are version-coupled). `gitea/patches/` is an empty patch queue — if it ever gains patches, follow the apply/bump procedure documented there instead of using the stock image directly. |
-| `verdaccio` | stock `verdaccio/verdaccio:6` image + `verdaccio/config` + our plugins | Our auth and filter plugins target the stable Verdaccio plugin API; on a major bump, re-run e2e scenarios S4/S5 (pull-through + policy filter) before rollout. |
+| `gitea` | stock `gitea/gitea` image + generated `gitea/app.ini` + generated `gitea/custom/` template overlay | Read upstream release notes for breaking `app.ini` changes; check that template overrides in `gitea/custom/templates/*.template` still match the upstream templates of the new version (they are version-coupled). `gitea/patches/` is an empty patch queue — if it ever gains patches, follow the apply/bump procedure documented there instead of using the stock image directly. |
+| `verdaccio` | stock `verdaccio/verdaccio:6` image + generated config + our plugins | Our auth and filter plugins target the stable Verdaccio plugin API; on a major bump, re-run e2e scenarios S4/S5 (pull-through + policy filter) before rollout. |
 | `devpi` | our image (`devpi/Dockerfile`: python-slim + `devpi-server` + `devpi-constrained`) | Bump the base image and the two package pins in `.env`, rebuild. The server data is a disposable cache (see below) — wiping it on upgrade is safe. |
 | `gateway` | stock nginx + our config | Bump the nginx pin; config is plain nginx conf, rarely affected. |
 | `policy-sync` | our Python service | Normal release; no upstream to track. |
@@ -51,7 +51,7 @@ make e2e
 
 **The Gitea data volume is the single source of truth.** It contains users,
 PATs, org/team membership, all private package artifacts (npm tarballs, Python
-wheels/sdists), and the `artea/registry-policy` repo. Back up only this:
+wheels/sdists), and the `${ARTEA_NAMESPACE}/registry-policy` repo. Back up only this:
 
 - the `gitea-data` named volume (includes the embedded SQLite DB unless you
   configured an external database — back that up too if so),
@@ -112,7 +112,7 @@ e2e S15):
   nothing instead of everything.
 
 Recovery is policy-sync's job and needs no manual steps: it syncs at startup,
-on every push webhook of `artea/registry-policy`, and on a 5-minute fallback
+on every push webhook of `${ARTEA_NAMESPACE}/registry-policy`, and on a 5-minute fallback
 poll, rewriting `npm-rules.yaml` (picked up by Verdaccio within the
 mtime-reload window) and replacing the seeded `*` constraints with the real
 policy. To force immediate recovery: `docker compose restart policy-sync`
@@ -134,8 +134,8 @@ Revoke a token in the Gitea UI (**Settings → Applications → Delete**) or via
 
 | Path | Effect |
 |------|--------|
-| Gitea-direct (npm `@artea/*` — gateway scope route under `/npm/` or legacy `/api/packages/...`; twine; private pip files) | immediate |
-| public npm pull-through (non-`@artea` `/npm/` via Verdaccio) | ≤ 60 s — the Verdaccio auth plugin caches *positive* validations for 60 s |
+| Gitea-direct (npm `@${ARTEA_NAMESPACE}/*` — gateway scope route under `/npm/` or legacy `/api/packages/...`; twine; private pip files) | immediate |
+| public npm pull-through (non-private-scope `/npm/` via Verdaccio) | ≤ 60 s — the Verdaccio auth plugin caches *positive* validations for 60 s |
 | PyPI paths via the gateway (`/pypi/simple/`, `/root/...`) | per-request `auth_request` against Gitea — effectively immediate |
 
 So the system-wide guarantee is: **a revoked token stops working everywhere
@@ -151,10 +151,10 @@ Remember that Okta deactivation does not delete Gitea PATs — see
 |---------|--------------|-------------|
 | Everything returns 502 | A backend container is down | `docker compose ps`, `docker compose logs gateway <service>` |
 | All requests 401 with valid token | Token revoked, or Gitea unreachable from verdaccio/gateway (auth validation goes to Gitea) | `curl -u user:PAT http://localhost:8080/api/v1/user`; check gitea logs |
-| `npm install @artea/x` 404s | Package/version not published — the gateway routes `@artea/*` to Gitea server-side, so missing client scope config is no longer a cause (legacy `@artea:registry` configs still work) | Check the `artea` org's package list in Gitea; client setup in [clients-npm.md](clients-npm.md) |
-| `npm publish` rejected | Read-only cache (unscoped publish), missing `write:package`, or no org write permission | Scope the package `@artea/*`; check token scope and org membership |
+| `npm install @${ARTEA_NAMESPACE}/x` 404s | Package/version not published — the gateway routes `@${ARTEA_NAMESPACE}/*` to Gitea server-side, so missing client scope config is no longer a cause (legacy scope-registry configs still work) | Check the configured namespace org's package list in Gitea; client setup in [clients-npm.md](clients-npm.md) |
+| `npm publish` rejected | Read-only cache (unscoped publish), missing `write:package`, or no org write permission | Scope the package `@${ARTEA_NAMESPACE}/*`; check token scope and org membership |
 | Public npm package has missing versions | Policy block in `npm-rules.yaml` | Intentional; edit the policy repo via PR |
-| Policy change has no effect | Webhook not delivered, or policy-sync down | Repo settings → Webhooks → recent deliveries on `artea/registry-policy`; `docker compose logs policy-sync`; verify `/policy/npm-rules.yaml` mtime changed in the verdaccio container; the slow-poll fallback will also catch up eventually |
+| Policy change has no effect | Webhook not delivered, or policy-sync down | Repo settings → Webhooks → recent deliveries on `${ARTEA_NAMESPACE}/registry-policy`; `docker compose logs policy-sync`; verify `/policy/npm-rules.yaml` mtime changed in the verdaccio container; the slow-poll fallback will also catch up eventually |
 | `pip install <private>` resolves a public version | Gateway 404-fallback misrouting (or a client `extra-index-url` bypass) | Treat as a security incident if client config is clean: verify the gateway serves Gitea's 200 for `/pypi/simple/<name>/` and only falls back on 404 |
 | `pip install <public>` 404s | devpi mirror cold/unreachable, name blocked by `pypi-constraints.txt`, or a freshly recreated cache still fail-closed (`*` seed) | `docker compose logs devpi`; check the constraints file in the policy repo; check policy-sync `/healthz` for `last_sync_ok` |
 | npm/pip download URLs point at the wrong host | Gitea `ROOT_URL` misconfigured | Must be exactly `http://localhost:8080/` (the public gateway URL) so generated file URLs resolve through the gateway |

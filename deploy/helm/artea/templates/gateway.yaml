@@ -1,0 +1,87 @@
+# Artea gateway: stock nginx + ConfigMap'd nginx.conf/njs — the routing brain
+# (auth_request, Gitea-first pypi 404-fallback, PEP 503 normalization) and the
+# single entrypoint. An Ingress in front (gateway-ingress.yaml) does TLS/host
+# routing ONLY.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "artea.fullname" "gateway-config" }}
+  labels:
+    {{- include "artea.labels" (dict "ctx" $ "component" "gateway") | nindent 4 }}
+data:
+  nginx.conf: |
+{{ tpl (.Files.Get "files/gateway/nginx.conf") . | indent 4 }}
+  # PEP 503 normalization (njs); verbatim copy of gateway/njs/pep503.js — keep
+  # in sync (Helm cannot read outside the chart root).
+  pep503.js: |
+{{ .Files.Get "files/gateway/pep503.js" | indent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "artea.fullname" "gateway" }}
+  labels:
+    {{- include "artea.labels" (dict "ctx" $ "component" "gateway") | nindent 4 }}
+spec:
+  replicas: {{ .Values.gateway.replicas }}
+  selector:
+    matchLabels:
+      {{- include "artea.selectorLabels" (dict "ctx" $ "component" "gateway") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "artea.selectorLabels" (dict "ctx" $ "component" "gateway") | nindent 8 }}
+      annotations:
+        # roll the pods when the rendered nginx config changes
+        checksum/config: {{ tpl (.Files.Get "files/gateway/nginx.conf") . | sha256sum }}
+    spec:
+      containers:
+        - name: nginx
+          image: {{ include "artea.image" .Values.gateway.image | quote }}
+          imagePullPolicy: {{ .Values.gateway.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 80
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+              readOnly: true
+            - name: config
+              mountPath: /etc/nginx/njs/pep503.js
+              subPath: pep503.js
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /-/artea-gateway/health
+              port: http
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /-/artea-gateway/health
+              port: http
+            periodSeconds: 10
+          {{- with .Values.gateway.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "artea.fullname" "gateway-config" }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "artea.fullname" "gateway" }}
+  labels:
+    {{- include "artea.labels" (dict "ctx" $ "component" "gateway") | nindent 4 }}
+spec:
+  type: {{ .Values.gateway.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.gateway.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "artea.selectorLabels" (dict "ctx" $ "component" "gateway") | nindent 4 }}

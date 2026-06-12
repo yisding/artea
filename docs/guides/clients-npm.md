@@ -1,18 +1,20 @@
 # npm / pnpm / yarn client setup
 
 Artea exposes one URL for everything: `http://localhost:8080` (substitute your
-deployment's host). npm clients configure a **single registry**:
+deployment's host). The private scope is `@${ARTEA_NAMESPACE}` (default
+`@artea`; use the value from your deployment's `.env`). npm clients configure a
+**single registry**:
 
 | Purpose | URL | Backed by |
 |---------|-----|-----------|
-| Everything npm — public installs, private `@artea/*` install + publish | `http://localhost:8080/npm/` | Verdaccio (pull-through cache of npmjs.org) for public names; Gitea for the `@artea` scope |
+| Everything npm — public installs, private `@${ARTEA_NAMESPACE}/*` install + publish | `http://localhost:8080/npm/` | Verdaccio (pull-through cache of npmjs.org) for public names; Gitea for the configured private scope |
 
-The gateway does the scope routing server-side: any `@artea`-scoped request
-under `/npm/` — packuments, tarballs, publishes, and the dist-tag API under
-`/-/package/` — is proxied to Gitea's npm endpoint; everything else goes to
-the cache. The client routes nothing, so a client missing scope configuration
-can no longer leak or misroute private names. There is no anonymous access
-anywhere.
+The gateway does the scope routing server-side: any configured private-scope
+request under `/npm/` — packuments, tarballs, publishes, and the dist-tag API
+under `/-/package/` — is proxied to Gitea's npm endpoint; everything else goes
+to the cache. The client routes nothing, so a client missing scope
+configuration can no longer leak or misroute private names. There is no
+anonymous access anywhere.
 
 ## 1. Get a personal access token (PAT)
 
@@ -60,14 +62,15 @@ npm matches credentials to request URLs by URL prefix ("nerf-darts"): a
 `//localhost:8080/:` line applies to every path on that host and port. That
 matters because private tarballs do not download from `/npm/...` — Gitea
 builds the tarball URLs in its packuments from its `ROOT_URL`
-(`http://localhost:8080/`), so they live under `/api/packages/artea/npm/...`
+(`http://localhost:8080/`), so they live under
+`/api/packages/${ARTEA_NAMESPACE}/npm/...`
 on the same host. The single host-rooted line covers `/npm/` and the Gitea
 tarball paths alike; only publishing needs the second line (below).
 
 `_auth` (HTTP Basic, `user:PAT`) now works against both backends: the cache
 side validates the credential against Gitea, and Gitea itself accepts Basic
 with the PAT as the password. The Bearer-style `_authToken=<PAT>` still works
-on the `@artea` routes but is no longer needed.
+on the private-scope routes but is no longer needed.
 
 ### Verify
 
@@ -78,22 +81,24 @@ npm view left-pad versions                        # public, via pull-through
 
 ### Previous configuration
 
-The old two-URL setup — an extra `@artea:registry=http://localhost:8080/api/packages/artea/npm/`
-line with its own `_authToken` credential — **keeps working unchanged**: the
-Gitea endpoint is still served at that URL, and Verdaccio still denies
-`@artea/*` as defense in depth. Existing `.npmrc` files need no migration;
-use the single-registry form above for new setups.
+The old two-URL setup — an extra
+`@${ARTEA_NAMESPACE}:registry=http://localhost:8080/api/packages/${ARTEA_NAMESPACE}/npm/`
+line with its own `_authToken` credential — **keeps working unchanged** for the
+configured namespace: the Gitea endpoint is still served at that URL, and
+Verdaccio still denies `@${ARTEA_NAMESPACE}/*` as defense in depth. Existing
+`.npmrc` files need no migration; use the single-registry form above for new
+setups.
 
 ## 3. Publish (private packages only)
 
-Only the `@artea` scope is publishable, and it lands in Gitea — the public
-cache is read-only by configuration, so `npm publish` of an unscoped package
-fails by design.
+Only the configured private scope is publishable, and it lands in Gitea — the
+public cache is read-only by configuration, so `npm publish` of an unscoped
+package fails by design. For example, with `ARTEA_NAMESPACE=acme`:
 
 ```jsonc
 // package.json
 {
-  "name": "@artea/hello-artea",
+  "name": "@acme/hello-acme",
   "version": "1.0.0"
 }
 ```
@@ -103,10 +108,10 @@ npm publish
 ```
 
 The publish is an HTTP `PUT` to the configured registry
-(`http://localhost:8080/npm/@artea%2fhello-artea`); the gateway routes it to
-Gitea's npm endpoint server-side — the same path installs take, with the same
-token. Requires a `write:package` token and membership in the `artea` org with
-package write permission.
+(`http://localhost:8080/npm/@acme%2fhello-acme` in the example); the gateway
+routes it to Gitea's npm endpoint server-side — the same path installs take,
+with the same token. Requires a `write:package` token and membership in the
+configured namespace org with package write permission.
 
 **Publishing needs the second `_auth` line.** Before sending any request, npm
 runs a local credential preflight that checks only the *exact* nerf-dart of
@@ -118,15 +123,15 @@ Hence the contract: one credential value on two nerf-dart lines.
 ## 4. Install
 
 ```sh
-npm install @artea/hello-artea   # private, routed to Gitea by the gateway
+npm install @acme/hello-acme     # private, routed to Gitea by the gateway
 npm install left-pad             # public, via Verdaccio pull-through of npmjs.org
 ```
 
-Private `@artea/*` requests never touch the public cache or npmjs.org — the
-gateway peels the scope off before Verdaccio, which additionally denies it by
-configuration. Public requests are filtered by the org policy
-(`npm-rules.yaml` in `artea/registry-policy`) — blocked names/versions simply
-disappear from metadata.
+Private `@${ARTEA_NAMESPACE}/*` requests never touch the public cache or
+npmjs.org — the gateway peels the scope off before Verdaccio, which
+additionally denies it by configuration. Public requests are filtered by the
+org policy (`npm-rules.yaml` in `${ARTEA_NAMESPACE}/registry-policy`) —
+blocked names/versions simply disappear from metadata.
 
 ## 5. pnpm
 
@@ -146,7 +151,7 @@ pnpm config set //localhost:8080/npm/:_auth $(echo -n 'user:PAT' | base64)
 **Yarn 1.x (classic)** reads `.npmrc`; the configuration above works as-is.
 
 **Yarn 2+ (Berry)** uses `.yarnrc.yml` instead — and since the gateway routes
-the `@artea` scope, no `npmScopes` block is needed:
+the configured private scope, no `npmScopes` block is needed:
 
 ```yaml
 npmRegistryServer: "http://localhost:8080/npm/"
@@ -164,10 +169,10 @@ unsafeHttpWhitelist:
 | Symptom | Likely cause |
 |---------|--------------|
 | `401` on any install | Missing/expired token, `_auth` not base64-encoded, or credentials line doesn't match the registry URL prefix |
-| `401` on publish | Token is `read:package` only, or user lacks write permission in the `artea` org |
+| `401` on publish | Token is `read:package` only, or user lacks write permission in the configured namespace org |
 | `ENEEDAUTH` on publish, no request sent | The `//localhost:8080/npm/:_auth` line is missing — npm's publish preflight checks only the exact registry nerf-dart, never the host-rooted line |
-| Publish of an unscoped package rejected | Expected: the cache is read-only; only `@artea/*` (→ Gitea) is publishable |
-| `404` for `@artea/*` | The package or version is not published — the gateway routes the scope server-side, so a missing client scope line is no longer a cause (legacy `@artea:registry` configs also still work) |
+| Publish of an unscoped package rejected | Expected: the cache is read-only; only `@${ARTEA_NAMESPACE}/*` (→ Gitea) is publishable |
+| `404` for `@${ARTEA_NAMESPACE}/*` | The package or version is not published — the gateway routes the scope server-side, so a missing client scope line is no longer a cause (legacy scope registry configs also still work) |
 | Public package missing versions | Blocked by policy (`npm-rules.yaml`) — intentional |
 
 See also [operations.md](operations.md) for the operator-side view.

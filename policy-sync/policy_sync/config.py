@@ -18,7 +18,7 @@ class Config:
     sync_token: str
     webhook_secret: str
     policy_repo: str
-    policy_dir: str
+    policy_file_path: str  # "" = HTTP-only mode (no file write, K8s has no /policy volume)
     devpi_url: str
     devpi_root_password: str
     devpi_index: str
@@ -40,12 +40,20 @@ class Config:
         except ValueError as e:
             raise ConfigError(f"invalid numeric environment variable: {e}") from e
 
+        # POLICY_FILE_PATH unset -> compose default under POLICY_DIR;
+        # set to "" -> HTTP-only mode (the /policy endpoint is the only output)
+        policy_file_path = env.get("POLICY_FILE_PATH")
+        if policy_file_path is None:
+            policy_dir = env.get("POLICY_DIR", "/policy").rstrip("/")
+            policy_file_path = f"{policy_dir}/npm-rules.yaml"
+        namespace = env.get("ARTEA_NAMESPACE", "artea")
+
         return cls(
             gitea_url=env.get("GITEA_URL", "http://gitea:3000").rstrip("/"),
             sync_token=env["POLICY_SYNC_TOKEN"],
             webhook_secret=env["POLICY_WEBHOOK_SECRET"],
-            policy_repo=env.get("POLICY_REPO", "artea/registry-policy"),
-            policy_dir=env.get("POLICY_DIR", "/policy"),
+            policy_repo=env.get("POLICY_REPO") or f"{namespace}/registry-policy",
+            policy_file_path=policy_file_path,
             devpi_url=env.get("DEVPI_URL", "http://devpi:3141").rstrip("/"),
             devpi_root_password=env["DEVPI_ROOT_PASSWORD"],
             devpi_index=env.get("DEVPI_INDEX", "root/constrained"),

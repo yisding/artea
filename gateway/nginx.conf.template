@@ -1,6 +1,6 @@
 # Artea gateway — the single public entrypoint (container port 80, published as 8080).
-# Mounted at /etc/nginx/nginx.conf in the stock `nginx` image (config + a small njs
-# file, no fork, no custom image).
+# Template rendered by scripts/render-configs.sh into .generated/gateway/nginx.conf,
+# then mounted at /etc/nginx/nginx.conf in the stock `nginx` image.
 # Routing contract: docs/ARCHITECTURE.md ("Fixed contracts" + "Resolution flows").
 
 worker_processes auto;
@@ -21,10 +21,10 @@ events {
 http {
     default_type application/octet-stream;
 
-    log_format artea '$remote_addr - $remote_user [$time_local] "$request" '
-                     '$status $body_bytes_sent rt=$request_time '
-                     'upstream=$upstream_addr upstream_status=$upstream_status';
-    access_log /var/log/nginx/access.log artea;
+    log_format gateway '$remote_addr - $remote_user [$time_local] "$request" '
+                       '$status $body_bytes_sent rt=$request_time '
+                       'upstream=$upstream_addr upstream_status=$upstream_status';
+    access_log /var/log/nginx/access.log gateway;
 
     sendfile on;
     tcp_nopush on;
@@ -35,7 +35,7 @@ http {
     # Authorization header, 200s only, 30s TTL — keeps PAT revocation latency well
     # inside the 60s budget (ARCHITECTURE.md S12) while sparing Gitea one auth
     # round-trip per pip request. Lives in the ephemeral container layer.
-    proxy_cache_path /var/cache/nginx/artea_auth levels=1:2 keys_zone=artea_auth:1m
+    proxy_cache_path /var/cache/nginx/registry_auth levels=1:2 keys_zone=registry_auth:1m
                      max_size=8m inactive=2m use_temp_path=off;
 
     # $pypi_project = PEP 503-normalized form of the $pypi_project_raw location
@@ -44,22 +44,22 @@ http {
     js_import pep503 from /etc/nginx/njs/pep503.js;
     js_set $pypi_project pep503.normalize;
 
-    # $artea_npm_uri = Gitea-side path for @artea-scoped npm traffic, derived from
+    # $private_npm_uri = Gitea-side path for private npm scope traffic, derived from
     # $request_uri (raw request line, never decoded): the scoped path must reach
     # Gitea byte-for-byte — npm sends %2f/%2F in packument and publish URLs, and a
     # rewrite would operate on the decoded $uri and corrupt them (see the comment
     # above "location /"). First entry: packument/publish/tarball/unpublish paths;
     # second: the dist-tag API. The @ may arrive literal or %40-encoded; the query
     # string rides along inside $request_uri. Case-INsensitive (~*), matching the
-    # @artea location below: every case spelling of the scope (@ARTEA, %40Artea,
-    # ...) is forced to Gitea — where a non-canonical case simply 404s — so no
-    # spelling of the org scope can ever fall through to Verdaccio and its npmjs
-    # uplink; the captured remainder keeps the client's original bytes. Empty ("")
-    # when the raw URI has no matching form — the @artea location rejects that
+    # private-scope location below: every case spelling of the namespace is forced
+    # to Gitea — where a non-canonical case simply 404s — so no spelling of the
+    # org scope can ever fall through to Verdaccio and its npmjs uplink; the
+    # captured remainder keeps the client's original bytes. Empty ("")
+    # when the raw URI has no matching form — the private-scope location rejects that
     # case instead of letting it fall through to Verdaccio or Gitea.
-    map $request_uri $artea_npm_uri {
-        "~*^/npm(?<artea_rest_a>/(?:@|%40)artea(?:%2f|/).*)$"           /api/packages/artea/npm$artea_rest_a;
-        "~*^/npm(?<artea_rest_b>/-/package/(?:@|%40)artea(?:%2f|/).*)$" /api/packages/artea/npm$artea_rest_b;
+    map $request_uri $private_npm_uri {
+        "~*^/npm(?<private_rest_a>/(?:@|%40)__ARTEA_NAMESPACE__(?:%2f|/).*)$"           /api/packages/__ARTEA_NAMESPACE__/npm$private_rest_a;
+        "~*^/npm(?<private_rest_b>/-/package/(?:@|%40)__ARTEA_NAMESPACE__(?:%2f|/).*)$" /api/packages/__ARTEA_NAMESPACE__/npm$private_rest_b;
         default "";
     }
 
@@ -93,7 +93,7 @@ http {
 
         # Forwarded headers for every upstream. X-outside-url is devpi's documented
         # reverse-proxy mechanism (ignored by Gitea/Verdaccio). NOTE: a location that
-        # declares its own proxy_set_header (only /_artea_auth) inherits none of these.
+        # declares its own proxy_set_header (only /_registry_auth) inherits none of these.
         proxy_set_header Host              $http_host;
         proxy_set_header Connection        "";
         proxy_set_header X-Real-IP         $remote_addr;
@@ -119,35 +119,28 @@ http {
         # error_page below only re-maps nginx-generated auth_request failures.
         location = /npm { return 301 /npm/; }
         location /npm/ {
-            auth_request /_artea_auth;
-            error_page 401 403 = @artea_unauthorized;
+            auth_request /_registry_auth;
+            error_page 401 403 = @registry_unauthorized;
             rewrite ^/npm/(.*)$ /$1 break;
             proxy_pass http://$verdaccio_upstream;
         }
 
-        # ---- npm: @artea scope -> Gitea (gateway scope routing, ADR-0002) ----------
+        # ---- npm: private scope -> Gitea (gateway scope routing, ADR-0002) ----------
         # Regex locations beat the /npm/ prefix above, so scoped traffic peels off
-        # before Verdaccio (whose deny rule for @artea/* stays as defense in depth).
-        # Matched case-insensitively (~*) against the DECODED $uri — nginx decodes
-        # %2f and %40 before location matching, so this one pattern covers the
-        # encoded and literal spellings (packument/publish %2f, tarball literal
-        # slash, dist-tag API), and ~* covers case-variant spellings of the scope
-        # (@ARTEA/...), which must route to Gitea (404 there) rather than fall
-        # through to Verdaccio's npmjs uplink (mirrors the PEP 503 case-folding on
-        # the pypi route). The forwarded path comes from the $artea_npm_uri map
-        # over the RAW $request_uri, preserving %2f and the original case
-        # byte-for-byte; the trailing slash in the pattern (decoded scope
-        # separator) keeps @artea-evil/* out of this route.
-        # An empty map value means the decoded URI matched but the raw one did not
-        # — i.e. the scope LETTERS were percent-encoded (e.g. /npm/@%61rtea/x,
-        # which decodes to @artea/... but fits neither raw pattern): reject — such
-        # requests must reach neither Verdaccio nor Gitea. NOTE: double-encoded
-        # separators (%252f, %2540) are NOT this case — they decode once to
-        # literal "%2f"/"%40" text, so the decoded $uri never looks @artea-scoped,
-        # this location never matches, and they fall through to Verdaccio (where
-        # the percent-literal name misses the @artea/* deny pattern but is
-        # rejected as malformed — and could never name a canonical @artea/*
-        # package anyway). "if" + lone "return" is one of the safe if-patterns.
+        # before Verdaccio (whose deny rule for the private scope is defense in depth).
+        # Matched case-insensitively (~*) and explicitly covering both literal and
+        # encoded @/scope-separator spellings. nginx does not turn %2f into "/" for
+        # location matching in the live image, so publish/packument paths from npm
+        # must match %2f here directly; tarball paths still match the literal "/"
+        # form. Case variants of the scope must route to Gitea (404
+        # there) rather than falling through to Verdaccio's npmjs uplink.
+        # The forwarded path comes from the $private_npm_uri map over the RAW
+        # $request_uri, preserving %2f and the original case byte-for-byte; the
+        # required scope separator (%2f or "/") keeps lookalike scopes out.
+        # An empty map value means this scoped location matched but the raw URI fit
+        # neither allowed form (for example encoded scope letters or double-encoded
+        # separators) — reject so it reaches neither Verdaccio nor Gitea.
+        # "if" + lone "return" is one of the safe if-patterns.
         # All methods route identically; no auth_request here (Gitea-bound, see the
         # guard comment below). Disjoint from the pypi regex location by prefix.
         # CLIENT CAVEAT (verified, npm 11.16.0): publish gates on a local credential
@@ -158,9 +151,9 @@ http {
         # Contract amendment: one credential VALUE on two nerf-dart lines,
         # //host/:_auth (covers /api/... tarballs) and //host/npm/:_auth (covers
         # the publish preflight). See docs/guides/clients-npm.md.
-        location ~* ^/npm/(?:-/package/)?@artea/ {
-            if ($artea_npm_uri = "") { return 400; }
-            proxy_pass http://$gitea_upstream$artea_npm_uri;
+        location ~* ^/npm/(?:-/package/)?(?:@|%40)__ARTEA_NAMESPACE__(?:%2f|/) {
+            if ($private_npm_uri = "") { return 400; }
+            proxy_pass http://$gitea_upstream$private_npm_uri;
         }
 
         # ---- PyPI simple index: private-first, public 404-fallback (R2) ------------
@@ -170,8 +163,8 @@ http {
         # only possible answer is devpi's mirror index — guarded like every other
         # devpi-bound path.
         location = /pypi/simple/ {
-            auth_request /_artea_auth;
-            error_page 401 403 = @artea_unauthorized;
+            auth_request /_registry_auth;
+            error_page 401 403 = @registry_unauthorized;
             rewrite ^ /root/constrained/+simple/ break;
             proxy_pass http://$devpi_upstream;
         }
@@ -185,13 +178,13 @@ http {
         # optional in the pattern) so the fallback never depends on a devpi redirect
         # that would skip this precedence check.
         location ~ ^/pypi/simple/(?<pypi_project_raw>[^/]+)/?$ {
-            auth_request /_artea_auth;
+            auth_request /_registry_auth;
 
             proxy_intercept_errors on;        # let error_page act on Gitea's status
             error_page 404 = @public_pypi;
-            error_page 401 403 = @artea_unauthorized;
+            error_page 401 403 = @registry_unauthorized;
 
-            rewrite ^ /api/packages/artea/pypi/simple/$pypi_project/ break;
+            rewrite ^ /api/packages/__ARTEA_NAMESPACE__/pypi/simple/$pypi_project/ break;
             proxy_pass http://$gitea_upstream;
         }
 
@@ -209,8 +202,8 @@ http {
 
         # ---- devpi file downloads (URLs inside its simple pages) -------------------
         location /root/ {
-            auth_request /_artea_auth;
-            error_page 401 403 = @artea_unauthorized;
+            auth_request /_registry_auth;
+            error_page 401 403 = @registry_unauthorized;
             proxy_pass http://$devpi_upstream;
         }
 
@@ -219,7 +212,7 @@ http {
         # service endpoints would answer anonymously) is gated by a subrequest to
         # Gitea carrying the client's credential. Gitea-bound locations skip this:
         # Gitea enforces auth itself.
-        location = /_artea_auth {
+        location = /_registry_auth {
             internal;
             proxy_pass http://$gitea_upstream/api/v1/user;
             proxy_method GET;
@@ -229,7 +222,7 @@ http {
             proxy_set_header X-Original-URI $request_uri;
 
             proxy_buffering on;               # proxy_cache requires buffering
-            proxy_cache artea_auth;
+            proxy_cache registry_auth;
             proxy_cache_key $http_authorization;
             proxy_cache_valid 200 30s;        # successes only; failures never cached
             # Gitea API replies carry no-cache headers and cookies; ignore them so
@@ -238,7 +231,7 @@ http {
         }
 
         # pip needs a Basic challenge on 401 to retry with netrc/keyring credentials.
-        location @artea_unauthorized {
+        location @registry_unauthorized {
             add_header WWW-Authenticate 'Basic realm="Artea"' always;
             return 401 "authentication required\n";
         }
@@ -251,9 +244,8 @@ http {
         }
 
         # ---- everything else -> Gitea ----------------------------------------------
-        # UI, /api/v1/..., npm scope registry (/api/packages/artea/npm/), pypi
-        # uploads (POST /api/packages/artea/pypi/), pypi file downloads
-        # (/api/packages/artea/pypi/files/...). No rewrite here, so the raw client
+        # UI, /api/v1/..., npm scope registry, pypi uploads, and pypi file
+        # downloads. No rewrite here, so the raw client
         # URI is forwarded byte-for-byte (important: npm uses %2f in scoped paths).
         location / {
             proxy_pass http://$gitea_upstream;

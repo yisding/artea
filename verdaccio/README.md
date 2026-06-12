@@ -1,20 +1,21 @@
 # verdaccio/ — npm pull-through cache
 
 Runs the **stock `verdaccio/verdaccio:6` image** (exact tag pinned in `.env`, per the
-no-fork rule R7). Everything of ours is runtime configuration: one config file and two
-plugins loaded through Verdaccio's stable plugin API.
+no-fork rule R7). Everything of ours is runtime configuration: one rendered config
+file and two plugins loaded through Verdaccio's stable plugin API.
 
 | Piece | Purpose |
 |-------|---------|
-| `config.yaml` | Verdaccio config: `/npm/` url_prefix, npmjs uplink, package rules, plugin wiring |
+| `config.yaml.template` | Verdaccio config template: `/npm/` url_prefix, npmjs uplink, package rules, plugin wiring |
 | `plugins/verdaccio-auth-gitea/` | auth plugin — validates `user:PAT` against Gitea, maps orgs to groups (paginated), 60s positive cache |
 | `plugins/verdaccio-filter-artea/` | metadata filter + tarball middleware — enforces `/policy/npm-rules.yaml` (blocked names/scopes/semver ranges, mtime hot-reload, fail-closed) |
-| `smoke/` | dev-only: boots verdaccio 6 in-process with `config.yaml` + built plugins and asserts the auth/deny contract; **not mounted** into the container |
+| `smoke/` | dev-only: boots verdaccio 6 in-process with `config.yaml.template` + built plugins and asserts the auth/deny contract; **not mounted** into the container |
 
 Design (see `docs/ARCHITECTURE.md`): Verdaccio is **read-only** — publish is denied
-for everyone in `config.yaml`; publishes go to Gitea only. The private `@artea/*`
-scope is fully denied here (no access, no publish, no proxy) as defense in depth, and
-there is no anonymous access; the web UI is disabled.
+for everyone in the generated config; publishes go to Gitea only. The configured
+private scope (`@${ARTEA_NAMESPACE}/*`, default `@artea/*`) is fully denied here
+(no access, no publish, no proxy) as defense in depth, and there is no anonymous
+access; the web UI is disabled.
 
 ## Building the plugins (required before first `docker compose up`)
 
@@ -44,14 +45,14 @@ pnpm test           # boots verdaccio 6 in-process (~0.5s) and exits
 
 | Host path | Container path | Mode | Notes |
 |-----------|----------------|------|-------|
-| `./verdaccio/config.yaml` | `/verdaccio/conf/config.yaml` | `ro` | image's default config location |
+| `./.generated/verdaccio/config.yaml` | `/verdaccio/conf/config.yaml` | `ro` | rendered image config |
 | `./verdaccio/plugins` | `/verdaccio/plugins` | `ro` | **mount the whole directory** — see below |
 | named volume (e.g. `verdaccio-storage`) | `/verdaccio/storage` | rw | package cache; disposable |
 | named volume `policy-data` (fixed contract) | `/policy` | `ro` for verdaccio | written by policy-sync, read by the filter plugin |
 
 Mount the **entire** `verdaccio/plugins` directory, never a single plugin folder:
 pnpm installs dependencies as *relative* symlinks into `plugins/node_modules/.pnpm`,
-so the tree is only self-contained as a whole. `config.yaml` sets
+so the tree is only self-contained as a whole. The generated config sets
 `plugins: /verdaccio/plugins`, and Verdaccio's loader resolves
 `/verdaccio/plugins/verdaccio-<name>` for each configured plugin
 (`auth: auth-gitea`, `filters: filter-artea`, `middlewares: filter-artea` — the
@@ -80,7 +81,7 @@ minute (e2e S12). There is no local user database and `npm adduser` fails by des
 
 ## Policy enforcement recap
 
-policy-sync writes `npm-rules.yaml` from the `artea/registry-policy` repo into the
+policy-sync writes `npm-rules.yaml` from the `${ARTEA_NAMESPACE}/registry-policy` repo into the
 shared `/policy` volume; the filter plugin hot-reloads it on mtime change — no
 container restart. The same package is also wired as a middleware that rejects
 direct tarball downloads of blocked versions with 403 (S13). A missing or

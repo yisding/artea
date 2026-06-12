@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Generate the secret files referenced by gitea/app.ini (SECRET_KEY_URI /
+# Generate the secret files referenced by gitea/app.ini.template (SECRET_KEY_URI /
 # INTERNAL_TOKEN_URI). Run before the first `docker compose up` (wired into
 # `make bootstrap`). Idempotent: existing non-empty files are kept — regenerating
 # SECRET_KEY invalidates sessions/2FA secrets, so never overwrite silently.
@@ -27,7 +27,7 @@ gen internal_token 64
 
 # oauth2.JWT_SECRET (also Gitea's general token signing secret): must be
 # RawURL-base64 of exactly 32 bytes, otherwise Gitea regenerates it and tries
-# to write it back into the read-only app.ini and fatals on boot.
+# to write it back into the read-only rendered app.ini and fatals on boot.
 if [ -s "$dir/jwt_secret" ]; then
 	echo "kept     gitea/secrets/jwt_secret"
 else

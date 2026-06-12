@@ -7,8 +7,8 @@ directory is runtime overlay — no source patches (R7).
 
 ```
 gitea/
-├── app.ini                  # full config, mounted read-only into the container
-├── custom/templates/        # Gitea custom-dir template overrides (de-git the UI)
+├── app.ini.template         # full config template, rendered into .generated/
+├── custom/templates/        # template overrides, rendered into .generated/
 ├── patches/                 # quilt-style source-patch escape hatch (EMPTY in v1)
 ├── scripts/gen-secrets.sh   # generates secrets/ before first start
 ├── secrets/                 # generated, gitignored: secret_key, internal_token
@@ -22,8 +22,8 @@ The stock root image has `GITEA_CUSTOM=/data/gitea`, reads its config from
 
 | Host path | Container path | Mode |
 |---|---|---|
-| `./gitea/app.ini` | `/data/gitea/conf/app.ini` | `ro` |
-| `./gitea/custom/templates` | `/data/gitea/templates` | `ro` |
+| `./.generated/gitea/app.ini` | `/data/gitea/conf/app.ini` | `ro` |
+| `./.generated/gitea/templates` | `/data/gitea/templates` | `ro` |
 | `./gitea/secrets/secret_key` | `/data/gitea/secret_key` | `ro` |
 | `./gitea/secrets/internal_token` | `/data/gitea/internal_token` | `ro` |
 | `./gitea/secrets/jwt_secret` | `/data/gitea/jwt_secret` | `ro` |
@@ -43,12 +43,12 @@ The stock root image has `GITEA_CUSTOM=/data/gitea`, reads its config from
 
 The image's entrypoint supports `GITEA__section__key=value` env vars, but it
 implements them by **rewriting the config file in place**
-(`environment-to-ini` → `gitea config edit-ini --in-place --apply-env`). With our
-app.ini bind-mounted from the repo that would either fail (read-only mount) or
-write values — including secrets — back into the committed file. So the contract
-is:
+(`environment-to-ini` → `gitea config edit-ini --in-place --apply-env`). With
+our rendered app.ini bind-mounted from `.generated/`, that would either fail
+(read-only mount) or write values — including secrets — back into generated
+runtime config. So the contract is:
 
-- mount `gitea/app.ini` read-only at `/data/gitea/conf/app.ini`;
+- mount `.generated/gitea/app.ini` read-only at `/data/gitea/conf/app.ini`;
 - set **no** `GITEA__*` environment variables on the `gitea` service (with none
   set, the entrypoint's rewrite is a no-op and the `ro` mount is safe);
 - the full effective config stays reviewable in version control.
@@ -70,7 +70,7 @@ machine-generated rather than operator-chosen, so files are the honest shape.
 
 ## What is hidden / disabled, and how
 
-### Via config (`app.ini`) — preferred, zero upgrade drift
+### Via config (`app.ini.template`) — preferred, zero upgrade drift
 
 - **Web installer** — `INSTALL_LOCK = true`.
 - **Self-registration** — `DISABLE_REGISTRATION = true`, registration button off.
@@ -79,7 +79,7 @@ machine-generated rather than operator-chosen, so files are the honest shape.
   releases, actions — `DISABLED_REPO_UNITS`. This also removes their navbar
   entries and repo tabs (upstream templates check `UnitGlobalDisabled`).
   **`repo.pulls` is intentionally NOT disabled**: policy changes to
-  `artea/registry-policy` flow through pull requests (architecture policy model).
+  `${ARTEA_NAMESPACE}/registry-policy` flow through pull requests (architecture policy model).
   New repos default to code+pulls only (`DEFAULT_REPO_UNITS`).
 - **Milestones dashboard** — `SHOW_MILESTONES_DASHBOARD_PAGE = false`.
 - **Migrations/imports** — `DISABLE_MIGRATIONS = true`; **mirrors** —
@@ -89,7 +89,7 @@ machine-generated rather than operator-chosen, so files are the honest shape.
   + `[admin] DISABLE_REGULAR_ORG_CREATION = true` (admins bypass both).
 - **SSH / LFS server** — `DISABLE_SSH = true`, `LFS_START_SERVER = false`.
 - **RSS/Atom feeds, sitemap, footer version** — `[other]`.
-- **Landing page** — `LANDING_PAGE = /artea/-/packages`: anonymous `/` redirects
+- **Landing page** — `LANDING_PAGE = /${ARTEA_NAMESPACE}/-/packages`: anonymous `/` redirects
   there; with sign-in required that becomes the post-login destination.
 - **Webhook target allowlist** — `[webhook] ALLOWED_HOST_LIST = policy-sync`.
   Gitea blocks webhooks to private hosts by default, which would silently break
@@ -106,8 +106,8 @@ to a shadowed file are masked until re-merged. Re-verify on every bump
 
 | File | Why |
 |---|---|
-| `base/head_navbar.tmpl` | Replace "Explore" (`/explore/repos`) with "Packages" (`/artea/-/packages`); remove the "+" create dropdown (new repo / migration / new org). Neither is hideable via config. Issues/PRs/milestones links are left to upstream logic since config already controls them. |
-| `home.tmpl` | Upstream renders a Gitea marketing page. Replaced with a minimal packages-centric hero. Normally unreachable with our `LANDING_PAGE`; kept as a safety net. Note: its tagline is English-only (upstream localizes via locale keys we cannot extend cleanly). |
+| `base/head_navbar.tmpl.template` | Replace "Explore" (`/explore/repos`) with "Packages" (`/${ARTEA_NAMESPACE}/-/packages`); remove the "+" create dropdown (new repo / migration / new org). Neither is hideable via config. Issues/PRs/milestones links are left to upstream logic since config already controls them. |
+| `home.tmpl.template` | Upstream renders a Gitea marketing page. Replaced with a minimal packages-centric hero. Normally unreachable with our `LANDING_PAGE`; kept as a safety net. Note: its tagline is English-only (upstream localizes via locale keys we cannot extend cleanly). |
 
 ### Not hidden — impossible or not worth it without source patches
 
@@ -126,7 +126,7 @@ to a shadowed file are masked until re-merged. Re-verify on every bump
   stats, etc.): cosmetic; deferred.
 - **PAT expiry dates**: not available upstream; the first planned source patch
   (`patches/README.md`).
-- Repos stay functional on purpose — `artea/registry-policy` needs code + PRs.
+- Repos stay functional on purpose — `${ARTEA_NAMESPACE}/registry-policy` needs code + PRs.
 
 ## SSO (Okta/OIDC) caveat — read before wiring auth
 

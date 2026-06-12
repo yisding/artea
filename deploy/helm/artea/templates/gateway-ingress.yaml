@@ -1,0 +1,38 @@
+{{- if .Values.gateway.ingress.enabled }}
+# Optional Ingress in front of the gateway: TLS termination + host routing
+# ONLY. auth_request, the pypi 404-fallback and PEP 503 normalization live in
+# the gateway's nginx.conf and must never be ported into ingress annotations
+# (docs/ARCHITECTURE.md "Kubernetes deployment"). Disabled by default; local
+# dev uses kubectl port-forward.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "artea.fullname" "gateway" }}
+  labels:
+    {{- include "artea.labels" (dict "ctx" $ "component" "gateway") | nindent 4 }}
+  {{- with .Values.gateway.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.gateway.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.gateway.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - {{- with .Values.gateway.ingress.host }}
+      host: {{ . | quote }}
+      {{- end }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "artea.fullname" "gateway" }}
+                port:
+                  number: {{ .Values.gateway.service.port }}
+{{- end }}

@@ -14,9 +14,10 @@ that also talk to public registries.
 
 Private artifacts — npm tarballs and Python wheels/sdists — are stored only in
 Gitea. Publishes land in Gitea endpoints (`npm publish` to `/npm/`, which the
-gateway scope-routes to `/api/packages/artea/npm/` — see the ADR-0002
-amendment; the legacy direct `@artea:registry` URL still works — and
-`twine upload` to `/api/packages/artea/pypi/`). Verdaccio and devpi hold
+gateway scope-routes to `/api/packages/${ARTEA_NAMESPACE}/npm/` — see the
+ADR-0002 amendment; the legacy direct `@${ARTEA_NAMESPACE}:registry` URL still
+works — and `twine upload` to
+`/api/packages/${ARTEA_NAMESPACE}/pypi/`). Verdaccio and devpi hold
 nothing but re-fetchable copies of public packages; Verdaccio is configured
 read-only and devpi is never a publish target.
 

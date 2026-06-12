@@ -28,16 +28,20 @@ Option 3. One nginx gateway is the single public entrypoint (`:8080`).
 Precedence — private always beats public (R2) — is enforced by mechanism, not
 convention:
 
-- **npm**: the gateway routes the `@artea` scope server-side: a regex location
-  peels `/npm/@artea/...` and the dist-tag API `/npm/-/package/@artea/...` off
-  the Verdaccio route and proxies them to Gitea's `/api/packages/artea/npm/...`,
-  taking the forwarded path from a `map` over the raw `$request_uri` so npm's
-  `%2f`/`%40` encodings reach Gitea byte-for-byte (a decoded-scoped path whose
-  raw form matches neither pattern is rejected with 400). A scope match, never
-  a 404-fallback: `@artea` names are structurally unable to reach Verdaccio or
-  npmjs. Everything else under `/npm/` goes to Verdaccio, which additionally
-  denies access/proxy for `@artea/*` (defense in depth) and is read-only.
-  Client-side scope routing (`@artea:registry=...`) remains supported as
+- **npm**: the gateway routes the configured private scope
+  (`@${ARTEA_NAMESPACE}`, default `@artea`) server-side: a regex location peels
+  `/npm/@${ARTEA_NAMESPACE}/...` and the dist-tag API
+  `/npm/-/package/@${ARTEA_NAMESPACE}/...` off the Verdaccio route and proxies
+  them to Gitea's `/api/packages/${ARTEA_NAMESPACE}/npm/...`,
+  explicitly matching npm's literal and encoded `@` / scope-separator spellings
+  and taking the forwarded path from a `map` over the raw `$request_uri` so
+  npm's `%2f`/`%40` encodings reach Gitea byte-for-byte (a scoped-location
+  match whose raw form matches neither pattern is rejected with 400). A scope
+  match, never a 404-fallback: private-scope names are structurally unable to reach
+  Verdaccio or npmjs. Everything else under `/npm/` goes to Verdaccio, which
+  additionally denies access/proxy for `@${ARTEA_NAMESPACE}/*` (defense in depth) and is
+  read-only.
+  Client-side scope routing (`@${ARTEA_NAMESPACE}:registry=...`) remains supported as
   optional legacy.
 - **PyPI** (no scopes in PEP 503): the gateway proxies `/pypi/simple/{name}/`
   to Gitea first and only falls back to devpi's `root/constrained` index on a
@@ -63,12 +67,13 @@ convention:
 ## Amendment (2026-06-10): gateway scope routing for npm
 
 As originally accepted, npm precedence relied on the client's scope routing
-(`@artea:registry=` in `.npmrc`); the gateway's only npm role was the auth
-guard. The gateway now enforces the same precedence server-side (mechanism in
-the Decision above), shrinking the client contract to one registry URL plus
-one credential value. Backward compatible: the legacy two-registry `.npmrc`
-behaves identically (it reaches Gitea directly, bypassing the scope match),
-and Verdaccio's `@artea/*` deny rule stays as defense in depth. The Decision
-and Consequences sections were updated in place to describe the amended
-mechanism; ARCHITECTURE.md and docs/guides/clients-npm.md carry the new
-client contract (including the npm-publish credential-preflight caveat).
+(`@artea:registry=` in `.npmrc` for the default namespace); the gateway's only
+npm role was the auth guard. The gateway now enforces the same precedence
+server-side (mechanism in the Decision above), shrinking the client contract to
+one registry URL plus one credential value. Backward compatible: the legacy
+two-registry `.npmrc` behaves identically (it reaches Gitea directly, bypassing
+the scope match), and Verdaccio's configured private-scope deny rule stays as
+defense in depth. The Decision and Consequences sections were updated in place
+to describe the amended mechanism; ARCHITECTURE.md and
+docs/guides/clients-npm.md carry the new client contract (including the
+npm-publish credential-preflight caveat).

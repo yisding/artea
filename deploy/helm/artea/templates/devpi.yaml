@@ -1,0 +1,103 @@
+# devpi: PyPI pull-through cache + devpi-constrained filtering (our image,
+# ghcr.io/yisding/artea-devpi). Internal-only; the gateway enforces auth. The
+# PVC is a DISPOSABLE cache: a wiped volume re-initializes fail-closed (the
+# entrypoint seeds root/constrained with '*' until policy-sync syncs).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "artea.fullname" "devpi-data" }}
+  labels:
+    {{- include "artea.labels" (dict "ctx" $ "component" "devpi") | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.devpi.persistence.size }}
+  {{- with .Values.devpi.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "artea.fullname" "devpi" }}
+  labels:
+    {{- include "artea.labels" (dict "ctx" $ "component" "devpi") | nindent 4 }}
+spec:
+  replicas: 1
+  # RWO volume + sqlite-backed serverdir: never two pods at once.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "artea.selectorLabels" (dict "ctx" $ "component" "devpi") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "artea.selectorLabels" (dict "ctx" $ "component" "devpi") | nindent 8 }}
+    spec:
+      securityContext:
+        # image runs as uid 1000 (devpi); make the PVC writable for it
+        fsGroup: 1000
+      containers:
+        - name: devpi
+          image: {{ include "artea.image" .Values.devpi.image | quote }}
+          imagePullPolicy: {{ .Values.devpi.image.pullPolicy }}
+          env:
+            - name: DEVPI_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "artea.fullname" "secrets" }}
+                  key: DEVPI_ROOT_PASSWORD
+            # simple-page file links must be absolute URLs under the public
+            # gateway origin (entrypoint passes --outside-url --absolute-urls)
+            - name: DEVPI_OUTSIDE_URL
+              value: {{ trimSuffix "/" .Values.global.baseUrl | quote }}
+          ports:
+            - name: http
+              containerPort: 3141
+          volumeMounts:
+            - name: data
+              mountPath: /devpi/server
+          # first boot runs devpi-init + ensure_index; give it room
+          startupProbe:
+            httpGet:
+              path: /+status
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /+status
+              port: http
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /+status
+              port: http
+            periodSeconds: 10
+          {{- with .Values.devpi.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "artea.fullname" "devpi-data" }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "artea.fullname" "devpi" }}
+  labels:
+    {{- include "artea.labels" (dict "ctx" $ "component" "devpi") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 3141
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "artea.selectorLabels" (dict "ctx" $ "component" "devpi") | nindent 4 }}

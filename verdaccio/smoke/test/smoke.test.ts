@@ -1,6 +1,6 @@
-// Boots real verdaccio 6 in-process with our committed config.yaml (container paths
-// swapped for temp/local ones) and the built plugins, asserts the auth + deny
-// contract over HTTP, then exits. Requires `pnpm build` in ../plugins first.
+// Boots real verdaccio 6 in-process with our committed config template (container
+// paths swapped for temp/local ones) and the built plugins, asserts the auth +
+// deny contract over HTTP, then exits. Requires `pnpm build` in ../plugins first.
 import { createServer, type Server as HttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
@@ -10,8 +10,9 @@ import { dump as yamlDump, load as yamlLoad } from 'js-yaml';
 import { runServer } from 'verdaccio';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-const REPO_CONFIG = resolve(__dirname, '..', '..', 'config.yaml');
+const REPO_CONFIG = resolve(__dirname, '..', '..', 'config.yaml.template');
 const PLUGINS_DIR = resolve(__dirname, '..', '..', 'plugins');
+const TEST_NAMESPACE = 'acme';
 
 const USER = 'alice';
 const PAT = 'pat-alice-0123456789abcdef';
@@ -24,7 +25,7 @@ function mockGitea(): HttpServer {
       res.end(JSON.stringify(body));
     };
     if (req.headers.authorization !== basic) return json(401, { message: 'unauthorized' });
-    if (req.url?.startsWith('/api/v1/user/orgs')) return json(200, [{ username: 'artea' }]);
+    if (req.url?.startsWith('/api/v1/user/orgs')) return json(200, [{ username: TEST_NAMESPACE }]);
     if (req.url === '/api/v1/user') return json(200, { login: USER });
     json(404, {});
   });
@@ -42,13 +43,14 @@ describe('verdaccio 6 boots with our config and plugins', () => {
     await new Promise<void>((r) => gitea.listen(0, '127.0.0.1', r));
     const giteaUrl = `http://127.0.0.1:${(gitea.address() as AddressInfo).port}`;
 
-    // start from the committed config so the smoke test validates its real keys
-    const config = yamlLoad(readFileSync(REPO_CONFIG, 'utf8')) as Record<string, any>;
+    // start from the committed template so the smoke test validates its real keys
+    const rendered = readFileSync(REPO_CONFIG, 'utf8').replaceAll('__ARTEA_NAMESPACE__', TEST_NAMESPACE);
+    const config = yamlLoad(rendered) as Record<string, any>;
     expect(config.url_prefix).toBe('/npm/');
     expect(config.auth['auth-gitea']).toBeDefined();
     expect(config.filters['filter-artea']).toBeDefined();
     expect(config.middlewares['filter-artea']).toBeDefined(); // tarball guard wired (S13)
-    expect(config.packages['@artea/*'].proxy).toBeUndefined(); // private scope must never proxy
+    expect(config.packages[`@${TEST_NAMESPACE}/*`].proxy).toBeUndefined(); // private scope must never proxy
     expect(config.packages['**'].proxy).toBe('npmjs');
 
     // container paths -> local ones
@@ -98,8 +100,8 @@ describe('verdaccio 6 boots with our config and plugins', () => {
     expect(((await who.json()) as { username?: string }).username).toBeUndefined();
   });
 
-  it('denies the private @artea scope even when authenticated', async () => {
-    const res = await fetch(`${base}/@artea%2fhello-artea`, { headers: { authorization: basic } });
+  it('denies the configured private scope even when authenticated', async () => {
+    const res = await fetch(`${base}/@${TEST_NAMESPACE}%2fhello-${TEST_NAMESPACE}`, { headers: { authorization: basic } });
     expect(res.status).toBe(403);
   });
 

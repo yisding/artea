@@ -1,0 +1,69 @@
+# Local-dev overrides for colima's docker-runtime k3s (docs/guides/kubernetes.md):
+#
+#   colima start --kubernetes
+#   docker build -t ghcr.io/yisding/artea-devpi:local devpi/
+#   docker build -t ghcr.io/yisding/artea-policy-sync:local policy-sync/
+#   docker build -t ghcr.io/yisding/artea-bootstrap:local \
+#     -f scripts/Dockerfile.bootstrap .   # repo root: needs scripts/ + policy/
+#   pnpm -C verdaccio/plugins install && pnpm -C verdaccio/plugins build
+#   docker build -t ghcr.io/yisding/artea-verdaccio-assets:local \
+#     -f deploy/docker/verdaccio-assets/Dockerfile verdaccio/plugins
+#   helm install artea deploy/helm/artea -f deploy/helm/artea/values-local.yaml
+#   kubectl port-forward svc/artea-gateway 8080:80
+#
+# colima's k3s shares the docker image store, so locally-built images are
+# visible without a registry; pullPolicy Never makes a typo'd tag fail loudly
+# instead of pulling something else from GHCR.
+
+global:
+  baseUrl: http://localhost:8080
+
+gateway:
+  replicas: 1
+  resources:
+    requests: {cpu: 25m, memory: 32Mi}
+
+devpi:
+  image:
+    tag: local
+    pullPolicy: Never
+  persistence:
+    size: 2Gi
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+
+policySync:
+  image:
+    tag: local
+    pullPolicy: Never
+  resources:
+    requests: {cpu: 25m, memory: 64Mi}
+
+bootstrap:
+  image:
+    tag: local
+    pullPolicy: Never
+
+verdaccio:
+  pluginAssets:
+    image:
+      tag: local
+      pullPolicy: Never
+  persistence:
+    size: 2Gi
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+
+gitea:
+  persistence:
+    size: 5Gi
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+  postgresql:
+    primary:
+      persistence:
+        size: 2Gi
+  valkey:
+    primary:
+      persistence:
+        size: 1Gi

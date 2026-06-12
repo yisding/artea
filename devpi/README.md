@@ -11,7 +11,7 @@ This container is Artea's PyPI mirror layer. It does exactly two things:
    creates this index idempotently on every boot; a **freshly created** index is
    seeded with the `*` constraint (fail-closed: block everything) and an existing
    index's constraints are **never touched** — the real policy is pushed by
-   `policy-sync` from `artea/registry-policy:pypi-constraints.txt`.
+  `policy-sync` from `${ARTEA_NAMESPACE}/registry-policy:pypi-constraints.txt`.
 
 What this container is **not**:
 

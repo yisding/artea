@@ -1,0 +1,83 @@
+{{- if .Values.bootstrap.enabled }}
+# Bootstrap as a Helm hook Job (e2e S1): same idempotency contract as
+# scripts/bootstrap.sh in compose — admin PAT, org artea, policy repo seeded,
+# webhook wired, teams/users, branch protection, svc-policy PAT. Runs after
+# every install AND upgrade; safe to re-run at any time.
+#
+# ENV CONTRACT (consumed by bootstrap.sh's k8s-secret token-sink mode):
+#   TOKEN_SINK=k8s-secret    write the minted svc-policy PAT into a Secret
+#   SECRET_NAME              Secret to patch (key POLICY_SYNC_TOKEN)
+#   DEPLOYMENT_NAME          Deployment to rollout-restart after the patch
+#   GATEWAY_URL              public-path base for API calls (in-cluster gateway)
+#   GITEA_URL                direct Gitea URL (bypasses the gateway)
+#   POLICY_SYNC_URL          policy-sync base URL (health/sync wait)
+#   POLICY_SYNC_HOOK_URL     push-webhook target wired into Gitea
+#   ARTEA_NAMESPACE          Gitea org and npm private scope
+#   ARTEA_ADMIN_USER/_PASSWORD, DEV1_PASSWORD, POLICY_WEBHOOK_SECRET   secrets
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "artea.fullname" "bootstrap" }}
+  labels:
+    {{- include "artea.labels" (dict "ctx" $ "component" "bootstrap") | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    # keep the last run around for debugging; replace it on the next hook run
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: {{ .Values.bootstrap.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.bootstrap.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "artea.selectorLabels" (dict "ctx" $ "component" "bootstrap") | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "artea.fullname" "bootstrap" }}
+      restartPolicy: OnFailure
+      containers:
+        - name: bootstrap
+          image: {{ include "artea.image" .Values.bootstrap.image | quote }}
+          imagePullPolicy: {{ .Values.bootstrap.image.pullPolicy }}
+          env:
+            - name: TOKEN_SINK
+              value: k8s-secret
+            - name: SECRET_NAME
+              value: {{ include "artea.fullname" "policy-sync" | quote }}
+            - name: DEPLOYMENT_NAME
+              value: {{ include "artea.fullname" "policy-sync" | quote }}
+            - name: GATEWAY_URL
+              value: {{ include "artea.gatewayUrl" . | quote }}
+            - name: GITEA_URL
+              value: {{ include "artea.giteaUrl" . | quote }}
+            - name: POLICY_SYNC_URL
+              value: {{ include "artea.policySyncUrl" . | quote }}
+            - name: POLICY_SYNC_HOOK_URL
+              value: {{ printf "%s/hooks/policy" (include "artea.policySyncUrl" .) | quote }}
+            - name: ARTEA_NAMESPACE
+              value: {{ include "artea.privateNamespace" . | quote }}
+            - name: ARTEA_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "artea.fullname" "admin" }}
+                  key: username
+            - name: ARTEA_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "artea.fullname" "admin" }}
+                  key: password
+            - name: DEV1_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "artea.fullname" "secrets" }}
+                  key: DEV1_PASSWORD
+            - name: POLICY_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "artea.fullname" "secrets" }}
+                  key: POLICY_WEBHOOK_SECRET
+          {{- with .Values.bootstrap.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

@@ -1,5 +1,6 @@
 # Verdaccio config for Artea — read-only npm pull-through cache behind the gateway.
-# Mounted read-only at /verdaccio/conf/config.yaml in the stock verdaccio/verdaccio:6 image.
+# Template rendered by scripts/render-configs.sh into .generated/verdaccio/config.yaml,
+# then mounted read-only at /verdaccio/conf/config.yaml in the stock image.
 # See docs/ARCHITECTURE.md ("Fixed contracts") and verdaccio/README.md for mounts.
 
 # named volume mounted at /verdaccio/storage (image default data dir)
@@ -44,13 +45,13 @@ uplinks:
     fail_timeout: 5m
 
 packages:
-  # private scope: defense in depth. The gateway routes @artea traffic under
-  # /npm/ to Gitea server-side (scope match, gateway/nginx.conf), so scoped
+  # private scope: defense in depth. The gateway routes this scope under
+  # /npm/ to Gitea server-side (scope match, gateway/nginx.conf.template), so scoped
   # requests should never reach us; if one ever does (gateway regression,
   # client pointed past the gateway) we still deny everything here — no
   # access, no publish, and crucially no proxy, so private names can never
   # leak to npmjs.
-  '@artea/*':
+  '@__ARTEA_NAMESPACE__/*':
     access: []
     publish: []
     unpublish: []

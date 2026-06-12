@@ -1,15 +1,26 @@
 #!/usr/bin/env bash
 # Artea smoke checks — fast gateway-level verification that the stack wiring
-# works (subset of the S1-S16 e2e scenarios). Requires `make up` + `make
-# bootstrap` to have completed; uses the credentials bootstrap wrote.
+# works (subset of the S1-S16 e2e scenarios). Requires a bootstrapped stack;
+# uses the credentials bootstrap wrote. Portable across runtimes:
+#   BASE_URL          public gateway URL (beats the recorded GATEWAY_URL)
+#   CREDENTIALS_FILE  credentials path (default e2e/tmp/credentials.env)
+#   RUNTIME           compose (default) | k8s — how the internal-only
+#                     policy-sync healthz probe is exec'd
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-CRED_FILE=e2e/tmp/credentials.env
-[ -f "${CRED_FILE}" ] || { echo "ERROR: ${CRED_FILE} missing — run make bootstrap"; exit 1; }
+RUNTIME="${RUNTIME:-compose}"
+CREDENTIALS_FILE="${CREDENTIALS_FILE:-e2e/tmp/credentials.env}"
+case "${CREDENTIALS_FILE}" in /*) ;; *) CREDENTIALS_FILE="./${CREDENTIALS_FILE}" ;; esac
+[ -f "${CREDENTIALS_FILE}" ] || { echo "ERROR: ${CREDENTIALS_FILE} missing — run make bootstrap"; exit 1; }
 # shellcheck disable=SC1090
-source "./${CRED_FILE}"
-GATEWAY_URL="${GATEWAY_URL:-http://localhost:8080}"
+source "${CREDENTIALS_FILE}"
+# explicit BASE_URL beats the GATEWAY_URL recorded at bootstrap time
+GATEWAY_URL="${BASE_URL:-${GATEWAY_URL:-http://localhost:8080}}"
+ARTEA_NAMESPACE="${ARTEA_NAMESPACE:-artea}"
+# k8s runtime knobs (must match the chart; scripts/k8s-e2e.sh exports them)
+K8S_NAMESPACE="${K8S_NAMESPACE:-}"
+K8S_POLICY_SYNC_DEPLOY="${K8S_POLICY_SYNC_DEPLOY:-artea-policy-sync}"
 
 pass=0; fail=0
 check() { # <description> <expected> <actual>
@@ -32,10 +43,10 @@ check "anonymous / redirects to sign-in" 303 "$(code "${GATEWAY_URL}/")"
 check "npm packument w/o auth is denied" 401 "$(code "${GATEWAY_URL}/npm/left-pad")"
 check "npm packument with PAT (npmjs pull-through)" 200 \
   "$(code -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/left-pad")"
-# the gateway scope-routes @artea under /npm/ to Gitea: an unknown private name
-# 404s from Gitea — never Verdaccio (whose @artea deny would 403), never npmjs
-check "npm @artea scope routed to Gitea: unknown name 404s, never Verdaccio" 404 \
-  "$(code -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/@artea%2fanything")"
+# the gateway scope-routes the configured private npm scope under /npm/ to
+# Gitea: an unknown private name 404s there, never in Verdaccio/npmjs
+check "npm private scope routed to Gitea: unknown name 404s, never Verdaccio" 404 \
+  "$(code -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/@${ARTEA_NAMESPACE}%2fanything")"
 
 # 3. pypi path: gateway auth guard + Gitea-404 fallthrough to devpi/pypi.org
 check "pypi simple w/o auth gets Basic challenge" 401 "$(code "${GATEWAY_URL}/pypi/simple/six/")"
@@ -45,17 +56,23 @@ check "pypi simple for unpublished name falls through to devpi" 200 \
   "$(code -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/six/")"
 # file links inside the fallthrough page must stay on the gateway origin (/root/...)
 links=$(curl -s -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/six/" \
-  | grep -c 'href="http://localhost:8080/root/pypi/' || true)
+  | grep -c "href=\"${GATEWAY_URL}/root/pypi/" || true)
 check "devpi simple page links route via gateway /root/" yes "$([ "${links}" -gt 0 ] && echo yes || echo no)"
 check "devpi file path w/o auth is denied" 401 "$(code "${GATEWAY_URL}/root/pypi/")"
 
 # 4. gitea package API direct paths (npm scope registry / pypi upload target)
 check "gitea pypi simple 404s for unpublished name (auth'd)" 404 \
-  "$(code -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/api/packages/artea/pypi/simple/six/")"
+  "$(code -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/api/packages/${ARTEA_NAMESPACE}/pypi/simple/six/")"
 
-# 5. policy-sync health (internal-only; via docker exec)
-ps_health=$(docker compose exec -T policy-sync python -c \
-  "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8920/healthz', timeout=3)); print('ok' if d.get('status')=='ok' and d.get('last_sync_ok') else 'bad')")
+# 5. policy-sync health (internal-only; via docker/kubectl exec)
+PS_HEALTH_PY="import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8920/healthz', timeout=3)); print('ok' if d.get('status')=='ok' and d.get('last_sync_ok') else 'bad')"
+if [ "${RUNTIME}" = k8s ]; then
+  kc=(kubectl)
+  [ -n "${K8S_NAMESPACE}" ] && kc=(kubectl -n "${K8S_NAMESPACE}")
+  ps_health=$("${kc[@]}" exec "deploy/${K8S_POLICY_SYNC_DEPLOY}" -- python -c "${PS_HEALTH_PY}")
+else
+  ps_health=$(docker compose exec -T policy-sync python -c "${PS_HEALTH_PY}")
+fi
 check "policy-sync /healthz reports synced" ok "${ps_health}"
 
 echo

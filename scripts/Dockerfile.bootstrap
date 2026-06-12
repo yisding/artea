@@ -1,0 +1,51 @@
+# Artea bootstrap image (ghcr.io/yisding/artea-bootstrap): runs
+# scripts/bootstrap.sh as a Helm hook Job with TOKEN_SINK=k8s-secret.
+# Build from the REPO ROOT — the script seeds the policy/ files:
+#   docker build -f scripts/Dockerfile.bootstrap -t ghcr.io/yisding/artea-bootstrap .
+#
+# Tool inventory = exactly what bootstrap.sh uses: bash + python3 (JSON
+# parsing, secrets) and coreutils (base64/sed/grep) come with the base,
+# curl (Gitea API) is installed, kubectl drives the k8s-secret sink.
+# No jq (the script parses JSON with python3), no docker (compose-only paths
+# are guarded behind TOKEN_SINK=env-file).
+#
+# Base = python:3.12-slim, digest-pinned (ADR-0004); bump procedure in
+# docs/guides/operations.md ("Base-image digest pins").
+FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# kubectl: exact version + per-arch sha256 pins (never floating "stable")
+ARG TARGETARCH
+ARG KUBECTL_VERSION=v1.34.1
+ARG KUBECTL_SHA256_AMD64=7721f265e18709862655affba5343e85e1980639395d5754473dafaadcaa69e3
+ARG KUBECTL_SHA256_ARM64=420e6110e3ba7ee5a3927b5af868d18df17aae36b720529ffa4e9e945aa95450
+RUN arch="${TARGETARCH:-$(dpkg --print-architecture)}" \
+ && case "${arch}" in \
+      amd64) sha="${KUBECTL_SHA256_AMD64}" ;; \
+      arm64) sha="${KUBECTL_SHA256_ARM64}" ;; \
+      *) echo "unsupported arch: ${arch}" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSLo /usr/local/bin/kubectl \
+      "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${arch}/kubectl" \
+ && echo "${sha}  /usr/local/bin/kubectl" | sha256sum -c - \
+ && chmod 0755 /usr/local/bin/kubectl
+
+WORKDIR /app
+COPY policy/ ./policy/
+COPY --chmod=755 scripts/bootstrap.sh ./scripts/bootstrap.sh
+
+# non-root; in-cluster kubectl auth comes from the Job's ServiceAccount (RBAC:
+# patch the policy-sync Secret, restart its Deployment — see the chart's Role)
+RUN useradd --uid 1000 --create-home bootstrap
+USER bootstrap
+
+# Job env contract (chart sets these): TOKEN_SINK=k8s-secret, GITEA_URL,
+# SECRET_NAME, SECRET_KEY?, DEPLOYMENT_NAME, NAMESPACE, POLICY_SYNC_URL,
+# ARTEA_ADMIN_PASSWORD, DEV1_PASSWORD, POLICY_WEBHOOK_SECRET,
+# WRITE_CREDENTIALS_PATH? (see scripts/bootstrap.sh header)
+ENV TOKEN_SINK=k8s-secret \
+    PYTHONUNBUFFERED=1
+ENTRYPOINT ["/app/scripts/bootstrap.sh"]

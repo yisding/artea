@@ -1,6 +1,6 @@
 {{/* ARTEA OVERRIDE of templates/base/head_navbar.tmpl (upstream v1.26.2).
      Changes vs upstream, each marked with an ARTEA comment:
-       1. "Explore" (/explore/repos) links replaced with "Packages" (/artea/-/packages).
+       1. "Explore" (/explore/repos) links replaced with "Packages" (/<namespace>/-/packages).
        2. The "+" create dropdown (new repo / migrate / new org) removed.
      Everything else is byte-identical to upstream to keep upgrade diffs small.
      Re-verify against upstream on every image bump (see gitea/UPSTREAM). */}}
@@ -33,10 +33,10 @@
 				{{end}}
 			{{end}}
 			{{/* ARTEA: was "Explore" -> /explore/repos; a registry navigates by packages */}}
-			<a class="item" href="{{AppSubUrl}}/artea/-/packages">{{ctx.Locale.Tr "packages.title"}}</a>
+			<a class="item" href="{{AppSubUrl}}/__ARTEA_NAMESPACE__/-/packages">{{ctx.Locale.Tr "packages.title"}}</a>
 		{{else}}
 			{{/* ARTEA: was two "Explore" variants (orgs landing page / repos) */}}
-			<a class="item" href="{{AppSubUrl}}/artea/-/packages">{{ctx.Locale.Tr "packages.title"}}</a>
+			<a class="item" href="{{AppSubUrl}}/__ARTEA_NAMESPACE__/-/packages">{{ctx.Locale.Tr "packages.title"}}</a>
 		{{end}}
 
 		{{template "custom/extra_links" .}}
