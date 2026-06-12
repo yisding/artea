@@ -3,7 +3,7 @@ name = "policy-sync"
 version = "0.1.0"
 description = "Artea policy-sync service: syncs registry policy from Gitea to Verdaccio and devpi"
 requires-python = ">=3.12"
-# runtime is stdlib-only; devpi-client is a CLI dependency installed in the image
+# runtime is stdlib-only
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

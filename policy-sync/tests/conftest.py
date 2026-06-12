@@ -172,8 +172,6 @@ def make_config(mock_gitea, mock_devpi, policy_file_path: str) -> Config:
         policy_file_path=policy_file_path,
         devpi_url=mock_devpi.url,
         devpi_root_password=TEST_DEVPI_PASSWORD,
-        devpi_index="root/constrained",
-        port=0,
         poll_interval=300,
     )
 

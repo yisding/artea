@@ -105,14 +105,16 @@ over `tag`).
 
 ## Files copied into the chart (keep in sync)
 
-Helm cannot read outside the chart root, so two source files are duplicated
+Helm cannot read outside the chart root, so three source files are duplicated
 under `files/` and must be kept in sync with their originals:
 
 | Chart copy | Original |
 |------------|----------|
 | `files/gateway/pep503.js` | `gateway/njs/pep503.js` |
-| `files/gitea-templates/home.tmpl` | `gitea/custom/templates/home.tmpl` |
-| `files/gitea-templates/base__head_navbar.tmpl` | `gitea/custom/templates/base/head_navbar.tmpl` |
+| `files/gitea-templates/home.tmpl` | `gitea/custom/templates/home.tmpl.template` |
+| `files/gitea-templates/base__head_navbar.tmpl` | `gitea/custom/templates/base/head_navbar.tmpl.template` |
+
+Run `make check-chart-copies` before committing changes to any of these files.
 
 `files/gateway/nginx.conf` is a Helm-templated *adaptation* of
 `gateway/nginx.conf` (upstream blocks + cluster DNS instead of Docker's

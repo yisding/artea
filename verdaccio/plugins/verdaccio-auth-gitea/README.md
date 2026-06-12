@@ -18,9 +18,9 @@ Gitea the single identity source for the whole stack (requirement R1).
   Orgs are fetched in pages of 50, following `page=` until a short page; pagination
   is capped at 20 pages (1000 orgs, logged if hit) so a misbehaving backend cannot
   stall authentication.
-- Positive results are cached in memory for 60 seconds, keyed by
+- Positive results are cached in memory for 30 seconds, keyed by
   `user + sha256(password)` — the PAT itself is never stored. Rejections are not
-  cached. Net effect: a revoked PAT stops working within one minute
+  cached. Net effect: a revoked PAT stops working comfortably within one minute
   (ARCHITECTURE.md auth model; e2e scenario S12).
 - If Gitea is unreachable or errors, the callback receives a 503 — the plugin fails
   closed, never open.
@@ -35,7 +35,7 @@ Gitea the single identity source for the whole stack (requirement R1).
 auth:
   auth-gitea:
     gitea_url: http://gitea:3000   # falls back to $GITEA_URL, then http://gitea:3000
-    cache_ttl_ms: 60000            # optional, default 60000
+    cache_ttl_ms: 30000            # optional, default 30000
 ```
 
 ## Develop

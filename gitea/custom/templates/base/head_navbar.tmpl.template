@@ -1,6 +1,6 @@
 {{/* ARTEA OVERRIDE of templates/base/head_navbar.tmpl (upstream v1.26.2).
      Changes vs upstream, each marked with an ARTEA comment:
-       1. "Explore" (/explore/repos) links replaced with "Packages" for the configured namespace.
+       1. "Explore" (/explore/repos) links replaced with "Packages" (/<namespace>/-/packages).
        2. The "+" create dropdown (new repo / migrate / new org) removed.
      Everything else is byte-identical to upstream to keep upgrade diffs small.
      Re-verify against upstream on every image bump (see gitea/UPSTREAM). */}}

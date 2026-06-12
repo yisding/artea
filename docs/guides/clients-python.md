@@ -23,8 +23,9 @@ Replace `<namespace>` with your `ARTEA_NAMESPACE`.
 
 There is no anonymous access. Credentials are your Gitea username plus a
 personal access token (PAT) — see step 1 of [clients-npm.md](clients-npm.md)
-for how to create one (`read:package` to install, `write:package` to publish),
-and [publishing.md](publishing.md) for the scope model.
+for how to create one (`read:user` + `read:organization` + `read:package` to
+install; use `write:package` instead of `read:package` to publish), and
+[publishing.md](publishing.md) for the scope model.
 
 ## 1. Credentials via `~/.netrc`
 

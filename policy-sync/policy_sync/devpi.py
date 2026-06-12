@@ -24,6 +24,7 @@ import urllib.request
 from .config import Config
 
 log = logging.getLogger(__name__)
+CONSTRAINED_INDEX = "root/constrained"
 
 
 class DevpiError(Exception):
@@ -61,13 +62,13 @@ def _effective_lines(value) -> list[str] | None:
 def apply_constraints(cfg: Config, constraints_text: str) -> bool:
     """Ensure the index holds constraints_text. Returns True if devpi was
     PATCHed, False if it already held the same effective constraints."""
-    url = f"{cfg.devpi_url}/{cfg.devpi_index}"
+    url = f"{cfg.devpi_url}/{CONSTRAINED_INDEX}"
     config = _request(urllib.request.Request(url, headers={"Accept": "application/json"})).get("result")
     if not isinstance(config, dict):
         raise DevpiError(f"GET {url}: response has no index config in .result")
 
     if _effective_lines(config.get("constraints")) == _effective_lines(constraints_text):
-        log.debug("%s already holds these constraints; no PATCH", cfg.devpi_index)
+        log.debug("%s already holds these constraints; no PATCH", CONSTRAINED_INDEX)
         return False
 
     config["constraints"] = constraints_text

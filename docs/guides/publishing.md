@@ -18,17 +18,15 @@ Gitea's scope for packages is the `package` permission category:
 
 | Scope | UI label | Allows |
 |-------|----------|--------|
+| `read:user` | user: Read | gateway and Verdaccio can validate the PAT via `GET /api/v1/user` |
+| `read:organization` | organization: Read | Verdaccio can map Gitea org membership to groups |
 | `read:package` | package: Read | install/download from all registries |
 | `write:package` | package: Read and Write | publish **and** install — write implies read |
 
-So: one `write:package` token both publishes and consumes (requirement R6);
-hand out `read:package` tokens to anything that only installs (CI build jobs,
-developer machines that never publish).
-
-> Note: the architecture document refers to these as `read:packages` /
-> `write:packages`; Gitea's actual scope identifiers are singular
-> (`read:package`, `write:package`). Use the singular form anywhere a literal
-> scope string is required (API calls, the CLI below).
+So: one token with `read:user`, `read:organization`, and `write:package` both
+publishes and consumes (requirement R6). Hand out `read:user`,
+`read:organization`, and `read:package` tokens to anything that only installs
+(CI build jobs, developer machines that never publish).
 
 A token alone is not sufficient to publish: the user must also be a member of
 the configured namespace organization (`ARTEA_NAMESPACE`, default `artea`) with
@@ -70,6 +68,8 @@ Tokens are sent as:
 **Humans**: web UI — avatar → **Settings** → **Applications**, name the token,
 set the **package** permission, generate, copy once. This is the only flow for
 SSO users (they have no password, and the token REST API requires Basic auth).
+Also set **user** and **organization** to **Read** so gateway auth and Verdaccio
+group mapping work.
 
 **Service accounts** (CI bots): an admin can mint a token from the CLI without
 ever setting a password:
@@ -78,7 +78,7 @@ ever setting a password:
 docker compose exec -u git gitea \
   gitea admin user generate-access-token \
     --username ci-bot --token-name ci-publish \
-    --scopes write:package --raw
+    --scopes write:package,read:user,read:organization --raw
 ```
 
 (`--raw` prints just the token; create the `ci-bot` user first and add it to
@@ -89,9 +89,9 @@ the `developers` team — never to Owners. Give read-only bots like policy-sync'
 
 | Action | Endpoint | Token scope |
 |--------|----------|-------------|
-| `npm publish` of `@${ARTEA_NAMESPACE}/*` | `PUT http://localhost:8080/npm/@${ARTEA_NAMESPACE}%2f<name>` — the gateway routes the scope server-side to Gitea's `/api/packages/${ARTEA_NAMESPACE}/npm/` | `write:package` |
-| `twine upload` | `POST http://localhost:8080/api/packages/${ARTEA_NAMESPACE}/pypi/` | `write:package` |
-| `npm install`, `pip install` (private or public) | `http://localhost:8080/...` (see client guides) | `read:package` |
+| `npm publish` of `@${ARTEA_NAMESPACE}/*` | `PUT http://localhost:8080/npm/@${ARTEA_NAMESPACE}%2f<name>` — the gateway routes the scope server-side to Gitea's `/api/packages/${ARTEA_NAMESPACE}/npm/` | `write:package` plus `read:user`, `read:organization` |
+| `twine upload` | `POST http://localhost:8080/api/packages/${ARTEA_NAMESPACE}/pypi/` | `write:package` plus `read:user`, `read:organization` |
+| `npm install`, `pip install` (private or public) | `http://localhost:8080/...` (see client guides) | `read:package` plus `read:user`, `read:organization` |
 
 The pull-through caches are read-only: publishing unscoped npm packages or
 uploading to the `/pypi/simple/` index is rejected by design. Gitea is the only

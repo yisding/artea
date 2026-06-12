@@ -19,8 +19,6 @@ export interface FilterArteaConfig {
   poll_interval_ms?: number;
   /** policy_url mode only: how long polls may keep failing before fail-closed (default 60000). */
   fail_grace_ms?: number;
-  /** Escape hatch: true restores the legacy fail-open behavior (missing/broken policy = allow). */
-  fail_open?: boolean;
 }
 
 // minimal structural express types — keeps the plugin free of an express dependency

@@ -21,8 +21,6 @@ class Config:
     policy_file_path: str  # "" = HTTP-only mode (no file write, K8s has no /policy volume)
     devpi_url: str
     devpi_root_password: str
-    devpi_index: str
-    port: int
     poll_interval: float
 
     @classmethod
@@ -35,7 +33,6 @@ class Config:
             raise ConfigError(f"missing required environment variables: {', '.join(missing)}")
 
         try:
-            port = int(env.get("POLICY_SYNC_PORT", "8920"))
             poll_interval = float(env.get("POLICY_SYNC_POLL_SECONDS", "300"))
         except ValueError as e:
             raise ConfigError(f"invalid numeric environment variable: {e}") from e
@@ -56,7 +53,5 @@ class Config:
             policy_file_path=policy_file_path,
             devpi_url=env.get("DEVPI_URL", "http://devpi:3141").rstrip("/"),
             devpi_root_password=env["DEVPI_ROOT_PASSWORD"],
-            devpi_index=env.get("DEVPI_INDEX", "root/constrained"),
-            port=port,
             poll_interval=poll_interval,
         )

@@ -25,14 +25,11 @@ auth:
   # so there is no local user database and `npm adduser` fails
   auth-gitea:
     gitea_url: http://gitea:3000
-    # 30s (matches the gateway auth_request cache): a 60s TTL put worst-case
-    # PAT revocation latency right at the 60s budget (S12) — observed 61s
-    cache_ttl_ms: 30000
 
 filters:
   # loads /verdaccio/plugins/verdaccio-filter-artea; /policy is the shared
   # policy-data volume written by policy-sync. A missing/unparsable policy file
-  # FAILS CLOSED (public packages rejected); fail_open: true is the escape hatch
+  # FAILS CLOSED (public packages rejected).
   filter-artea:
     policy_file: /policy/npm-rules.yaml
 

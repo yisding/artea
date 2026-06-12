@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 from .config import Config
-from .devpi import DevpiError, apply_constraints
+from .devpi import CONSTRAINED_INDEX, DevpiError, apply_constraints
 from .files import write_atomic
 from .gitea import GiteaError, GiteaNotFound, fetch_raw
 from .store import PolicyStore
@@ -68,7 +68,7 @@ class Syncer:
         # idempotency source of truth, so a wiped+recreated devpi (fail-closed
         # '*' seed) is healed by the next poll even with an unchanged policy
         if apply_constraints(self.cfg, data.decode("utf-8", errors="replace")):
-            log.info("applied %d bytes of constraints to %s", len(data), self.cfg.devpi_index)
+            log.info("applied %d bytes of constraints to %s", len(data), CONSTRAINED_INDEX)
         else:
             log.debug("constraints unchanged; devpi untouched")
 

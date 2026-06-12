@@ -273,7 +273,7 @@ shape. R7 extends to deployment artifacts: **reuse official upstream charts**.
   k3s sees locally-built images directly.
 - **Local dev contract**: `colima start --kubernetes` (k3s), then
   `kubectl port-forward svc/<gateway> 8080:80` — the e2e suite only knows BASE_URL,
-  so S1–S16 run unchanged against compose or K8s.
+  so S1–S17 run unchanged against compose or K8s.
 - **CI**: GitHub Actions — GHCR image builds, plus a kind job that helm-installs the
   chart and runs the full e2e suite against it.
 
@@ -316,8 +316,9 @@ S8 `pip install six` via gateway → devpi → PyPI pull-through.
 S9 precedence: privately publish a name that also exists on PyPI; `pip index versions`
    through the gateway must show ONLY the private versions (proves shadowing).
 S10 add `urllib3<2` to constraints, push, verify pip resolves only <2 through the gateway.
-S11 same-token: all scenarios above run with one PAT; a `read:package` PAT can
-    install but is rejected (Gitea answers 401, not 403) on publish.
+S11 same-token: all scenarios above run with one PAT; a `read:package` PAT
+    with the required identity scopes can install but is rejected (Gitea answers
+    401, not 403) on publish.
 S12 revocation: delete the PAT; installs fail within 60s.
 S13 tarball enforcement: with a `left-pad` version blocked, a direct authenticated GET
     of that version's tarball URL via /npm/ returns 403 (metadata filtering alone is

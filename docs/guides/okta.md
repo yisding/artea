@@ -137,7 +137,8 @@ them with username/password — and that is by design. The flow is:
 
 1. Sign in to `http://localhost:8080` with Okta.
 2. Avatar → **Settings** → **Applications** → generate a token with the
-   **package** permission (`read:package` or `write:package`).
+   **user** and **organization** permissions (`read:user`, `read:organization`)
+   plus the **package** permission (`read:package` or `write:package`).
 3. Put the token in `.npmrc` / `~/.netrc` / `.pypirc` as described in
    [clients-npm.md](clients-npm.md) and [clients-python.md](clients-python.md).
 

@@ -10,7 +10,7 @@ Bootstrap runs as a post-install/post-upgrade Job; watch it with:
 
   kubectl -n {{ .Release.Namespace }} logs -f job/artea-bootstrap
 
-When it completes, sign in as {{ .Values.secrets.adminUsername }} and see
+When it completes, sign in as {{ include "artea.adminUsername" . }} and see
 docs/guides/kubernetes.md for client setup, secrets and upgrades.
 {{- if eq .Values.secrets.adminPassword "change-me-admin" }}
 

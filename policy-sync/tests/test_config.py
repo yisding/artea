@@ -15,8 +15,6 @@ def test_defaults_match_architecture_contract():
     assert cfg.devpi_url == "http://devpi:3141"
     assert cfg.policy_repo == "artea/registry-policy"
     assert cfg.policy_file_path == "/policy/npm-rules.yaml"
-    assert cfg.devpi_index == "root/constrained"
-    assert cfg.port == 8920
     assert cfg.poll_interval == 300
 
 
@@ -60,6 +58,6 @@ def test_trailing_slashes_stripped():
     assert cfg.devpi_url == "http://devpi:3141"
 
 
-def test_invalid_port_raises():
+def test_invalid_poll_interval_raises():
     with pytest.raises(ConfigError):
-        Config.from_env(dict(REQUIRED, POLICY_SYNC_PORT="nope"))
+        Config.from_env(dict(REQUIRED, POLICY_SYNC_POLL_SECONDS="nope"))

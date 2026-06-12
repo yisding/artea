@@ -22,13 +22,16 @@ anonymous access anywhere.
    [okta.md](okta.md)).
 2. Avatar menu → **Settings** → **Applications** (`/user/settings/applications`).
 3. Under *Manage Access Tokens*: enter a token name, expand **Select permissions**,
-   and set **package** to:
+   set **user** to **Read** (`read:user`), set **organization** to **Read**
+   (`read:organization`), and set **package** to:
    - **Read** (`read:package`) — install only
    - **Read and Write** (`write:package`) — install *and* publish
 4. Click **Generate Token** and copy it immediately — it is shown only once.
 
-One token is enough for everything (install, publish, npm, pip, twine). See
-[publishing.md](publishing.md) for the scope model.
+One token is enough for everything (install, publish, npm, pip, twine). The
+`read:user` scope lets the gateway validate the token, and `read:organization`
+lets Verdaccio map org membership. See [publishing.md](publishing.md) for the
+scope model.
 
 ## 2. Configure npm — the `.npmrc`
 

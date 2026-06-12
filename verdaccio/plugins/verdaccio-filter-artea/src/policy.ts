@@ -22,7 +22,6 @@ export function emptyPolicy(): CompiledPolicy {
 interface RawPackageRule {
   name?: unknown;
   versions?: unknown;
-  reason?: unknown;
 }
 
 /** Validates and compiles the parsed YAML document. Throws on structural errors. */
@@ -117,20 +116,16 @@ export interface PolicyLoader {
  * middleware roles. Re-reads when the mtime changes (cheap stat per request).
  * Default is fail-closed: a missing or unparsable file yields { ok: false } and
  * callers must reject; a stale-but-valid file keeps serving as last-known-good.
- * fail_open restores the legacy behavior (missing = empty policy, unparsable = keep
- * the last good policy).
  */
 export class FilePolicyLoader implements PolicyLoader {
   private readonly policyFile: string;
-  private readonly failOpen: boolean;
   private readonly logger: Logger;
   private state: PolicyState = { ok: true, policy: emptyPolicy() };
   private lastMtimeMs: number | null = null; // null = file absent or never seen
   private missing = false; // log the missing-file transition only once
 
-  public constructor(policyFile: string, failOpen: boolean, logger: Logger) {
+  public constructor(policyFile: string, logger: Logger) {
     this.policyFile = policyFile;
-    this.failOpen = failOpen;
     this.logger = logger;
     this.current(); // eager first load so boot logs show the initial policy state
   }
@@ -143,19 +138,11 @@ export class FilePolicyLoader implements PolicyLoader {
       if (!this.missing) {
         this.missing = true;
         this.lastMtimeMs = null;
-        if (this.failOpen) {
-          this.state = { ok: true, policy: emptyPolicy() };
-          this.logger.warn(
-            { file: this.policyFile },
-            'filter-artea: policy file @{file} is missing; fail_open is set, serving with an EMPTY policy',
-          );
-        } else {
-          this.state = { ok: false, reason: 'policy file missing' };
-          this.logger.error(
-            { file: this.policyFile },
-            'filter-artea: policy file @{file} is missing; failing closed until it reappears',
-          );
-        }
+        this.state = { ok: false, reason: 'policy file missing' };
+        this.logger.error(
+          { file: this.policyFile },
+          'filter-artea: policy file @{file} is missing; failing closed until it reappears',
+        );
       }
       return this.state;
     }
@@ -172,19 +159,11 @@ export class FilePolicyLoader implements PolicyLoader {
         'filter-artea: loaded policy from @{file} (@{names} blocked names, @{scopes} scopes, @{ranged} ranged rules)',
       );
     } catch (err) {
-      if (this.failOpen) {
-        // legacy behavior: whatever served before (last good policy or empty) stays
-        this.logger.error(
-          { file: this.policyFile, msg: (err as Error).message },
-          'filter-artea: failed to load @{file}: @{msg}; fail_open is set, keeping previous policy',
-        );
-      } else {
-        this.state = { ok: false, reason: `policy file unparsable: ${(err as Error).message}` };
-        this.logger.error(
-          { file: this.policyFile, msg: (err as Error).message },
-          'filter-artea: failed to load @{file}: @{msg}; failing closed until it is fixed',
-        );
-      }
+      this.state = { ok: false, reason: `policy file unparsable: ${(err as Error).message}` };
+      this.logger.error(
+        { file: this.policyFile, msg: (err as Error).message },
+        'filter-artea: failed to load @{file}: @{msg}; failing closed until it is fixed',
+      );
     }
     // record the mtime either way so a broken file is not re-parsed on every request
     this.lastMtimeMs = mtimeMs;
@@ -201,7 +180,6 @@ export interface HttpLoaderOptions {
   pollIntervalMs: number;
   /** How long polls may keep failing before fail-closed kicks in. */
   failGraceMs: number;
-  failOpen: boolean;
   now?: () => number; // injectable clock so tests control the grace window
 }
 
@@ -214,13 +192,10 @@ export interface HttpLoaderOptions {
  * - any failed refresh (network error, non-2xx, unparsable body) keeps the
  *   last-known-good policy until failures persist past failGraceMs, then fail
  *   closed; the next successful poll recovers automatically.
- * fail_open never rejects: cold start serves an empty policy and last-known-good
- * is kept indefinitely.
  */
 export class HttpPolicyLoader implements PolicyLoader {
   private readonly url: string;
   private readonly failGraceMs: number;
-  private readonly failOpen: boolean;
   private readonly requestTimeoutMs: number;
   private readonly now: () => number;
   private readonly logger: Logger;
@@ -235,20 +210,11 @@ export class HttpPolicyLoader implements PolicyLoader {
   public constructor(opts: HttpLoaderOptions, logger: Logger) {
     this.url = opts.url;
     this.failGraceMs = opts.failGraceMs;
-    this.failOpen = opts.failOpen;
     // a hung request must not stall polling forever, but never time out faster than a poll
     this.requestTimeoutMs = Math.max(opts.pollIntervalMs, 1000);
     this.now = opts.now ?? Date.now;
     this.logger = logger;
-    this.state = this.failOpen
-      ? { ok: true, policy: emptyPolicy() }
-      : { ok: false, reason: `no policy fetched from ${this.url} yet` };
-    if (this.failOpen) {
-      this.logger.warn(
-        { url: this.url },
-        'filter-artea: fail_open is set; serving with an EMPTY policy until @{url} answers',
-      );
-    }
+    this.state = { ok: false, reason: `no policy fetched from ${this.url} yet` };
     void this.poll(); // eager first fetch so a healthy endpoint opens the registry quickly
     this.timer = setInterval(() => void this.poll(), opts.pollIntervalMs);
     this.timer.unref?.(); // polling must never keep the process alive
@@ -256,7 +222,6 @@ export class HttpPolicyLoader implements PolicyLoader {
 
   public current(): PolicyState {
     if (
-      !this.failOpen &&
       this.hasPolicy &&
       this.failingSince !== null &&
       this.now() - this.failingSince >= this.failGraceMs
@@ -337,7 +302,7 @@ export class HttpPolicyLoader implements PolicyLoader {
         'filter-artea: policy refresh from @{url} still failing: @{msg}',
       );
     }
-    if (!this.hasPolicy && !this.failOpen) {
+    if (!this.hasPolicy) {
       // cold start: nothing good to serve, so the reason carries the live error
       this.state = { ok: false, reason: `no policy fetched from ${this.url} yet (${err.message})` };
     }
@@ -352,7 +317,6 @@ export interface PolicySourceConfig {
   policy_url?: string;
   poll_interval_ms?: number;
   fail_grace_ms?: number;
-  fail_open?: boolean;
 }
 
 function positiveMs(key: string, value: number | undefined, fallback: number): number {
@@ -377,17 +341,15 @@ export function createPolicyLoader(config: PolicySourceConfig, logger: Logger): 
       'filter-artea: configure exactly one of policy_file (shared /policy volume, compose) or policy_url (policy-sync HTTP endpoint, K8s)',
     );
   }
-  const failOpen = config.fail_open === true;
   if (url) {
     return new HttpPolicyLoader(
       {
         url,
         pollIntervalMs: positiveMs('poll_interval_ms', config.poll_interval_ms, DEFAULT_POLL_INTERVAL_MS),
         failGraceMs: positiveMs('fail_grace_ms', config.fail_grace_ms, DEFAULT_FAIL_GRACE_MS),
-        failOpen,
       },
       logger,
     );
   }
-  return new FilePolicyLoader(file!, failOpen, logger);
+  return new FilePolicyLoader(file!, logger);
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Artea e2e scenario suite — codifies S1-S16 from docs/ARCHITECTURE.md (the
-# definition of done for v1) plus S17, the legacy npm client-contract probe.
+# Artea e2e scenario suite — codifies S1-S17 from docs/ARCHITECTURE.md (the
+# definition of done for v1).
 # Requires a running stack (`make up`) and a completed bootstrap
 # (`make bootstrap`); uses real client tools: npm with an
 # isolated userconfig, pip/twine/build from a venv under e2e/tmp, git for the

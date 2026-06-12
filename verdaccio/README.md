@@ -7,7 +7,7 @@ file and two plugins loaded through Verdaccio's stable plugin API.
 | Piece | Purpose |
 |-------|---------|
 | `config.yaml.template` | Verdaccio config template: `/npm/` url_prefix, npmjs uplink, package rules, plugin wiring |
-| `plugins/verdaccio-auth-gitea/` | auth plugin — validates `user:PAT` against Gitea, maps orgs to groups (paginated), 60s positive cache |
+| `plugins/verdaccio-auth-gitea/` | auth plugin — validates `user:PAT` against Gitea, maps orgs to groups (paginated), 30s positive cache |
 | `plugins/verdaccio-filter-artea/` | metadata filter + tarball middleware — enforces `/policy/npm-rules.yaml` (blocked names/scopes/semver ranges, mtime hot-reload, fail-closed) |
 | `smoke/` | dev-only: boots verdaccio 6 in-process with `config.yaml.template` + built plugins and asserts the auth/deny contract; **not mounted** into the container |
 
@@ -76,8 +76,8 @@ world-readable (default). If you bind-mount storage instead of using a named vol
 
 Every request must carry HTTP Basic `user:PAT` (the documented `.npmrc` uses
 `_auth=<base64 user:PAT>` + `always-auth=true`). The auth plugin validates against
-Gitea per request with a 60s positive cache, so PAT revocation takes effect within a
-minute (e2e S12). There is no local user database and `npm adduser` fails by design.
+Gitea per request with a 30s positive cache, so PAT revocation takes effect comfortably
+within a minute (e2e S12). There is no local user database and `npm adduser` fails by design.
 
 ## Policy enforcement recap
 
@@ -86,9 +86,8 @@ shared `/policy` volume; the filter plugin hot-reloads it on mtime change — no
 container restart. The same package is also wired as a middleware that rejects
 direct tarball downloads of blocked versions with 403 (S13). A missing or
 unparsable policy file **fails closed**: packuments are served with no versions and
-tarballs get 503 until the file is restored (S15). Schema, fail-closed semantics and
-the `fail_open` escape hatch are documented in
-`plugins/verdaccio-filter-artea/README.md`.
+tarballs get 503 until the file is restored (S15). Schema and fail-closed semantics
+are documented in `plugins/verdaccio-filter-artea/README.md`.
 
 ## Upgrading verdaccio
 
