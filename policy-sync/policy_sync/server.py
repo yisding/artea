@@ -24,6 +24,7 @@ from .sync import Syncer
 log = logging.getLogger(__name__)
 
 MAX_BODY = 10 * 1024 * 1024  # webhook payloads are small; cap reads defensively
+LISTEN_PORT = 8920
 
 POLICY_ENDPOINT = "/policy/npm-rules.yaml"
 
@@ -175,9 +176,9 @@ def main() -> None:
     )
     worker.start()
 
-    httpd = make_http_server("0.0.0.0", cfg.port, cfg.webhook_secret, wake.set, state, store)
+    httpd = make_http_server("0.0.0.0", LISTEN_PORT, cfg.webhook_secret, wake.set, state, store)
     log.info("policy-sync listening on :%d (gitea=%s devpi=%s poll=%.0fs file=%s)",
-             cfg.port, cfg.gitea_url, cfg.devpi_url, cfg.poll_interval,
+             LISTEN_PORT, cfg.gitea_url, cfg.devpi_url, cfg.poll_interval,
              cfg.policy_file_path or "<disabled: HTTP-only>")
     try:
         httpd.serve_forever()

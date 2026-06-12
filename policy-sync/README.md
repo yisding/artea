@@ -58,8 +58,6 @@ uid.
 | `POLICY_REPO` | no | `${ARTEA_NAMESPACE}/registry-policy` | `owner/repo` of the policy repo |
 | `POLICY_DIR` | no | `/policy` | Mount point of the shared `policy-data` volume (compose) |
 | `POLICY_FILE_PATH` | no | `$POLICY_DIR/npm-rules.yaml` | Where to write the npm policy file. Set to the empty string for **HTTP-only mode** (K8s: no volume, no file write; the `GET /policy/npm-rules.yaml` endpoint is the only npm-policy output). A custom path gets its parent directory created automatically |
-| `DEVPI_INDEX` | no | `root/constrained` | devpi index that receives the constraints |
-| `POLICY_SYNC_PORT` | no | `8920` | HTTP listen port |
 | `POLICY_SYNC_POLL_SECONDS` | no | `300` | Fallback poll interval |
 
 ## Failure behavior

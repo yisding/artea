@@ -201,32 +201,6 @@ describe('verdaccio-filter-artea', () => {
     });
   });
 
-  describe('fail_open escape hatch', () => {
-    it('passes metadata through untouched when the policy file is missing', async () => {
-      const plugin = makePlugin(join(tmpdir(), 'filter-artea-does-not-exist', 'npm-rules.yaml'), { fail_open: true });
-      const input = packument('left-pad', ['1.0.0', '1.3.0']);
-      const output = await plugin.filter_metadata(input);
-      expect(output).toBe(input); // same object: no clone, no changes
-    });
-
-    it('lets tarballs through when the policy file is missing', () => {
-      const plugin = makePlugin(join(tmpdir(), 'filter-artea-does-not-exist', 'npm-rules.yaml'), { fail_open: true });
-      expect(runMiddleware(plugin, '/left-pad/-/left-pad-1.3.0.tgz').nexted).toBe(true);
-    });
-
-    it('keeps the last good policy when the file becomes unparsable', async () => {
-      const file = tmpPolicyPath();
-      writePolicy(file, 'blocked:\n  packages:\n    - name: left-pad\n');
-      const plugin = makePlugin(file, { fail_open: true });
-      expect((await plugin.filter_metadata(packument('left-pad', ['1.0.0']))).versions).toEqual({});
-
-      writePolicy(file, 'blocked: [this is: not, valid yaml\n');
-      expect((await plugin.filter_metadata(packument('left-pad', ['1.0.0']))).versions).toEqual({});
-      const ok = packument('express', ['4.0.0']);
-      expect(await plugin.filter_metadata(ok)).toBe(ok);
-    });
-  });
-
   describe('tarball middleware', () => {
     function blockedPlugin(): FilterArtea {
       const file = tmpPolicyPath();

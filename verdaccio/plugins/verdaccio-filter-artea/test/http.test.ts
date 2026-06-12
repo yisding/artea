@@ -98,7 +98,7 @@ describe('HttpPolicyLoader', () => {
   function makeLoader(server: MockPolicyServer, opts: Partial<HttpLoaderOptions> = {}) {
     const clock = { t: 0 };
     const loader = new HttpPolicyLoader(
-      { url: server.url, pollIntervalMs: 600_000, failGraceMs: 1000, failOpen: false, now: () => clock.t, ...opts },
+      { url: server.url, pollIntervalMs: 600_000, failGraceMs: 1000, now: () => clock.t, ...opts },
       makeLogger(),
     );
     loaders.push(loader);
@@ -253,28 +253,6 @@ describe('HttpPolicyLoader', () => {
 
     server.setPolicy(BLOCK_LODASH);
     await vi.waitFor(() => expectBlocked(loader, 'lodash', true)); // picked up by the timer
-  });
-
-  describe('fail_open escape hatch', () => {
-    it('serves an empty policy on cold start instead of failing closed', async () => {
-      const server = await makeServer();
-      server.failMode = 'http500';
-      const { loader } = makeLoader(server, { failOpen: true });
-      await loader.poll();
-      expectBlocked(loader, 'left-pad', false); // ok=true, nothing blocked
-    });
-
-    it('keeps last-known-good indefinitely past the grace window', async () => {
-      const server = await makeServer();
-      const { loader, clock } = makeLoader(server, { failOpen: true });
-      await loader.poll();
-
-      server.failMode = 'http500';
-      clock.t = 100;
-      await loader.poll();
-      clock.t = 1_000_000; // far past grace
-      expectBlocked(loader, 'left-pad', true);
-    });
   });
 });
 

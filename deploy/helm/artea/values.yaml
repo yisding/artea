@@ -332,9 +332,6 @@ verdaccio:
       # org/team membership to groups
       auth-gitea:
         gitea_url: http://artea-gitea-http:3000
-        # 30s (matches the gateway auth_request cache): keeps worst-case PAT
-        # revocation latency inside the 60s budget (S12)
-        cache_ttl_ms: 30000
 
     filters:
       # policy over HTTP from policy-sync; missing/unparsable policy FAILS

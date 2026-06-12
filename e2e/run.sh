@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Artea e2e scenario suite — codifies S1-S16 from docs/ARCHITECTURE.md (the
-# definition of done for v1) plus S17, the legacy npm client-contract probe.
+# Artea e2e scenario suite — codifies S1-S17 from docs/ARCHITECTURE.md (the
+# definition of done for v1).
 # Requires a running stack (`make up`) and a completed bootstrap
 # (`make bootstrap`); uses real client tools: npm with an
 # isolated userconfig, pip/twine/build from a venv under e2e/tmp, git for the
@@ -286,12 +286,12 @@ s4_npm_install_public() {
 left_pad_130_hidden() {
   local body
   body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/left-pad") || return 1
-  ! echo "$body" | grep -q '"1.3.0":'
+  ! grep -q '"1.3.0":' <<<"$body"
 }
 left_pad_130_visible() {
   local body
   body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/left-pad") || return 1
-  echo "$body" | grep -q '"1.3.0":'
+  grep -q '"1.3.0":' <<<"$body"
 }
 
 s5_npm_policy_block() {
@@ -366,12 +366,12 @@ s9_precedence_shadowing() {
 urllib3_v2_hidden() {
   local body
   body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/urllib3/") || return 1
-  ! echo "$body" | grep -q 'urllib3-2\.'
+  ! grep -q 'urllib3-2\.' <<<"$body"
 }
 urllib3_v2_visible() {
   local body
   body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/urllib3/") || return 1
-  echo "$body" | grep -q 'urllib3-2\.'
+  grep -q 'urllib3-2\.' <<<"$body"
 }
 
 s10_pypi_policy_constraint() {
@@ -384,7 +384,7 @@ s10_pypi_policy_constraint() {
     || { echo "pip index versions failed: ${out}"; return 1; }
   line=$(echo "$out" | grep '^Available versions:') || { echo "no versions line"; return 1; }
   echo "$line"
-  echo "$line" | grep -Eq '(:|, )2\.' && { echo "a 2.x version is still visible"; return 1; }
+  grep -Eq '(:|, )2\.' <<<"$line" && { echo "a 2.x version is still visible"; return 1; }
   # prove pip actually resolves <2: download latest allowed wheel via the gateway
   rm -rf "${WORK}/s10-dl" && mkdir -p "${WORK}/s10-dl"
   pip_e2e download -q --index-url "${INDEX_URL}" --no-deps -d "${WORK}/s10-dl" urllib3 \
@@ -424,8 +424,8 @@ s11_token_scopes() {
   out=$( (cd "${WORK}/hello-${ARTEA_NAMESPACE}-ro" && npm_config_userconfig="${WORK}/npmrc-ro" \
     npm_config_cache="${WORK}/npm-cache-ro" npm publish) 2>&1) && {
     echo "npm publish with read-only token unexpectedly succeeded"; return 1; }
-  echo "$out" | grep -q 'E401' || { echo "npm publish rejection was not 401:"; echo "$out"; return 1; }
-  echo "$out" | grep -q '403' && { echo "got 403, expected 401:"; echo "$out"; return 1; }
+  grep -q 'E401' <<<"$out" || { echo "npm publish rejection was not 401:"; echo "$out"; return 1; }
+  grep -q '403' <<<"$out" && { echo "got 403, expected 401:"; echo "$out"; return 1; }
   pkg_version_exists npm "${NPM_NAME_ENC}" "${NPM_RO_VERSION}" && { echo "package was created anyway"; return 1; }
   echo "npm publish with read-only token rejected with 401"
 
@@ -434,8 +434,8 @@ s11_token_scopes() {
   build_wheel "${WORK}/${PY_NAME}-ro" || { echo "wheel build failed"; return 1; }
   out=$(twine_upload "${ro_token}" "${WORK}/${PY_NAME}-ro/dist/"*.whl 2>&1) && {
     echo "twine upload with read-only token unexpectedly succeeded"; return 1; }
-  echo "$out" | grep -q '401' || { echo "twine rejection was not 401:"; echo "$out"; return 1; }
-  echo "$out" | grep -q '403' && { echo "got 403, expected 401:"; echo "$out"; return 1; }
+  grep -q '401' <<<"$out" || { echo "twine rejection was not 401:"; echo "$out"; return 1; }
+  grep -q '403' <<<"$out" && { echo "got 403, expected 401:"; echo "$out"; return 1; }
   pkg_version_exists pypi "${PY_NAME}" "${PY_RO_VERSION}" && { echo "package was created anyway"; return 1; }
   echo "twine upload with read-only token rejected with 401"
 
@@ -496,7 +496,7 @@ s13_tarball_enforcement() {
   put_policy_file npm-rules.yaml "${BLOCK_LEFTPAD_RULES}" "test(e2e): S13 block left-pad 1.3.0" || return 1
   wait_for 45 2 "blocked tarball rejected with 403" tarball_130_blocked || return 1
   body=$(curl -s -u "dev1:${DEV1_TOKEN}" "${TARBALL_BLOCKED}")
-  echo "$body" | grep -q 'blocked by registry policy' \
+  grep -q 'blocked by registry policy' <<<"$body" \
     || { echo "403 body is not the policy middleware's JSON error: ${body}"; return 1; }
   code=$(http_code -u "dev1:${DEV1_TOKEN}" "${TARBALL_ALLOWED}")
   [ "$code" = 200 ] || { echo "unblocked 1.2.0 tarball got HTTP ${code}, expected 200"; return 1; }
@@ -520,7 +520,7 @@ s14_branch_protection() {
   if out=$(git -C "$clone" push origin HEAD:main 2>&1); then
     echo "direct push to main as dev1 unexpectedly succeeded"; echo "$out"; return 1
   fi
-  echo "$out" | grep -qi 'protected branch' \
+  grep -qi 'protected branch' <<<"$out" \
     || { echo "push failed, but not with the protected-branch rejection:"; echo "$out"; return 1; }
   echo "dev1 git push to main rejected: protected branch"
 
@@ -562,10 +562,12 @@ npm_recovered() {
 six_blocked() { # fresh '*'-seeded mirror exposes no six files through the gateway
   local body
   body=$(curl -s -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/six/") || return 1
-  ! echo "$body" | grep -q 'six-1\.'
+  ! grep -q 'six-1\.' <<<"$body"
 }
 six_served() {
-  curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/six/" | grep -q 'six-1\.'
+  local body
+  body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/six/") || return 1
+  grep -q 'six-1\.' <<<"$body"
 }
 # S13/S14 policy pushes leave webhook syncs (with 2/4/8s retries) in flight; one
 # landing right after the wipe would heal the fresh devpi before the '*' seed
@@ -682,9 +684,9 @@ s16_normalization() {
     code=${body##*$'\n'}
     body=${body%$'\n'*}
     [ "$code" = 200 ] || { echo "GET /pypi/simple/${s} -> HTTP ${code}, expected 200"; return 1; }
-    echo "$body" | grep -q "/api/packages/${ARTEA_NAMESPACE}/pypi/files/" \
+    grep -q "/api/packages/${ARTEA_NAMESPACE}/pypi/files/" <<<"$body" \
       || { echo "/pypi/simple/${s}: no Gitea file URLs — not the private package"; return 1; }
-    echo "$body" | grep -q '/root/' \
+    grep -q '/root/' <<<"$body" \
       && { echo "/pypi/simple/${s}: devpi mirror URLs leaked into the response"; return 1; }
     echo "/pypi/simple/${s} -> 200 with Gitea file URLs only"
   done
@@ -720,7 +722,7 @@ s17_legacy_and_encoding() {
     code=${body##*$'\n'}
     body=${body%$'\n'*}
     [ "$code" = 200 ] || { echo "GET /npm/${spelling} -> HTTP ${code}, expected 200"; return 1; }
-    echo "$body" | grep -qF "\"${NPM_VERSION}\"" \
+    grep -qF "\"${NPM_VERSION}\"" <<<"$body" \
       || { echo "/npm/${spelling}: packument does not contain ${NPM_VERSION}"; return 1; }
     echo "/npm/${spelling} -> 200, packument contains ${NPM_VERSION}"
   done
@@ -728,7 +730,7 @@ s17_legacy_and_encoding() {
   # c. dist-tag API route (the /npm/-/package/<scope>/... map entry)
   out=$(npm_e2e dist-tag ls "${NPM_NAME}" 2>&1) || { echo "npm dist-tag ls failed:"; echo "$out"; return 1; }
   echo "$out"
-  echo "$out" | grep -q '^latest:' || { echo "no latest tag in dist-tag output"; return 1; }
+  grep -q '^latest:' <<<"$out" || { echo "no latest tag in dist-tag output"; return 1; }
   echo "dist-tag route serves a latest tag for ${NPM_NAME}"
 
   # d. boundary: <scope>-evil must NOT be captured by the configured scope route — it falls

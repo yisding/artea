@@ -170,11 +170,11 @@ Trade-offs, accepted and documented:
    S9 should run once as an org member and once as a plain authenticated
    non-member to pin this down.
 2. **PAT scopes for the guard.** The guard calls `/api/v1/user`, which in Gitea
-   requires the `read:user` token scope — `read:packages` alone yields 403 (the
+   requires the `read:user` token scope — `read:package` alone yields 403 (the
    gateway converts it to a 401 challenge, but pip still can't get in). The
    same now applies to every Verdaccio-bound `/npm/` request (configured private-scope
    paths skip the guard; Gitea authenticates them itself). **Bootstrap must mint PATs with
-   `read:user` in addition to `read:packages`/`write:packages`.** Basic auth
+   `read:user` and `read:organization` in addition to `read:package`/`write:package`.** Basic auth
    with the account password (or a token used as Basic password, which Gitea
    treats as full-scope) is not affected.
 3. **devpi link generation.** devpi's `+simple/` pages are served to the client
@@ -218,8 +218,8 @@ Trade-offs, accepted and documented:
    sub-path setup has the same property and it accepts both forms; S4/S5
    exercise this.
 8. **Auth caching vs revocation.** A revoked PAT keeps working on guarded
-   paths — `/npm/` and devpi-bound — for up to 30 s (S12's budget is 60 s, and
-   Verdaccio's own plugin cache is 60 s). Gitea-bound paths (npm
+   paths — `/npm/` and devpi-bound — for up to 30 s (S12's budget is 60 s, matching
+   the gateway and Verdaccio positive caches). Gitea-bound paths (npm
    publish/install of `@${ARTEA_NAMESPACE}/*`, twine) are revoked instantly — no gateway
    cache involved.
 9. **`/npm/` is guarded but transparent.** Anonymous requests to Verdaccio's

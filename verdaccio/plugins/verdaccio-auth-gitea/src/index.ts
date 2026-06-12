@@ -4,7 +4,7 @@ import type { AuthCallback, IPluginAuth, Logger, PluginOptions } from '@verdacci
 export interface AuthGiteaConfig {
   /** Base URL of the Gitea instance, e.g. http://gitea:3000 */
   gitea_url?: string;
-  /** TTL of the positive auth cache in milliseconds (default 60s). */
+  /** TTL of the positive auth cache in milliseconds (default 30s). */
   cache_ttl_ms?: number;
 }
 
@@ -14,8 +14,8 @@ interface CacheEntry {
 }
 
 const DEFAULT_GITEA_URL = 'http://gitea:3000';
-// 60s so a revoked PAT stops working within a minute (ARCHITECTURE.md auth model)
-const DEFAULT_CACHE_TTL_MS = 60_000;
+// 30s matches the gateway auth_request cache and stays comfortably inside S12.
+const DEFAULT_CACHE_TTL_MS = 30_000;
 const CACHE_SWEEP_SIZE = 1_000;
 // Gitea caps page size at 50 by default; follow `page=` until a short page
 const ORG_PAGE_LIMIT = 50;

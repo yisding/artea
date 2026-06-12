@@ -31,7 +31,6 @@ filters:
 middlewares:
   filter-artea:                           # same package, middleware role (S13)
     policy_file: /policy/npm-rules.yaml
-    # fail_open: true                     # escape hatch, see below; default false
 ```
 
 ## Policy file schema (`npm-rules.yaml`)
@@ -94,12 +93,6 @@ unfiltered (e2e scenario S15):
 The failed state clears automatically through the same mtime/stat reload: as soon as
 the file reappears or is fixed, the policy applies again — no restart. Load failures
 are logged once per transition (`error` level); rejected requests log at `warn`.
-
-### `fail_open: true` (escape hatch, not advised)
-
-Restores the legacy behavior: a missing file is treated as an empty policy (nothing
-blocked) and an unparsable update keeps the last good policy in effect. Only use
-this if availability of public packages matters more than policy enforcement.
 
 ## Develop
 

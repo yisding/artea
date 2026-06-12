@@ -77,7 +77,6 @@ services:
       context: ./devpi
       args:
         DEVPI_SERVER_VERSION: ${DEVPI_SERVER_VERSION}
-        DEVPI_CLIENT_VERSION: ${DEVPI_CLIENT_VERSION}
         DEVPI_CONSTRAINED_VERSION: ${DEVPI_CONSTRAINED_VERSION}
     container_name: devpi
     environment:

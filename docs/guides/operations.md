@@ -135,7 +135,7 @@ Revoke a token in the Gitea UI (**Settings → Applications → Delete**) or via
 | Path | Effect |
 |------|--------|
 | Gitea-direct (npm `@${ARTEA_NAMESPACE}/*` — gateway scope route under `/npm/` or legacy `/api/packages/...`; twine; private pip files) | immediate |
-| public npm pull-through (non-private-scope `/npm/` via Verdaccio) | ≤ 60 s — the Verdaccio auth plugin caches *positive* validations for 60 s |
+| public npm pull-through (non-private-scope `/npm/` via Verdaccio) | ≤ 30 s — the Verdaccio auth plugin caches *positive* validations for 30 s |
 | PyPI paths via the gateway (`/pypi/simple/`, `/root/...`) | per-request `auth_request` against Gitea — effectively immediate |
 
 So the system-wide guarantee is: **a revoked token stops working everywhere
@@ -158,6 +158,6 @@ Remember that Okta deactivation does not delete Gitea PATs — see
 | `pip install <private>` resolves a public version | Gateway 404-fallback misrouting (or a client `extra-index-url` bypass) | Treat as a security incident if client config is clean: verify the gateway serves Gitea's 200 for `/pypi/simple/<name>/` and only falls back on 404 |
 | `pip install <public>` 404s | devpi mirror cold/unreachable, name blocked by `pypi-constraints.txt`, or a freshly recreated cache still fail-closed (`*` seed) | `docker compose logs devpi`; check the constraints file in the policy repo; check policy-sync `/healthz` for `last_sync_ok` |
 | npm/pip download URLs point at the wrong host | Gitea `ROOT_URL` misconfigured | Must be exactly `http://localhost:8080/` (the public gateway URL) so generated file URLs resolve through the gateway |
-| Revoked PAT still works on npm installs | 60 s positive-auth cache in Verdaccio | Expected; see above |
+| Revoked PAT still works on npm installs | 30 s positive-auth cache in Verdaccio | Expected; see above |
 | Pull-through is slow / disk is filling | Cache volumes grow unbounded | Safe to wipe: `make clean && make up && make bootstrap` (caches refill; PyPI comes back fail-closed until policy-sync syncs) |
 | `twine upload` 409 Conflict | Re-uploading an already-uploaded file | Bump the version; Gitea package files are immutable |

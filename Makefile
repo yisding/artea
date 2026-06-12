@@ -6,7 +6,7 @@ PROJECT := artea
 UTIL_IMAGE ?= alpine:3.22
 BACKUP_DIR := backups
 
-.PHONY: help render-configs secrets plugins up down logs bootstrap smoke e2e clean destroy backup restore \
+.PHONY: help render-configs check-chart-copies secrets plugins up down logs bootstrap smoke e2e clean destroy backup restore \
 	k8s-deploy k8s-e2e k8s-down
 
 # kubernetes flow (chart by deploy/helm/artea; see docs/ARCHITECTURE.md)
@@ -26,6 +26,9 @@ secrets: ## generate gitea/secrets/ (idempotent; required before first up)
 
 render-configs: .env ## render namespace-aware runtime configs into .generated/
 	@./scripts/render-configs.sh
+
+check-chart-copies: ## verify Helm chart file copies match their source files
+	@bash ./scripts/check-chart-copies.sh
 
 plugins: ## install + build the Verdaccio plugins (required before first up)
 	cd verdaccio/plugins && pnpm install --frozen-lockfile && pnpm build
@@ -54,7 +57,7 @@ k8s-deploy: ## helm install/upgrade the chart (bootstrap runs as a chart hook Jo
 		$(if $(wildcard $(HELM_VALUES)),--values $(HELM_VALUES),) \
 		--wait --timeout 10m
 
-k8s-e2e: ## smoke + S1-S16 against the cluster (port-forward, RUNTIME=k8s)
+k8s-e2e: ## smoke + S1-S17 against the cluster (port-forward, RUNTIME=k8s)
 	K8S_NAMESPACE=$(K8S_NAMESPACE) ./scripts/k8s-e2e.sh
 
 k8s-down: ## uninstall the chart (PVCs survive; delete the namespace to wipe)
