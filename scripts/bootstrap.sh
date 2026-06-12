@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Artea bootstrap (e2e scenario S1). Idempotent: safe to re-run at any time.
 #
-# Creates/ensures, in order: gitea secret files, admin `artea-admin` + PAT,
-# private org `artea`, repo `artea/registry-policy` seeded from policy/,
+# Creates/ensures, in order: gitea secret files, admin + PAT, configured private
+# namespace org, `${ARTEA_NAMESPACE}/registry-policy` seeded from policy/,
 # push webhook -> policy-sync, the `developers` team (code/pulls/packages
 # write, no admin), demo user `dev1` (developers member, never Owners) + PAT,
 # branch protection on the policy repo's default branch (PRs + >=1 approval;
-# direct push only for artea-admin), the `svc-policy` service account in a
-# read-only `policy-readers` team, and its policy-sync PAT (delivered via the
-# token sink below). Re-running migrates older stacks: dev1 is moved out of
+# direct push only for the configured admin), the `svc-policy` service account
+# in a read-only `policy-readers` team, and its policy-sync PAT (delivered via
+# the token sink below). Re-running migrates older stacks: dev1 is moved out of
 # Owners and an admin-minted POLICY_SYNC_TOKEN is rotated to svc-policy and
 # revoked.
 #
@@ -27,9 +27,10 @@
 #
 # Other knobs (all optional): GITEA_URL (where this script reaches Gitea),
 # GATEWAY_URL (public base recorded in the credentials), GITEA_READY_TIMEOUT,
-# POLICY_SYNC_URL, POLICY_SYNC_HOOK_URL, ARTEA_ADMIN_USER, ROLLOUT_TIMEOUT.
-# Credentials (ARTEA_ADMIN_PASSWORD, DEV1_PASSWORD, POLICY_WEBHOOK_SECRET,
-# POLICY_SYNC_TOKEN) are read from the environment first, then .env.
+# POLICY_SYNC_URL, POLICY_SYNC_HOOK_URL, ARTEA_NAMESPACE, ARTEA_ADMIN_USER,
+# ROLLOUT_TIMEOUT. Credentials (ARTEA_ADMIN_PASSWORD, DEV1_PASSWORD,
+# POLICY_WEBHOOK_SECRET, POLICY_SYNC_TOKEN) are read from the environment first,
+# then .env.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -49,8 +50,6 @@ GITEA_READY_TIMEOUT="${GITEA_READY_TIMEOUT:-120}" # seconds
 # default webhook target unless POLICY_SYNC_HOOK_URL overrides it
 POLICY_SYNC_URL="${POLICY_SYNC_URL:-http://policy-sync:8920}"
 POLICY_SYNC_HOOK_URL="${POLICY_SYNC_HOOK_URL:-${POLICY_SYNC_URL}/hooks/policy}"
-ADMIN_USER="${ARTEA_ADMIN_USER:-artea-admin}" # fixed contract; env for the k8s Job
-ORG=artea
 REPO=registry-policy
 CRED_FILE="${WRITE_CREDENTIALS_PATH:-e2e/tmp/credentials.env}"
 case "${CRED_FILE}" in /*) ;; *) CRED_FILE="./${CRED_FILE}" ;; esac
@@ -70,6 +69,8 @@ if in_k8s; then
 fi
 
 # env-provided credentials win over .env (the k8s Job has no .env at all)
+ENV_NAMESPACE="${ARTEA_NAMESPACE:-}"
+ENV_ADMIN_USER="${ARTEA_ADMIN_USER:-}"
 ENV_ADMIN_PW="${ARTEA_ADMIN_PASSWORD:-}"
 ENV_DEV1_PW="${DEV1_PASSWORD:-}"
 ENV_WEBHOOK_SECRET="${POLICY_WEBHOOK_SECRET:-}"
@@ -82,10 +83,19 @@ if [ -f .env ]; then
 elif ! in_k8s; then
   die ".env is missing — cp .env.example .env and change the secrets"
 fi
+[ -n "${ENV_NAMESPACE}" ] && ARTEA_NAMESPACE="${ENV_NAMESPACE}"
+[ -n "${ENV_ADMIN_USER}" ] && ARTEA_ADMIN_USER="${ENV_ADMIN_USER}"
 [ -n "${ENV_ADMIN_PW}" ] && ARTEA_ADMIN_PASSWORD="${ENV_ADMIN_PW}"
 [ -n "${ENV_DEV1_PW}" ] && DEV1_PASSWORD="${ENV_DEV1_PW}"
 [ -n "${ENV_WEBHOOK_SECRET}" ] && POLICY_WEBHOOK_SECRET="${ENV_WEBHOOK_SECRET}"
 [ -n "${ENV_POLICY_TOKEN}" ] && POLICY_SYNC_TOKEN="${ENV_POLICY_TOKEN}"
+ARTEA_NAMESPACE="${ARTEA_NAMESPACE:-artea}"
+if ! [[ "${ARTEA_NAMESPACE}" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
+  die "ARTEA_NAMESPACE must be a lowercase npm/Gitea-safe name: [a-z0-9]([a-z0-9-]*[a-z0-9])?"
+fi
+ADMIN_USER="${ARTEA_ADMIN_USER:-${ARTEA_NAMESPACE}-admin}"
+ORG="${ARTEA_NAMESPACE}"
+POLICY_REPO="${ORG}/${REPO}"
 [ -n "${ARTEA_ADMIN_PASSWORD:-}" ] || die "ARTEA_ADMIN_PASSWORD must be set (env or .env)"
 [ -n "${DEV1_PASSWORD:-}" ] || die "DEV1_PASSWORD must be set (env or .env)"
 [ -n "${POLICY_WEBHOOK_SECRET:-}" ] || die "POLICY_WEBHOOK_SECRET must be set (env or .env)"
@@ -117,7 +127,7 @@ create_user() { # <username> <password> ; CLI in compose, admin API in k8s
     # the admin API's email validator rejects dot-less domains like
     # user@localhost (which the CLI path accepts), hence .localhost
     admin_send POST /admin/users \
-      "{\"username\":\"$1\",\"email\":\"$1@artea.localhost\",\"password\":\"$2\",\"must_change_password\":false}"
+      "{\"username\":\"$1\",\"email\":\"$1@${ORG}.localhost\",\"password\":\"$2\",\"must_change_password\":false}"
   else
     gitea_cli admin user create --username "$1" --password "$2" \
       --email "$1@localhost" --must-change-password=false >/dev/null
@@ -234,7 +244,7 @@ fi
 
 # ---- developers team (governance: devs are never org Owners) --------------------
 # code write = PR branches on the policy repo; pulls write = open/review PRs;
-# packages write = publish @artea packages. No admin unit anywhere.
+# packages write = publish private-scope packages. No admin unit anywhere.
 DEV_TEAM_ID=$(team_id developers)
 if [ -n "${DEV_TEAM_ID}" ]; then
   log "team developers already exists (id ${DEV_TEAM_ID})"
@@ -249,7 +259,7 @@ else
   DEV_TEAM_ID=$(resp_id)
 fi
 
-# ---- demo user dev1 (developers member so it can read/write @artea packages) ----
+# ---- demo user dev1 (developers member so it can read/write private packages) ----
 if [ "$(admin_code /users/dev1)" = 200 ]; then
   log "user dev1 already exists"
 else
@@ -273,7 +283,7 @@ if [ "$(admin_code "/repos/${ORG}/${REPO}/branch_protections/${DEFAULT_BRANCH}")
 else
   log "protecting ${REPO}@${DEFAULT_BRANCH} (>=1 approval; direct push only for ${ADMIN_USER})"
   # enable_push + whitelist = direct pushes blocked for everyone except the
-  # allowlist; the e2e suite edits policy via the contents API as artea-admin,
+  # allowlist; the e2e suite edits policy via the contents API as the admin user,
   # which goes through the same protected-branch check, so it must stay listed
   admin_send POST "/repos/${ORG}/${REPO}/branch_protections" "{
     \"rule_name\": \"${DEFAULT_BRANCH}\",
@@ -406,6 +416,8 @@ emit_credentials() {
   cat <<EOF
 # generated by scripts/bootstrap.sh — gitignored, dev credentials only
 GATEWAY_URL=${GATEWAY_URL}
+ARTEA_NAMESPACE=${ARTEA_NAMESPACE}
+POLICY_REPO=${POLICY_REPO}
 ARTEA_ADMIN_USER=${ADMIN_USER}
 ARTEA_ADMIN_PASSWORD=${ARTEA_ADMIN_PASSWORD}
 ARTEA_ADMIN_TOKEN=${ADMIN_TOKEN}

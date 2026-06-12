@@ -19,6 +19,8 @@ global:
   # devpi's --outside-url so generated package/file URLs resolve through the
   # gateway. Local dev contract: kubectl port-forward svc/artea-gateway 8080:80.
   baseUrl: http://localhost:8080
+  # Gitea organization and npm scope for private packages.
+  privateNamespace: artea
 
 # ---- secrets -----------------------------------------------------------------
 # Dev placeholders, mirroring .env.example — CHANGE EVERY VALUE for any
@@ -27,15 +29,16 @@ global:
 # POLICY_SYNC_TOKEN is NOT set here: the bootstrap Job mints it and patches the
 # artea-policy-sync Secret in-cluster (helm upgrade preserves it via lookup).
 secrets:
-  # Gitea bootstrap admin (fixed contract: artea-admin). Consumed by the Gitea
-  # subchart (gitea.gitea.admin.existingSecret) and the bootstrap Job.
-  adminUsername: artea-admin
+  # Gitea bootstrap admin. Empty defaults to "<global.privateNamespace>-admin".
+  # Consumed by the Gitea subchart (gitea.gitea.admin.existingSecret) and the
+  # bootstrap Job.
+  adminUsername: ""
   adminPassword: change-me-admin
   # Demo user created by bootstrap for e2e/smoke runs.
   dev1Password: change-me-dev1
   # devpi `root` password; also used by policy-sync to push constraints.
   devpiRootPassword: change-me-devpi
-  # HMAC secret of the Gitea push webhook on artea/registry-policy.
+  # HMAC secret of the Gitea push webhook on <privateNamespace>/registry-policy.
   webhookSecret: change-me-webhook
 
 # ---- gateway (our template: stock nginx + ConfigMap'd nginx.conf/njs) ---------
@@ -169,6 +172,8 @@ gitea:
         value: '{{ trimSuffix "/" .Values.global.baseUrl }}/'
       - name: GITEA__SERVER__DOMAIN
         value: '{{ regexReplaceAll "^https?://([^/:]+).*$" .Values.global.baseUrl "${1}" }}'
+      - name: GITEA__SERVER__LANDING_PAGE
+        value: '{{ printf "/%s/-/packages" (include "artea.privateNamespace" .) }}'
     # Semantic translation of gitea/app.ini (see that file for the rationale of
     # every key). database/session/cache/queue are auto-wired to the
     # postgresql/valkey subcharts; security secrets are chart-generated.
@@ -178,8 +183,8 @@ gitea:
       server:
         # Force ROOT_URL (env above) instead of deriving from the Host header.
         PUBLIC_URL_DETECTION: never
-        # Packages-centric landing for anonymous "/" (org artea package list).
-        LANDING_PAGE: /artea/-/packages
+        # Packages-centric landing is set through the templated env override
+        # above because gitea.config itself is not tpl-rendered by the subchart.
         # De-git: registry-only over HTTP, no SSH clone surface.
         DISABLE_SSH: true
         START_SSH_SERVER: false
@@ -346,10 +351,11 @@ verdaccio:
         fail_timeout: 5m
 
     packages:
-      # private scope: defense in depth. Clients route @artea to Gitea
-      # themselves; if one is misconfigured we still deny everything here —
-      # no access, no publish, no proxy, so private names never leak to npmjs.
-      '@artea/*':
+      # private scope: defense in depth. The gateway routes the configured
+      # private scope to Gitea; if one is misconfigured we still deny everything
+      # here — no access, no publish, no proxy, so private names never leak to
+      # npmjs.
+      '@{{ include "artea.privateNamespace" . }}/*':
         access: []
         publish: []
         unpublish: []

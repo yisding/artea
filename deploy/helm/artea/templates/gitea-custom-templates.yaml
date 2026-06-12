@@ -14,6 +14,6 @@ metadata:
     {{- include "artea.labels" (dict "ctx" $ "component" "gitea") | nindent 4 }}
 data:
   home.tmpl: |
-{{ .Files.Get "files/gitea-templates/home.tmpl" | indent 4 }}
+{{ .Files.Get "files/gitea-templates/home.tmpl" | replace "__ARTEA_NAMESPACE__" (include "artea.privateNamespace" .) | indent 4 }}
   base__head_navbar.tmpl: |
-{{ .Files.Get "files/gitea-templates/base__head_navbar.tmpl" | indent 4 }}
+{{ .Files.Get "files/gitea-templates/base__head_navbar.tmpl" | replace "__ARTEA_NAMESPACE__" (include "artea.privateNamespace" .) | indent 4 }}

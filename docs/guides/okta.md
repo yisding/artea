@@ -40,7 +40,8 @@ https://<your-okta-domain>/oauth2/default/.well-known/openid-configuration
 
 ### Admin UI
 
-1. Sign in as the bootstrap admin (`artea-admin`).
+1. Sign in as the bootstrap admin (`ARTEA_ADMIN_USER`; default
+   `${ARTEA_NAMESPACE}-admin` when unset).
 2. Avatar → **Site Administration** → **Identity & Access →
    Authentication Sources** (`http://localhost:8080/-/admin/auths`) → **Add
    Authentication Source**.
@@ -55,10 +56,11 @@ https://<your-okta-domain>/oauth2/default/.well-known/openid-configuration
      and *Map claimed groups to Organization teams*, e.g.:
 
      ```json
-     {"engineering": {"artea": ["developers"]}}
+     {"engineering": {"<namespace>": ["developers"]}}
      ```
 
-     (format: `{"<okta-group>": {"<org>": ["<team>", ...]}}`; enable
+     Replace `<namespace>` with `ARTEA_NAMESPACE`. (format:
+     `{"<okta-group>": {"<org>": ["<team>", ...]}}`; enable
      *Remove users from synchronized teams...* if Okta should also revoke).
 4. Save. The login page now shows a "Sign in with okta" button.
 
@@ -76,7 +78,7 @@ docker compose exec -u git gitea \
     --auto-discover-url 'https://<your-okta-domain>/.well-known/openid-configuration' \
     --scopes openid --scopes profile --scopes email --scopes groups \
     --group-claim-name groups \
-    --group-team-map '{"engineering": {"artea": ["developers"]}}'
+    --group-team-map '{"engineering": {"<namespace>": ["developers"]}}'
 ```
 
 `gitea admin auth list` / `update-oauth --id <n> ...` manage it afterwards.
@@ -123,7 +125,7 @@ ENABLE_PASSWORD_SIGNIN_FORM = false
 ENABLE_BASIC_AUTHENTICATION = false
 ```
 
-Keep one local admin (`artea-admin`) reachable for break-glass via
+Keep one local admin (`ARTEA_ADMIN_USER`) reachable for break-glass via
 `gitea admin` CLI inside the container; with the form disabled, day-to-day
 admin actions should also go through an SSO account that has been granted
 admin (or the Okta `admin-group` claim mapping).

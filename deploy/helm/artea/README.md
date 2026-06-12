@@ -36,6 +36,12 @@ verdaccio config and the gateway nginx.conf, and other tooling relies on them:
 | secrets | `artea-admin`, `artea-secrets`, `artea-policy-sync` | see below |
 | bootstrap | Job/SA/Role/RoleBinding `artea-bootstrap` | post-install/post-upgrade hook |
 
+Package namespace is separate from Kubernetes object naming:
+`global.privateNamespace` controls the Gitea organization, npm scope, package
+API owner, policy repo owner, and Gitea package-list landing page. It defaults
+to `artea`; `secrets.adminUsername` defaults to
+`<global.privateNamespace>-admin` when left empty.
+
 ## Verdaccio: official chart, with an init-container plugin delivery
 
 The official chart is used (not the in-house fallback Deployment foreseen by
@@ -57,8 +63,11 @@ container. K8s config differences vs `verdaccio/config.yaml` (compose):
 
 ## Secrets
 
-- `artea-admin` (`username`/`password`): Gitea bootstrap admin. Consumed by the
-  Gitea subchart (`gitea.admin.existingSecret`) and the bootstrap Job.
+- `artea-admin` (`username`/`password`): Gitea bootstrap admin Secret. The
+  Secret name is fixed; the `username` value defaults to
+  `<global.privateNamespace>-admin` unless `secrets.adminUsername` is set.
+  Consumed by the Gitea subchart (`gitea.admin.existingSecret`) and the
+  bootstrap Job.
 - `artea-secrets`: `DEV1_PASSWORD`, `DEVPI_ROOT_PASSWORD`,
   `POLICY_WEBHOOK_SECRET`.
 - `artea-policy-sync`: `POLICY_SYNC_TOKEN` — owned by the bootstrap Job

@@ -20,6 +20,16 @@ def test_defaults_match_architecture_contract():
     assert cfg.poll_interval == 300
 
 
+def test_namespace_sets_default_policy_repo():
+    cfg = Config.from_env(dict(REQUIRED, ARTEA_NAMESPACE="acme"))
+    assert cfg.policy_repo == "acme/registry-policy"
+
+
+def test_empty_policy_repo_still_uses_namespace_default():
+    cfg = Config.from_env(dict(REQUIRED, ARTEA_NAMESPACE="acme", POLICY_REPO=""))
+    assert cfg.policy_repo == "acme/registry-policy"
+
+
 def test_policy_dir_env_still_sets_the_file_location():
     cfg = Config.from_env(dict(REQUIRED, POLICY_DIR="/data/policy/"))
     assert cfg.policy_file_path == "/data/policy/npm-rules.yaml"

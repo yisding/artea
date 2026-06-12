@@ -1,6 +1,6 @@
 # Copyright 2026 The Artea Authors. All rights reserved.
 #
-# Functional test for gateway/nginx.conf: runs a real nginx (must be on PATH)
+# Functional test for gateway/nginx.conf.template: runs a real nginx (must be on PATH)
 # on a loopback port against stdlib stub upstreams, then asserts the routing
 # contract from docs/ARCHITECTURE.md. Stdlib-only; works with unittest or pytest:
 #
@@ -21,8 +21,9 @@ import threading
 import time
 import unittest
 
-CONF = pathlib.Path(__file__).resolve().parent.parent / "nginx.conf"
+CONF = pathlib.Path(__file__).resolve().parent.parent / "nginx.conf.template"
 NJS_DIR = CONF.parent / "njs"
+TEST_NAMESPACE = "acme"
 
 GOOD_AUTH = "Basic dXNlcjpnb29kLXBhdA=="  # user:good-pat
 BAD_AUTH = "Basic dXNlcjpyZXZva2Vk"  # user:revoked
@@ -101,10 +102,10 @@ class UpstreamHandler(http.server.BaseHTTPRequestHandler):
                     self._reply(401, "unauthorized")
                 return
             # private package exists; "six" does not (mirrors Gitea's 404)
-            if self.path.startswith("/api/packages/artea/pypi/simple/private-pkg"):
+            if self.path.startswith(f"/api/packages/{TEST_NAMESPACE}/pypi/simple/private-pkg"):
                 self._reply(200, "gitea-simple private-pkg")
                 return
-            if self.path.startswith("/api/packages/artea/pypi/simple/"):
+            if self.path.startswith(f"/api/packages/{TEST_NAMESPACE}/pypi/simple/"):
                 self._reply(404, "package does not exist")
                 return
         if server.tag == "verdaccio":
@@ -145,6 +146,7 @@ class GatewayTest(unittest.TestCase):
 
         cls.port = free_port()
         conf = CONF.read_text()
+        conf = conf.replace("__ARTEA_NAMESPACE__", TEST_NAMESPACE)
         # nginx's compiled-in temp dirs (client_body, proxy, ...) often live in
         # root-owned /var/cache/nginx; point them into the test tmpdir so the
         # suite runs as any user with any nginx build.
@@ -220,7 +222,7 @@ class GatewayTest(unittest.TestCase):
 
     def test_catchall_to_gitea_preserves_raw_uri(self):
         # npm scoped paths use %2f; the gateway must not decode or re-encode them
-        path = "/api/packages/artea/npm/@artea%2fhello"
+        path = f"/api/packages/{TEST_NAMESPACE}/npm/@{TEST_NAMESPACE}%2fhello"
         status, body, _ = self._raw("GET", path)
         self.assertEqual(status, 200)
         self.assertEqual(body, f"gitea {path}")
@@ -261,6 +263,75 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(status, 301)
         self.assertEqual(headers["Location"], "/npm/")  # relative: keeps :8080
 
+    def test_npm_private_scope_to_gitea_raw_encoding_preserved(self):
+        # gateway scope routing: the %2f/%40 encodings npm sends must reach
+        # Gitea byte-for-byte, and the route takes no auth_request — Gitea
+        # authenticates itself
+        users_before = [p for p in self.seen("gitea") if p == "/api/v1/user"]
+        for raw in (f"/npm/@{TEST_NAMESPACE}%2fscoped-a", f"/npm/%40{TEST_NAMESPACE}%2Fscoped-a"):
+            status, body, _ = self._raw("GET", raw, auth=GOOD_AUTH)
+            self.assertEqual(status, 200, raw)
+            self.assertEqual(body, f"gitea /api/packages/{TEST_NAMESPACE}/npm{raw[4:]}", raw)
+        users_after = [p for p in self.seen("gitea") if p == "/api/v1/user"]
+        self.assertEqual(len(users_after), len(users_before),
+                         "scoped route must not fire an auth_request")
+        self.assertFalse([p for p in self.seen("verdaccio") if "scoped-a" in p])
+
+    def test_npm_private_scope_case_variants_to_gitea_never_verdaccio(self):
+        # case variants must never reach Verdaccio (its private-scope deny is
+        # case-sensitive) and from there the npmjs uplink: the scope match is
+        # case-insensitive, so case variants land on Gitea (404 there in life)
+        for raw in (f"/npm/@{TEST_NAMESPACE.upper()}%2Fscoped-c", f"/npm/@Acme/scoped-c"):
+            status, body, _ = self._raw("GET", raw, auth=GOOD_AUTH)
+            self.assertEqual(status, 200, raw)
+            self.assertEqual(body, f"gitea /api/packages/{TEST_NAMESPACE}/npm{raw[4:]}", raw)
+        self.assertFalse([p for p in self.seen("verdaccio")
+                          if "scoped-c" in p.lower()])
+
+    def test_npm_private_scope_dist_tag_api_to_gitea(self):
+        path = f"/npm/-/package/@{TEST_NAMESPACE}%2fscoped-b/dist-tags"
+        status, body, _ = self._raw("GET", path, auth=GOOD_AUTH)
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            body, f"gitea /api/packages/{TEST_NAMESPACE}/npm/-/package/@{TEST_NAMESPACE}%2fscoped-b/dist-tags")
+        self.assertFalse([p for p in self.seen("verdaccio") if "scoped-b" in p])
+
+    def test_npm_private_scope_publish_put_routes_identically(self):
+        status, body, _ = self._raw("PUT", f"/npm/@{TEST_NAMESPACE}%2fscoped-d", auth=GOOD_AUTH)
+        self.assertEqual(status, 200)
+        self.assertEqual(body, f"gitea /api/packages/{TEST_NAMESPACE}/npm/@{TEST_NAMESPACE}%2fscoped-d")
+
+    def test_npm_scope_boundary_artea_evil_stays_on_verdaccio(self):
+        # the required scope separator (%2f or /) is part of the regex:
+        # lookalike scopes must not be captured by the Gitea route
+        status, body, _ = self._raw("GET", f"/npm/@{TEST_NAMESPACE}-evil%2fnope", auth=GOOD_AUTH)
+        self.assertEqual(status, 200)
+        self.assertTrue(body.startswith(f"verdaccio /@{TEST_NAMESPACE}-evil"), body)
+        self.assertFalse([p for p in self.seen("gitea") if f"{TEST_NAMESPACE}-evil" in p])
+
+    def test_npm_percent_encoded_scope_letters_rejected_at_gateway(self):
+        # a scoped-location match whose raw URI matches neither map pattern
+        # fires the 400 guard at the gateway, reaching no upstream
+        g_before = len(self.upstreams["gitea"].requests)
+        v_before = len(self.upstreams["verdaccio"].requests)
+        status, _, _ = self._raw("GET", "/npm/@%61cme/scoped-e", auth=GOOD_AUTH)
+        self.assertEqual(status, 400)
+        self.assertEqual(len(self.upstreams["gitea"].requests), g_before)
+        self.assertEqual(len(self.upstreams["verdaccio"].requests), v_before)
+
+    def test_npm_double_encoded_separator_rejected_at_gateway(self):
+        # %252f normalizes once to literal '%2f' text and enters the scoped
+        # location, but the raw URI is not an allowed map form: fail closed
+        # before either upstream sees it.
+        g_before = len(self.upstreams["gitea"].requests)
+        v_before = len(self.upstreams["verdaccio"].requests)
+        status, body, _ = self._raw("GET", f"/npm/@{TEST_NAMESPACE}%252fscoped-f",
+                                    auth=GOOD_AUTH)
+        self.assertEqual(status, 400)
+        self.assertEqual(body, "")
+        self.assertEqual(len(self.upstreams["gitea"].requests), g_before)
+        self.assertEqual(len(self.upstreams["verdaccio"].requests), v_before)
+
     def test_pypi_unauthenticated_gets_basic_challenge(self):
         status, _, headers = self._raw("GET", "/pypi/simple/six/")
         self.assertEqual(status, 401)
@@ -283,7 +354,7 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body, "devpi /root/constrained/+simple/six/")
         # Gitea really was asked first, under the org pypi endpoint
-        self.assertIn("/api/packages/artea/pypi/simple/six/", self.seen("gitea"))
+        self.assertIn(f"/api/packages/{TEST_NAMESPACE}/pypi/simple/six/", self.seen("gitea"))
 
     def test_pypi_name_normalized_before_gitea_lookup(self):
         # S16: non-canonical spellings of a private name must still resolve to
@@ -300,7 +371,7 @@ class GatewayTest(unittest.TestCase):
                                     auth=GOOD_AUTH)
         self.assertEqual(status, 200)
         self.assertEqual(body, "devpi /root/constrained/+simple/some-public-pkg/")
-        self.assertIn("/api/packages/artea/pypi/simple/some-public-pkg/",
+        self.assertIn(f"/api/packages/{TEST_NAMESPACE}/pypi/simple/some-public-pkg/",
                       self.seen("gitea"))
 
     def test_pypi_missing_slash_canonicalized_by_gateway(self):
@@ -310,7 +381,7 @@ class GatewayTest(unittest.TestCase):
         status, body, _ = self._raw("GET", "/pypi/simple/six", auth=GOOD_AUTH)
         self.assertEqual(status, 200)
         self.assertEqual(body, "devpi /root/constrained/+simple/six/")
-        self.assertIn("/api/packages/artea/pypi/simple/six/", self.seen("gitea"))
+        self.assertIn(f"/api/packages/{TEST_NAMESPACE}/pypi/simple/six/", self.seen("gitea"))
         self.assertNotIn("/root/constrained/+simple/six", self.seen("devpi"))
 
     def test_pypi_bare_index_guarded(self):

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Artea e2e scenario suite — codifies S1-S16 from docs/ARCHITECTURE.md (the
-# definition of done for v1). Requires a running stack (`make up`) and a
-# completed bootstrap (`make bootstrap`); uses real client tools: npm with an
+# definition of done for v1) plus S17, the legacy npm client-contract probe.
+# Requires a running stack (`make up`) and a completed bootstrap
+# (`make bootstrap`); uses real client tools: npm with an
 # isolated userconfig, pip/twine/build from a venv under e2e/tmp, git for the
 # direct-push governance check (S14).
 #
@@ -41,6 +42,9 @@ source "${CREDENTIALS_FILE}"
 # explicit BASE_URL beats the GATEWAY_URL recorded at bootstrap time
 GATEWAY_URL="${BASE_URL:-${GATEWAY_URL:-http://localhost:8080}}"
 GATEWAY_HOSTPORT="${GATEWAY_URL#http://}"
+ARTEA_NAMESPACE="${ARTEA_NAMESPACE:-artea}"
+POLICY_REPO="${POLICY_REPO:-${ARTEA_NAMESPACE}/registry-policy}"
+ARTEA_ADMIN_USER="${ARTEA_ADMIN_USER:-${ARTEA_NAMESPACE}-admin}"
 # webhook target as seen by Gitea (S1 asserts the wiring bootstrap created)
 POLICY_SYNC_URL="${POLICY_SYNC_URL:-http://policy-sync:8920}"
 
@@ -63,11 +67,14 @@ mkdir -p "${LOG_DIR}"
 
 # Per-run package versions keep the suite re-runnable without depending on
 # cleanup having succeeded; cleanup deletes them anyway to avoid clutter.
-NPM_NAME="@artea/hello-artea"
-NPM_NAME_ENC="%40artea%2Fhello-artea"
+NPM_SCOPE="@${ARTEA_NAMESPACE}"
+NPM_NAME="${NPM_SCOPE}/hello-${ARTEA_NAMESPACE}"
+NPM_NAME_ENC="%40${ARTEA_NAMESPACE}%2Fhello-${ARTEA_NAMESPACE}"
 NPM_VERSION="0.0.${RUN_ID}"
 NPM_RO_VERSION="0.1.${RUN_ID}" # plain semver: npm refuses prereleases without --tag
-PY_NAME="artea-hello"
+PY_NAME="${ARTEA_NAMESPACE}-hello"
+PY_NAME_CASE="${ARTEA_NAMESPACE}-Hello"
+PY_NAME_UNDERSCORE="${PY_NAME//-/_}"
 PY_VERSION="0.0.${RUN_ID}"
 PY_RO_VERSION="0.0.${RUN_ID}.post1"
 SHADOW_NAME="tinynetrc" # real PyPI package, published privately as 0.0.1 in S9
@@ -216,14 +223,14 @@ s1_bootstrap() {
   [ "$API_CODE" = 200 ] || { echo "admin token rejected (HTTP ${API_CODE})"; return 1; }
   login=$(echo "$API_BODY" | jq -r .login)
   [ "$login" = "${ARTEA_ADMIN_USER}" ] || { echo "admin token belongs to ${login}"; return 1; }
-  admin_api GET /orgs/artea
-  [ "$API_CODE" = 200 ] || { echo "org artea missing"; return 1; }
-  [ "$(echo "$API_BODY" | jq -r .visibility)" = private ] || { echo "org artea is not private"; return 1; }
-  admin_api GET /repos/artea/registry-policy/contents/npm-rules.yaml
+  admin_api GET "/orgs/${ARTEA_NAMESPACE}"
+  [ "$API_CODE" = 200 ] || { echo "org ${ARTEA_NAMESPACE} missing"; return 1; }
+  [ "$(echo "$API_BODY" | jq -r .visibility)" = private ] || { echo "org ${ARTEA_NAMESPACE} is not private"; return 1; }
+  admin_api GET "/repos/${POLICY_REPO}/contents/npm-rules.yaml"
   [ "$API_CODE" = 200 ] || { echo "npm-rules.yaml not seeded"; return 1; }
-  admin_api GET /repos/artea/registry-policy/contents/pypi-constraints.txt
+  admin_api GET "/repos/${POLICY_REPO}/contents/pypi-constraints.txt"
   [ "$API_CODE" = 200 ] || { echo "pypi-constraints.txt not seeded"; return 1; }
-  admin_api GET /repos/artea/registry-policy/hooks
+  admin_api GET "/repos/${POLICY_REPO}/hooks"
   [ "$API_CODE" = 200 ] || { echo "cannot list hooks"; return 1; }
   echo "$API_BODY" | jq -e --arg hook "${POLICY_SYNC_URL}/hooks/policy" \
     'any(.[]; .config.url == $hook and .active)' >/dev/null \
@@ -233,16 +240,16 @@ s1_bootstrap() {
   echo "org, policy repo (both files), webhook, admin+dev1 PATs all present"
 }
 
-# ---- S2: npm publish @artea/hello-artea -> 201 in Gitea ----------------------------------
+# ---- S2: npm publish private scoped package -> 201 in Gitea ------------------------------
 s2_npm_publish() {
-  make_npm_pkg "${WORK}/hello-artea" "${NPM_NAME}" "${NPM_VERSION}"
-  (cd "${WORK}/hello-artea" && npm_e2e publish --loglevel=http) || { echo "npm publish failed"; return 1; }
+  make_npm_pkg "${WORK}/hello-${ARTEA_NAMESPACE}" "${NPM_NAME}" "${NPM_VERSION}"
+  (cd "${WORK}/hello-${ARTEA_NAMESPACE}" && npm_e2e publish --loglevel=http) || { echo "npm publish failed"; return 1; }
   pkg_version_exists npm "${NPM_NAME_ENC}" "${NPM_VERSION}" \
     || { echo "Gitea does not list ${NPM_NAME}@${NPM_VERSION} after publish"; return 1; }
   echo "Gitea package API confirms ${NPM_NAME}@${NPM_VERSION}"
 }
 
-# ---- S3: npm install @artea/hello-artea resolves from Gitea ------------------------------
+# ---- S3: npm install private scoped package resolves from Gitea --------------------------
 s3_npm_install_private() {
   local proj="${WORK}/proj-s3" resolved version
   mkdir -p "$proj"
@@ -252,9 +259,11 @@ s3_npm_install_private() {
   [ "$version" = "${NPM_VERSION}" ] || { echo "installed version ${version}, expected ${NPM_VERSION}"; return 1; }
   resolved=$(jq -r ".packages[\"node_modules/${NPM_NAME}\"].resolved" "$proj/package-lock.json")
   echo "resolved: ${resolved}"
+  # even under gateway scope routing (packument fetched via /npm/) the tarball
+  # URL is Gitea-built from ROOT_URL, so it stays on /api/packages/<namespace>/npm/
   case "$resolved" in
-    */api/packages/artea/npm/*) ;;
-    *) echo "tarball did not come from Gitea scope routing"; return 1 ;;
+    */api/packages/"${ARTEA_NAMESPACE}"/npm/*) ;;
+    *) echo "tarball did not come from Gitea (gateway scope routing)"; return 1 ;;
   esac
 }
 
@@ -300,17 +309,17 @@ s5_npm_policy_block() {
   NPM_RULES_DIRTY=0
 }
 
-# ---- S6: twine upload artea-hello wheel -> Gitea -------------------------------------------
+# ---- S6: twine upload private wheel -> Gitea ---------------------------------------------
 s6_twine_upload() {
-  make_py_pkg "${WORK}/artea-hello" "${PY_NAME}" "${PY_VERSION}"
-  build_wheel "${WORK}/artea-hello" || { echo "wheel build failed"; return 1; }
-  twine_upload "${DEV1_TOKEN}" "${WORK}/artea-hello/dist/"*.whl || { echo "twine upload failed"; return 1; }
+  make_py_pkg "${WORK}/${PY_NAME}" "${PY_NAME}" "${PY_VERSION}"
+  build_wheel "${WORK}/${PY_NAME}" || { echo "wheel build failed"; return 1; }
+  twine_upload "${DEV1_TOKEN}" "${WORK}/${PY_NAME}/dist/"*.whl || { echo "twine upload failed"; return 1; }
   pkg_version_exists pypi "${PY_NAME}" "${PY_VERSION}" \
     || { echo "Gitea does not list ${PY_NAME} ${PY_VERSION} after upload"; return 1; }
   echo "Gitea package API confirms ${PY_NAME} ${PY_VERSION} (artifact stored in Gitea)"
 }
 
-# ---- S7: pip install artea-hello via the gateway index --------------------------------------
+# ---- S7: pip install private wheel via the gateway index ----------------------------------
 s7_pip_install_private() {
   local report="${WORK}/s7-report.json" url
   pip_e2e install -q --index-url "${INDEX_URL}" --force-reinstall --no-deps \
@@ -318,7 +327,7 @@ s7_pip_install_private() {
   url=$(jq -r '.install[0].download_info.url' "$report")
   echo "downloaded from: ${url}"
   case "$url" in
-    */api/packages/artea/pypi/files/*) ;;
+    */api/packages/"${ARTEA_NAMESPACE}"/pypi/files/*) ;;
     *) echo "wheel did not come from Gitea"; return 1 ;;
   esac
 }
@@ -411,8 +420,8 @@ s11_token_scopes() {
   echo "read-only token installs fine (npm private+public, pip private)"
 
   # npm publish with the read-only token must be rejected with 401 (not 403)
-  make_npm_pkg "${WORK}/hello-artea-ro" "${NPM_NAME}" "${NPM_RO_VERSION}"
-  out=$( (cd "${WORK}/hello-artea-ro" && npm_config_userconfig="${WORK}/npmrc-ro" \
+  make_npm_pkg "${WORK}/hello-${ARTEA_NAMESPACE}-ro" "${NPM_NAME}" "${NPM_RO_VERSION}"
+  out=$( (cd "${WORK}/hello-${ARTEA_NAMESPACE}-ro" && npm_config_userconfig="${WORK}/npmrc-ro" \
     npm_config_cache="${WORK}/npm-cache-ro" npm publish) 2>&1) && {
     echo "npm publish with read-only token unexpectedly succeeded"; return 1; }
   echo "$out" | grep -q 'E401' || { echo "npm publish rejection was not 401:"; echo "$out"; return 1; }
@@ -421,9 +430,9 @@ s11_token_scopes() {
   echo "npm publish with read-only token rejected with 401"
 
   # twine upload with the read-only token must be rejected with 401 (not 403)
-  make_py_pkg "${WORK}/artea-hello-ro" "${PY_NAME}" "${PY_RO_VERSION}"
-  build_wheel "${WORK}/artea-hello-ro" || { echo "wheel build failed"; return 1; }
-  out=$(twine_upload "${ro_token}" "${WORK}/artea-hello-ro/dist/"*.whl 2>&1) && {
+  make_py_pkg "${WORK}/${PY_NAME}-ro" "${PY_NAME}" "${PY_RO_VERSION}"
+  build_wheel "${WORK}/${PY_NAME}-ro" || { echo "wheel build failed"; return 1; }
+  out=$(twine_upload "${ro_token}" "${WORK}/${PY_NAME}-ro/dist/"*.whl 2>&1) && {
     echo "twine upload with read-only token unexpectedly succeeded"; return 1; }
   echo "$out" | grep -q '401' || { echo "twine rejection was not 401:"; echo "$out"; return 1; }
   echo "$out" | grep -q '403' && { echo "got 403, expected 401:"; echo "$out"; return 1; }
@@ -504,7 +513,7 @@ s14_branch_protection() {
     || { echo "minting dev1 repo-scoped token failed"; return 1; }
 
   # a real git push to main as dev1 must hit the protected-branch pre-receive hook
-  git clone -q "http://dev1:${token}@${GATEWAY_HOSTPORT}/artea/registry-policy.git" "$clone" \
+  git clone -q "http://dev1:${token}@${GATEWAY_HOSTPORT}/${POLICY_REPO}.git" "$clone" \
     || { echo "git clone as dev1 failed (developers team should have code read)"; return 1; }
   (cd "$clone" && echo "# e2e S14 direct-push probe" >> npm-rules.yaml \
     && git -c user.email=dev1@localhost -c user.name=dev1 commit -aqm "test(e2e): S14 probe") || return 1
@@ -516,25 +525,25 @@ s14_branch_protection() {
   echo "dev1 git push to main rejected: protected branch"
 
   # the contents API goes through the same check: dev1 gets 403
-  admin_api GET /repos/artea/registry-policy/contents/npm-rules.yaml
+  admin_api GET "/repos/${POLICY_REPO}/contents/npm-rules.yaml"
   sha=$(echo "$API_BODY" | jq -r .sha)
   b64=$(printf '%s\n' '# e2e S14 contents-API probe' | json_b64)
   code=$(http_code -X PUT -H "Authorization: token ${token}" -H 'Content-Type: application/json' \
     -d "{\"content\":\"${b64}\",\"sha\":\"${sha}\",\"message\":\"test(e2e): S14 contents probe\"}" \
-    "${GATEWAY_URL}/api/v1/repos/artea/registry-policy/contents/npm-rules.yaml")
+    "${GATEWAY_URL}/api/v1/repos/${POLICY_REPO}/contents/npm-rules.yaml")
   [ "$code" = 403 ] || { echo "dev1 contents-API edit got HTTP ${code}, expected 403"; return 1; }
   [ "$(get_policy_file npm-rules.yaml)" = "${ORIG_NPM_RULES}" ] \
     || { echo "npm-rules.yaml on main changed despite the rejections"; return 1; }
   echo "dev1 contents-API edit rejected with 403; main unchanged"
 
-  # artea-admin stays on the push allowlist: contents-API edits still land
+  # the configured admin stays on the push allowlist: contents-API edits still land
   NPM_RULES_DIRTY=1
   put_policy_file npm-rules.yaml "${ORIG_NPM_RULES}"$'\n'"# e2e S14: admin allowlist probe" \
     "test(e2e): S14 admin edit through branch protection" \
-    || { echo "artea-admin contents-API edit failed under branch protection"; return 1; }
+    || { echo "${ARTEA_ADMIN_USER} contents-API edit failed under branch protection"; return 1; }
   put_policy_file npm-rules.yaml "${ORIG_NPM_RULES}" "test(e2e): S14 revert admin probe" || return 1
   NPM_RULES_DIRTY=0
-  echo "artea-admin contents-API edits on main still work (push allowlist)"
+  echo "${ARTEA_ADMIN_USER} contents-API edits on main still work (push allowlist)"
 
   delete_dev1_token "${S14_TOKEN_NAME}"
 }
@@ -668,12 +677,12 @@ s16_normalization() {
   local s body code report="${WORK}/s16-report.json" url
   # curl probes: non-canonical spellings, with and without the trailing slash,
   # must get Gitea's page (its file URL shape), never the devpi mirror's
-  for s in "Artea-Hello/" "artea_hello"; do
+  for s in "${PY_NAME_CASE}/" "${PY_NAME_UNDERSCORE}"; do
     body=$(curl -s -w '\n%{http_code}' -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/${s}")
     code=${body##*$'\n'}
     body=${body%$'\n'*}
     [ "$code" = 200 ] || { echo "GET /pypi/simple/${s} -> HTTP ${code}, expected 200"; return 1; }
-    echo "$body" | grep -q '/api/packages/artea/pypi/files/' \
+    echo "$body" | grep -q "/api/packages/${ARTEA_NAMESPACE}/pypi/files/" \
       || { echo "/pypi/simple/${s}: no Gitea file URLs — not the private package"; return 1; }
     echo "$body" | grep -q '/root/' \
       && { echo "/pypi/simple/${s}: devpi mirror URLs leaked into the response"; return 1; }
@@ -681,19 +690,64 @@ s16_normalization() {
   done
   # pip, fed a non-canonical spelling, must install the private wheel from Gitea
   pip_e2e install -q --index-url "${INDEX_URL}" --force-reinstall --no-deps \
-    --report "$report" "Artea_Hello==${PY_VERSION}" || { echo "pip install Artea_Hello failed"; return 1; }
+    --report "$report" "${PY_NAME_UNDERSCORE}==${PY_VERSION}" || { echo "pip install ${PY_NAME_UNDERSCORE} failed"; return 1; }
   url=$(jq -r '.install[0].download_info.url' "$report")
   echo "pip downloaded from: ${url}"
   case "$url" in
-    */api/packages/artea/pypi/files/*) ;;
+    */api/packages/"${ARTEA_NAMESPACE}"/pypi/files/*) ;;
     *) echo "wheel did not come from Gitea"; return 1 ;;
   esac
+}
+
+# ---- S17: legacy scoped .npmrc still works; encoded private-scope paths route to Gitea ------
+s17_legacy_and_encoding() {
+  local proj="${WORK}/proj-s17" npmrc_legacy="${WORK}/npmrc-legacy"
+  local spelling body code out version
+
+  # a. the legacy two-registry client config must keep working unchanged
+  write_npmrc_legacy "${npmrc_legacy}" "${DEV1_TOKEN}"
+  mkdir -p "$proj"
+  echo '{"name":"e2e-consumer-s17","version":"1.0.0"}' > "$proj/package.json"
+  (cd "$proj" && npm_config_userconfig="${npmrc_legacy}" npm_config_cache="${WORK}/npm-cache-s17" \
+    npm install "${NPM_NAME}@${NPM_VERSION}") || { echo "legacy-npmrc npm install failed"; return 1; }
+  version=$(jq -r .version "$proj/node_modules/${NPM_NAME}/package.json")
+  [ "$version" = "${NPM_VERSION}" ] || { echo "legacy install got ${version}, expected ${NPM_VERSION}"; return 1; }
+  echo "legacy two-registry .npmrc installs ${NPM_NAME}@${NPM_VERSION}"
+
+  # b. packuments under /npm/: encoded and literal private-scope spellings both reach Gitea
+  for spelling in "${NPM_NAME_ENC}" "${NPM_NAME}"; do
+    body=$(curl -s -w '\n%{http_code}' -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/${spelling}")
+    code=${body##*$'\n'}
+    body=${body%$'\n'*}
+    [ "$code" = 200 ] || { echo "GET /npm/${spelling} -> HTTP ${code}, expected 200"; return 1; }
+    echo "$body" | grep -qF "\"${NPM_VERSION}\"" \
+      || { echo "/npm/${spelling}: packument does not contain ${NPM_VERSION}"; return 1; }
+    echo "/npm/${spelling} -> 200, packument contains ${NPM_VERSION}"
+  done
+
+  # c. dist-tag API route (the /npm/-/package/<scope>/... map entry)
+  out=$(npm_e2e dist-tag ls "${NPM_NAME}" 2>&1) || { echo "npm dist-tag ls failed:"; echo "$out"; return 1; }
+  echo "$out"
+  echo "$out" | grep -q '^latest:' || { echo "no latest tag in dist-tag output"; return 1; }
+  echo "dist-tag route serves a latest tag for ${NPM_NAME}"
+
+  # d. boundary: <scope>-evil must NOT be captured by the configured scope route — it falls
+  # through to Verdaccio, which misses on npmjs (404). 400 would mean the
+  # gateway's encoded-path rejection fired; 401 would mean Gitea answered.
+  code=$(http_code -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/@${ARTEA_NAMESPACE}-evil%2fnope")
+  [ "$code" = 404 ] || { echo "/npm/@${ARTEA_NAMESPACE}-evil%2fnope -> HTTP ${code}, expected 404 (Verdaccio miss)"; return 1; }
+  echo "/npm/@${ARTEA_NAMESPACE}-evil%2fnope -> 404 from the Verdaccio path, not the Gitea route"
+
+  # e. the private-scope route has no auth_request guard; Gitea itself must demand auth
+  code=$(http_code "${GATEWAY_URL}/npm/${NPM_NAME_ENC}")
+  [ "$code" = 401 ] || { echo "anonymous /npm/${NPM_NAME_ENC} -> HTTP ${code}, expected 401"; return 1; }
+  echo "anonymous /npm/${NPM_NAME_ENC} -> 401"
 }
 
 # ---- run ---------------------------------------------------------------------------------------
 scenario S1 "bootstrap state: stack healthy, org/repo/webhook/PATs present" s1_bootstrap
 scenario S2 "npm publish ${NPM_NAME}@${NPM_VERSION} -> Gitea" s2_npm_publish
-scenario S3 "npm install ${NPM_NAME} resolves from Gitea (scope routing)" s3_npm_install_private
+scenario S3 "npm install ${NPM_NAME} resolves from Gitea (gateway scope routing)" s3_npm_install_private
 scenario S4 "npm install left-pad via Verdaccio pull-through" s4_npm_install_public
 scenario S5 "policy push hides left-pad 1.3.0 from npm view" s5_npm_policy_block
 scenario S6 "twine upload ${PY_NAME} ${PY_VERSION} -> Gitea" s6_twine_upload
@@ -707,10 +761,11 @@ scenario S13 "blocked version's tarball GET -> 403; anonymous /npm/ -> 401" s13_
 scenario S14 "dev1 cannot push registry-policy@main; admin allowlist works" s14_branch_protection
 scenario S15 "fail-closed: missing npm policy / wiped devpi, then recovery" s15_fail_closed
 scenario S16 "non-canonical pypi spellings still resolve to the private package" s16_normalization
+scenario S17 "legacy scoped .npmrc still works; encoded private-scope paths route to Gitea" s17_legacy_and_encoding
 
 echo
 if [ "$FAILED" = 0 ]; then
-  log "all 16 scenarios passed"
+  log "all 17 scenarios passed"
 else
   log "FAILURES:"
   echo "${RESULTS}" | grep ' FAIL ' || true

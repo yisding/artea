@@ -36,19 +36,19 @@ json_b64() { # stdin -> single-line base64
 # ---- policy repo file editing (drives S5/S10 through the real PR-less path) -----
 get_policy_file() { # <path in repo> -> raw content on stdout
   curl -sfS -H "Authorization: token ${ARTEA_ADMIN_TOKEN}" \
-    "${GATEWAY_URL}/api/v1/repos/artea/registry-policy/raw/$1"
+    "${GATEWAY_URL}/api/v1/repos/${POLICY_REPO}/raw/$1"
 }
 
 put_policy_file() { # <path in repo> <new content> <commit message>
   local path=$1 content=$2 msg=$3 sha b64
-  admin_api GET "/repos/artea/registry-policy/contents/${path}"
+  admin_api GET "/repos/${POLICY_REPO}/contents/${path}"
   sha=$(echo "$API_BODY" | jq -r .sha)
   [ "$API_CODE" = 200 ] && [ -n "$sha" ] && [ "$sha" != null ] \
     || { echo "put_policy_file: no sha for ${path} (HTTP ${API_CODE})"; return 1; }
   # content always arrives through $(...) which strips the trailing newline;
   # write it back so policy files keep their POSIX final newline
   b64=$(printf '%s\n' "$content" | json_b64)
-  admin_api PUT "/repos/artea/registry-policy/contents/${path}" \
+  admin_api PUT "/repos/${POLICY_REPO}/contents/${path}" \
     "{\"content\":\"${b64}\",\"sha\":\"${sha}\",\"message\":$(printf '%s' "$msg" | jq -Rs .)}"
   case "$API_CODE" in 2*) return 0 ;; *) echo "put_policy_file ${path} -> HTTP ${API_CODE}: ${API_BODY}"; return 1 ;; esac
 }
@@ -75,12 +75,12 @@ wait_for() { # <timeout s> <interval s> <description> <command...>
 
 # ---- package cleanup helpers ------------------------------------------------------
 delete_pkg_version() { # <type> <urlencoded name> <version> ; tolerates 404
-  admin_api DELETE "/packages/artea/$1/$2/$3"
+  admin_api DELETE "/packages/${ARTEA_NAMESPACE}/$1/$2/$3"
   case "$API_CODE" in 204 | 404) return 0 ;; *) echo "delete ${1}/${2}/${3} -> HTTP ${API_CODE}"; return 1 ;; esac
 }
 
 pkg_version_exists() { # <type> <urlencoded name> <version> -> 0 if Gitea has it
-  admin_api GET "/packages/artea/$1/$2/$3"
+  admin_api GET "/packages/${ARTEA_NAMESPACE}/$1/$2/$3"
   [ "$API_CODE" = 200 ]
 }
 
@@ -99,14 +99,39 @@ delete_dev1_token() { # <name> ; tolerates 404/422 (already gone)
 }
 
 # ---- npm helpers -------------------------------------------------------------------
-write_npmrc() { # <file> <token> ; the documented client contract from ARCHITECTURE.md
+write_npmrc() { # <file> <token> ; the documented single-URL client contract
+  # (docs/guides/clients-npm.md): ONE registry — the gateway routes the
+  # configured private scope under /npm/ to Gitea server-side (ADR-0002).
+  # ONE credential VALUE on two nerf-dart lines (amendment in gateway/nginx.conf):
+  #   //host/      — covers Gitea tarball downloads by nerf-dart prefix matching
+  #                  (ROOT_URL pins them under /api/packages/<namespace>/npm/...);
+  #   //host/npm/  — covers npm publish's local credential preflight, which
+  #                  checks only the registry's exact nerf-dart, never //host/.
   local b64
   b64=$(printf 'dev1:%s' "$2" | json_b64)
   cat > "$1" <<EOF
 registry=${GATEWAY_URL}/npm/
-@artea:registry=${GATEWAY_URL}/api/packages/artea/npm/
+//${GATEWAY_HOSTPORT}/:_auth=${b64}
 //${GATEWAY_HOSTPORT}/npm/:_auth=${b64}
-//${GATEWAY_HOSTPORT}/api/packages/artea/npm/:_authToken=$2
+always-auth=true
+audit=false
+fund=false
+update-notifier=false
+EOF
+}
+
+write_npmrc_legacy() { # <file> <token> ; the OLD two-registry contract — kept as
+  # the backward-compat probe (S17): client-side private scope routing to Gitea
+  # plus path-scoped credentials. Must keep working unchanged behind the new
+  # gateway (the legacy /api/packages/<namespace>/npm/ URLs bypass /npm/ routing).
+  local b64
+  b64=$(printf 'dev1:%s' "$2" | json_b64)
+  cat > "$1" <<EOF
+registry=${GATEWAY_URL}/npm/
+@${ARTEA_NAMESPACE}:registry=${GATEWAY_URL}/api/packages/${ARTEA_NAMESPACE}/npm/
+//${GATEWAY_HOSTPORT}/npm/:_auth=${b64}
+//${GATEWAY_HOSTPORT}/api/packages/${ARTEA_NAMESPACE}/npm/:_authToken=$2
+always-auth=true
 audit=false
 fund=false
 update-notifier=false
@@ -128,7 +153,7 @@ make_npm_pkg() { # <dir> <name> <version>
   "license": "MIT"
 }
 EOF
-  echo "module.exports = 'hello from artea e2e';" > "$1/index.js"
+  echo "module.exports = 'hello from registry e2e';" > "$1/index.js"
 }
 
 # ---- python helpers -----------------------------------------------------------------
@@ -148,7 +173,7 @@ description = "Artea e2e fixture"
 [tool.setuptools]
 py-modules = ["${module}"]
 EOF
-  echo "GREETING = 'hello from artea e2e'" > "$1/${module}.py"
+  echo "GREETING = 'hello from registry e2e'" > "$1/${module}.py"
 }
 
 pip_env() { # run a command with host PIP_* env/config leakage removed
@@ -171,6 +196,6 @@ twine_upload() { # <token> <wheel...> ; uploads to Gitea through the gateway
   local token=$1
   shift
   "${VENV}/bin/twine" upload --non-interactive --disable-progress-bar \
-    --repository-url "${GATEWAY_URL}/api/packages/artea/pypi/" \
+    --repository-url "${GATEWAY_URL}/api/packages/${ARTEA_NAMESPACE}/pypi/" \
     -u dev1 -p "$token" "$@"
 }

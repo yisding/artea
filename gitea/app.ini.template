@@ -1,9 +1,9 @@
 ; Artea — Gitea runtime configuration for the stock gitea/gitea Docker image.
-; Mounted read-only at /data/gitea/conf/app.ini (GITEA_CUSTOM=/data/gitea in the
-; stock root image). See gitea/README.md for mount points and the env-var
-; alternative. Keys verified against upstream v1.26.2 (custom/conf/app.example.ini
-; and modules/setting/). All filesystem paths replicate the image's own generated
-; config so everything lands on the /data volume.
+; Template rendered by scripts/render-configs.sh into .generated/gitea/app.ini,
+; then mounted read-only at /data/gitea/conf/app.ini (GITEA_CUSTOM=/data/gitea in
+; the stock root image). Keys verified against upstream v1.26.2
+; (custom/conf/app.example.ini and modules/setting/). All filesystem paths
+; replicate the image's own generated config so everything lands on /data.
 
 ; Branding: shown in page titles and on the (overridden) home page.
 APP_NAME = Artea Package Registry
@@ -20,9 +20,9 @@ ROOT_URL = http://localhost:8080/
 ; 1.26 defaults to "auto" (derive public URL from the Host header). Force ROOT_URL
 ; so generated URLs are stable no matter how a request reaches Gitea.
 PUBLIC_URL_DETECTION = never
-; Packages-centric landing for anonymous "/" (org `artea` package list). Combined
+; Packages-centric landing for anonymous "/" (private namespace package list). Combined
 ; with REQUIRE_SIGNIN_VIEW it becomes the post-login redirect target.
-LANDING_PAGE = /artea/-/packages
+LANDING_PAGE = /__ARTEA_NAMESPACE__/-/packages
 ; De-git: no SSH clone UI; the registry only needs HTTP. (The image still runs an
 ; internal sshd; just never publish port 22.)
 DISABLE_SSH = true
@@ -86,7 +86,7 @@ ENABLE_OPENID_SIGNUP = false
 ROOT = /data/git/repositories
 DEFAULT_BRANCH = main
 ; De-git: globally disable every repo unit except code and pulls. repo.pulls stays
-; available because policy changes to artea/registry-policy go through PRs
+; available because policy changes to the policy repo go through PRs
 ; (ARCHITECTURE.md policy model). Issues/wiki/projects/releases/actions disappear
 ; from all repos AND from the navbar (templates check UnitGlobalDisabled).
 DISABLED_REPO_UNITS = repo.issues,repo.ext_issues,repo.wiki,repo.ext_wiki,repo.projects,repo.releases,repo.actions

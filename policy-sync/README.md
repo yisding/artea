@@ -1,7 +1,7 @@
 # policy-sync
 
-Syncs registry policy from the Gitea repo `artea/registry-policy` to the two
-pull-through caches:
+Syncs registry policy from the Gitea repo `${ARTEA_NAMESPACE}/registry-policy`
+(or explicit `POLICY_REPO`) to the two pull-through caches:
 
 - `npm-rules.yaml` → delivered to the Verdaccio filter plugin two ways:
   - **file (compose)**: written atomically to `$POLICY_FILE_PATH` (default
@@ -50,11 +50,12 @@ uid.
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
 | `POLICY_SYNC_TOKEN` | yes | — | PAT of the `svc-policy` service account (non-admin; read-only on the policy repo via the `policy-readers` team), scoped `read:repository`. Minted and rotated by `scripts/bootstrap.sh` |
-| `POLICY_WEBHOOK_SECRET` | yes | — | Shared secret of the Gitea webhook on `artea/registry-policy` |
+| `POLICY_WEBHOOK_SECRET` | yes | — | Shared secret of the Gitea webhook on the policy repo |
 | `DEVPI_ROOT_PASSWORD` | yes | — | devpi `root` password (HTTP Basic on the index PATCH) |
 | `GITEA_URL` | no | `http://gitea:3000` | Gitea base URL (internal) |
 | `DEVPI_URL` | no | `http://devpi:3141` | devpi base URL (internal) |
-| `POLICY_REPO` | no | `artea/registry-policy` | `owner/repo` of the policy repo |
+| `ARTEA_NAMESPACE` | no | `artea` | Namespace used to derive the default policy repo |
+| `POLICY_REPO` | no | `${ARTEA_NAMESPACE}/registry-policy` | `owner/repo` of the policy repo |
 | `POLICY_DIR` | no | `/policy` | Mount point of the shared `policy-data` volume (compose) |
 | `POLICY_FILE_PATH` | no | `$POLICY_DIR/npm-rules.yaml` | Where to write the npm policy file. Set to the empty string for **HTTP-only mode** (K8s: no volume, no file write; the `GET /policy/npm-rules.yaml` endpoint is the only npm-policy output). A custom path gets its parent directory created automatically |
 | `DEVPI_INDEX` | no | `root/constrained` | devpi index that receives the constraints |

@@ -11,4 +11,5 @@ venv/
 data/
 e2e/tmp/
 backups/
+.generated/
 .claude/

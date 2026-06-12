@@ -17,6 +17,7 @@ case "${CREDENTIALS_FILE}" in /*) ;; *) CREDENTIALS_FILE="./${CREDENTIALS_FILE}"
 source "${CREDENTIALS_FILE}"
 # explicit BASE_URL beats the GATEWAY_URL recorded at bootstrap time
 GATEWAY_URL="${BASE_URL:-${GATEWAY_URL:-http://localhost:8080}}"
+ARTEA_NAMESPACE="${ARTEA_NAMESPACE:-artea}"
 # k8s runtime knobs (must match the chart; scripts/k8s-e2e.sh exports them)
 K8S_NAMESPACE="${K8S_NAMESPACE:-}"
 K8S_POLICY_SYNC_DEPLOY="${K8S_POLICY_SYNC_DEPLOY:-artea-policy-sync}"
@@ -42,8 +43,10 @@ check "anonymous / redirects to sign-in" 303 "$(code "${GATEWAY_URL}/")"
 check "npm packument w/o auth is denied" 401 "$(code "${GATEWAY_URL}/npm/left-pad")"
 check "npm packument with PAT (npmjs pull-through)" 200 \
   "$(code -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/left-pad")"
-check "npm @artea scope denied on verdaccio even with PAT" 403 \
-  "$(code -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/@artea%2fanything")"
+# the gateway scope-routes the configured private npm scope under /npm/ to
+# Gitea: an unknown private name 404s there, never in Verdaccio/npmjs
+check "npm private scope routed to Gitea: unknown name 404s, never Verdaccio" 404 \
+  "$(code -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/@${ARTEA_NAMESPACE}%2fanything")"
 
 # 3. pypi path: gateway auth guard + Gitea-404 fallthrough to devpi/pypi.org
 check "pypi simple w/o auth gets Basic challenge" 401 "$(code "${GATEWAY_URL}/pypi/simple/six/")"
@@ -59,7 +62,7 @@ check "devpi file path w/o auth is denied" 401 "$(code "${GATEWAY_URL}/root/pypi
 
 # 4. gitea package API direct paths (npm scope registry / pypi upload target)
 check "gitea pypi simple 404s for unpublished name (auth'd)" 404 \
-  "$(code -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/api/packages/artea/pypi/simple/six/")"
+  "$(code -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/api/packages/${ARTEA_NAMESPACE}/pypi/simple/six/")"
 
 # 5. policy-sync health (internal-only; via docker/kubectl exec)
 PS_HEALTH_PY="import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8920/healthz', timeout=3)); print('ok' if d.get('status')=='ok' and d.get('last_sync_ok') else 'bad')"

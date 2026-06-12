@@ -15,8 +15,9 @@ No forking, no vendoring, no source patches in v1. Customization happens only
 through supported extension surfaces:
 
 1. **Gitea**: stock upstream Docker image; behavior via mounted
-   `gitea/app.ini`, appearance via Gitea's supported `custom/` overlay
-   directory (`gitea/custom/`).
+   config rendered from `gitea/app.ini.template`, appearance via Gitea's
+   supported `custom/` overlay directory (`gitea/custom/` templates rendered
+   into `.generated/`).
 2. **Verdaccio / devpi**: consumed as released artifacts; our code is plugins
    against their stable plugin APIs (`verdaccio/plugins/*`; devpi needs the
    `devpi-constrained` plugin only, no custom plugin in v1).

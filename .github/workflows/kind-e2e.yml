@@ -196,7 +196,7 @@ jobs:
           sed -n '/^----- BEGIN ARTEA CREDENTIALS -----$/,/^----- END ARTEA CREDENTIALS -----$/p' \
             "$RUNNER_TEMP/bootstrap.log" | sed '1d;$d' > "$RUNNER_TEMP/creds.env"
           if [ ! -s "$RUNNER_TEMP/creds.env" ]; then
-            grep -E '^(GATEWAY_URL|ARTEA_ADMIN_USER|ARTEA_ADMIN_PASSWORD|ARTEA_ADMIN_TOKEN|DEV1_USER|DEV1_PASSWORD|DEV1_TOKEN|POLICY_SYNC_TOKEN)=' \
+            grep -E '^(GATEWAY_URL|ARTEA_NAMESPACE|POLICY_REPO|ARTEA_ADMIN_USER|ARTEA_ADMIN_PASSWORD|ARTEA_ADMIN_TOKEN|DEV1_USER|DEV1_PASSWORD|DEV1_TOKEN|POLICY_SYNC_TOKEN)=' \
               "$RUNNER_TEMP/bootstrap.log" > "$RUNNER_TEMP/creds.env" || true
           fi
           if [ ! -s "$RUNNER_TEMP/creds.env" ]; then

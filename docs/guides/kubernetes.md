@@ -62,10 +62,15 @@ Client setup (`.npmrc`, pip index URL, PATs) is identical to compose:
 ## Secrets
 
 Set real values for every key under `secrets:` (the defaults are dev
-placeholders, mirroring `.env.example`):
+placeholders, mirroring `.env.example`). The private package namespace defaults
+to `artea`; override `global.privateNamespace` to use another Gitea org / npm
+scope. When `secrets.adminUsername` is omitted or empty, it defaults to
+`<global.privateNamespace>-admin`.
 
 ```sh
 cat > /tmp/artea-secrets.yaml <<'EOF'
+global:
+  privateNamespace: acme
 secrets:
   adminPassword: ...
   dev1Password: ...

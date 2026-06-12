@@ -1,6 +1,6 @@
 # Artea PyPI pull-through constraints (R3) — devpi-constrained format.
 #
-# Lives in the Gitea repo `artea/registry-policy`. Edit via PR; on push,
+# Lives in the configured Gitea policy repo. Edit via PR; on push,
 # policy-sync applies this file as the `constraints` property of the devpi
 # index `root/constrained` (the PyPI mirror the gateway falls back to).
 #

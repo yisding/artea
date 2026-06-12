@@ -12,6 +12,7 @@
 #   GITEA_URL                direct Gitea URL (bypasses the gateway)
 #   POLICY_SYNC_URL          policy-sync base URL (health/sync wait)
 #   POLICY_SYNC_HOOK_URL     push-webhook target wired into Gitea
+#   ARTEA_NAMESPACE          Gitea org and npm private scope
 #   ARTEA_ADMIN_USER/_PASSWORD, DEV1_PASSWORD, POLICY_WEBHOOK_SECRET   secrets
 apiVersion: batch/v1
 kind: Job
@@ -53,6 +54,8 @@ spec:
               value: {{ include "artea.policySyncUrl" . | quote }}
             - name: POLICY_SYNC_HOOK_URL
               value: {{ printf "%s/hooks/policy" (include "artea.policySyncUrl" .) | quote }}
+            - name: ARTEA_NAMESPACE
+              value: {{ include "artea.privateNamespace" . | quote }}
             - name: ARTEA_ADMIN_USER
               valueFrom:
                 secretKeyRef:

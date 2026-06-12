@@ -16,7 +16,8 @@ files baked into the deployment repo (every block requires a redeploy).
 
 ## Decision
 
-Policy lives in the Gitea repository `artea/registry-policy` as two files:
+Policy lives in the Gitea repository `${ARTEA_NAMESPACE}/registry-policy` as
+two files:
 
 - `npm-rules.yaml` — blocked npm names, scopes, and semver ranges, consumed by
   our Verdaccio filter plugin (re-read from `/policy` on mtime change, no
@@ -36,10 +37,10 @@ Changes therefore go through ordinary Gitea pull requests on a repo that
 exists anyway (Gitea is the control plane, ADR-0001): review via approvals,
 audit via git history, rollback via revert. This is enforced, not just
 convention: the repo's default branch carries branch protection (direct pushes
-blocked for everyone except the `artea-admin` allowlist, ≥1 required approval,
-rejected reviews block the merge), and developers sit in a `developers` team
-(code/pulls/packages write, no admin) rather than in org Owners — so no
-developer credential can bypass the PR path (e2e scenario S14).
+blocked for everyone except the configured admin allowlist, ≥1 required
+approval, rejected reviews block the merge), and developers sit in a
+`developers` team (code/pulls/packages write, no admin) rather than in org
+Owners — so no developer credential can bypass the PR path (e2e scenario S14).
 
 ## Consequences
 
@@ -51,6 +52,7 @@ developer credential can bypass the PR path (e2e scenario S14).
   scenarios S5 and S10 guard the wiring.
 - policy-sync needs the `svc-policy` account, its PAT, and webhook plumbing —
   bootstrap steps (scenario S1); the admin allowlist on the protected branch
-  also keeps the e2e suite's direct policy edits (as `artea-admin`) working.
+  also keeps the e2e suite's direct policy edits (as the configured admin)
+  working.
 - New formats add a policy file section plus a policy-sync adapter, keeping
   the same review workflow.

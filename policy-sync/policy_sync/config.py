@@ -46,12 +46,13 @@ class Config:
         if policy_file_path is None:
             policy_dir = env.get("POLICY_DIR", "/policy").rstrip("/")
             policy_file_path = f"{policy_dir}/npm-rules.yaml"
+        namespace = env.get("ARTEA_NAMESPACE", "artea")
 
         return cls(
             gitea_url=env.get("GITEA_URL", "http://gitea:3000").rstrip("/"),
             sync_token=env["POLICY_SYNC_TOKEN"],
             webhook_secret=env["POLICY_WEBHOOK_SECRET"],
-            policy_repo=env.get("POLICY_REPO", "artea/registry-policy"),
+            policy_repo=env.get("POLICY_REPO") or f"{namespace}/registry-policy",
             policy_file_path=policy_file_path,
             devpi_url=env.get("DEVPI_URL", "http://devpi:3141").rstrip("/"),
             devpi_root_password=env["DEVPI_ROOT_PASSWORD"],

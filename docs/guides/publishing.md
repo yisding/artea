@@ -31,33 +31,39 @@ developer machines that never publish).
 > scope string is required (API calls, the CLI below).
 
 A token alone is not sufficient to publish: the user must also be a member of
-the `artea` organization with write permission on its packages — normally via
-the `developers` team (see below). A `read:package` token — or a
+the configured namespace organization (`ARTEA_NAMESPACE`, default `artea`) with
+write permission on its packages — normally via the `developers` team (see
+below). A `read:package` token — or a
 `write:package` token of a user without org write access — gets
 `401 Unauthorized` from Gitea on publish.
 
 ## Org roles and governance
 
 Bootstrap creates the org teams; humans are never made org **Owners** (that
-team is reserved for `artea-admin`):
+team is reserved for `ARTEA_ADMIN_USER`, which defaults to
+`${ARTEA_NAMESPACE}-admin` when unset):
 
 | Team | Access | Who |
 |------|--------|-----|
 | `developers` | code + pulls + packages **write** (no admin), all org repos | everyone who publishes packages or edits policy (e.g. the demo user `dev1`) |
-| `policy-readers` | code **read** on `artea/registry-policy` only | service accounts; holds `svc-policy`, whose `read:repository` PAT is what policy-sync uses |
-| `Owners` | org admin | `artea-admin` only |
+| `policy-readers` | code **read** on `${ARTEA_NAMESPACE}/registry-policy` only | service accounts; holds `svc-policy`, whose `read:repository` PAT is what policy-sync uses |
+| `Owners` | org admin | configured admin only |
 
 Registry policy is enforceably PR-only: the default branch of
-`artea/registry-policy` carries branch protection — direct pushes are blocked
-for everyone except `artea-admin`, and merging requires at least one approval
-(e2e scenario S14). Developers change policy by pushing a branch and opening a
-pull request; see [ADR-0006](../adr/0006-policy-as-code.md).
+`${ARTEA_NAMESPACE}/registry-policy` carries branch protection — direct pushes
+are blocked for everyone except the configured admin, and merging requires at
+least one approval (e2e scenario S14). Developers change policy by pushing a
+branch and opening a pull request; see
+[ADR-0006](../adr/0006-policy-as-code.md).
 
 Tokens are sent as:
 
-- HTTP Basic, `username:token` (npm `_auth`, pip/netrc, twine, uv, poetry)
+- HTTP Basic, `username:token` (npm `_auth`, pip/netrc, twine, uv, poetry) —
+  this is the whole npm client contract now; Gitea accepts Basic with the PAT
+  as the password
 - `Authorization: token <PAT>` or `Authorization: Bearer <PAT>` on Gitea paths
-  (npm `_authToken` uses Bearer)
+  (the legacy npm `_authToken` form uses Bearer; still accepted, no longer
+  needed)
 
 ## Creating tokens
 
@@ -83,8 +89,8 @@ the `developers` team — never to Owners. Give read-only bots like policy-sync'
 
 | Action | Endpoint | Token scope |
 |--------|----------|-------------|
-| `npm publish` of `@artea/*` | `PUT http://localhost:8080/api/packages/artea/npm/` (routed by the npm client via `@artea:registry`) | `write:package` |
-| `twine upload` | `POST http://localhost:8080/api/packages/artea/pypi/` | `write:package` |
+| `npm publish` of `@${ARTEA_NAMESPACE}/*` | `PUT http://localhost:8080/npm/@${ARTEA_NAMESPACE}%2f<name>` — the gateway routes the scope server-side to Gitea's `/api/packages/${ARTEA_NAMESPACE}/npm/` | `write:package` |
+| `twine upload` | `POST http://localhost:8080/api/packages/${ARTEA_NAMESPACE}/pypi/` | `write:package` |
 | `npm install`, `pip install` (private or public) | `http://localhost:8080/...` (see client guides) | `read:package` |
 
 The pull-through caches are read-only: publishing unscoped npm packages or
@@ -94,8 +100,9 @@ writable surface.
 ## CI examples
 
 Store two secrets in your CI system: `ARTEA_USER` (the bot username) and
-`ARTEA_TOKEN` (its PAT). Examples use GitHub-Actions syntax; the shell steps
-are CI-agnostic.
+`ARTEA_TOKEN` (its PAT). If your deployment does not use the default namespace,
+also set a non-secret CI variable `ARTEA_NAMESPACE`. Examples use
+GitHub-Actions syntax; the shell steps are CI-agnostic.
 
 ### npm publish
 
@@ -110,12 +117,19 @@ jobs:
           node-version: 22
       - name: Configure registry
         run: |
+          AUTH=$(printf '%s:%s' "${{ secrets.ARTEA_USER }}" "${{ secrets.ARTEA_TOKEN }}" | base64 -w0)
           cat > .npmrc <<EOF
-          @artea:registry=http://localhost:8080/api/packages/artea/npm/
-          //localhost:8080/api/packages/artea/npm/:_authToken=${{ secrets.ARTEA_TOKEN }}
+          registry=http://localhost:8080/npm/
+          //localhost:8080/:_auth=${AUTH}
+          //localhost:8080/npm/:_auth=${AUTH}
+          always-auth=true
           EOF
       - run: npm publish
 ```
+
+(Two `_auth` lines, same value: the host-rooted one covers installs including
+Gitea-generated tarball URLs; the exact-registry one satisfies npm's local
+publish preflight — see [clients-npm.md](clients-npm.md).)
 
 ### npm install (consume only)
 
@@ -125,9 +139,7 @@ jobs:
           AUTH=$(printf '%s:%s' "${{ secrets.ARTEA_USER }}" "${{ secrets.ARTEA_TOKEN }}" | base64 -w0)
           cat > .npmrc <<EOF
           registry=http://localhost:8080/npm/
-          @artea:registry=http://localhost:8080/api/packages/artea/npm/
-          //localhost:8080/npm/:_auth=${AUTH}
-          //localhost:8080/api/packages/artea/npm/:_authToken=${{ secrets.ARTEA_TOKEN }}
+          //localhost:8080/:_auth=${AUTH}
           always-auth=true
           EOF
       - run: npm ci
@@ -148,7 +160,7 @@ jobs:
       - run: python -m build
       - name: Upload to Artea
         env:
-          TWINE_REPOSITORY_URL: http://localhost:8080/api/packages/artea/pypi/
+          TWINE_REPOSITORY_URL: http://localhost:8080/api/packages/${{ vars.ARTEA_NAMESPACE || 'artea' }}/pypi/
           TWINE_USERNAME: ${{ secrets.ARTEA_USER }}
           TWINE_PASSWORD: ${{ secrets.ARTEA_TOKEN }}
         run: twine upload dist/*

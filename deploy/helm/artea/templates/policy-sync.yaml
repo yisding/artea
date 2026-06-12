@@ -37,6 +37,8 @@ spec:
               value: {{ include "artea.giteaUrl" . | quote }}
             - name: DEVPI_URL
               value: {{ include "artea.devpiUrl" . | quote }}
+            - name: ARTEA_NAMESPACE
+              value: {{ include "artea.privateNamespace" . | quote }}
             - name: POLICY_SYNC_POLL_SECONDS
               value: {{ .Values.policySync.pollSeconds | quote }}
             - name: POLICY_SYNC_TOKEN

@@ -8,6 +8,20 @@ via fullnameOverride (artea-gitea, artea-verdaccio).
 {{- printf "artea-%s" . -}}
 {{- end -}}
 
+{{/* Configured private package namespace: Gitea org and npm scope. */}}
+{{- define "artea.privateNamespace" -}}
+{{- $ns := default "artea" .Values.global.privateNamespace -}}
+{{- if not (regexMatch "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$" $ns) -}}
+{{- fail "global.privateNamespace must be a lowercase npm/Gitea-safe name: [a-z0-9]([a-z0-9-]*[a-z0-9])?" -}}
+{{- end -}}
+{{- $ns -}}
+{{- end -}}
+
+{{/* Admin username defaults to <privateNamespace>-admin unless explicitly set. */}}
+{{- define "artea.adminUsername" -}}
+{{- default (printf "%s-admin" (include "artea.privateNamespace" .)) .Values.secrets.adminUsername -}}
+{{- end -}}
+
 {{/* Common labels; pass (dict "ctx" $ "component" "<name>") */}}
 {{- define "artea.labels" -}}
 app.kubernetes.io/name: artea
