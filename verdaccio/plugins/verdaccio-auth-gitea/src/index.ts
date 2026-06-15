@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import type { AuthCallback, IPluginAuth, Logger, PluginOptions } from '@verdaccio/types';
+import type { pluginUtils } from '@verdaccio/core';
+import type { Logger } from '@verdaccio/types';
 
 export interface AuthGiteaConfig {
   /** Base URL of the Gitea instance, e.g. http://gitea:3000 */
@@ -77,7 +78,7 @@ function backendUnavailable(): Error {
   return err;
 }
 
-export default class AuthGitea implements IPluginAuth<AuthGiteaConfig> {
+export default class AuthGitea implements Pick<pluginUtils.Auth<AuthGiteaConfig>, 'authenticate'> {
   public version?: string;
   private readonly giteaUrl: string;
   private readonly privateNamespace: string;
@@ -86,7 +87,7 @@ export default class AuthGitea implements IPluginAuth<AuthGiteaConfig> {
   // positive results only; keyed on sha256(PAT) so the credential is never stored
   private readonly cache = new Map<string, CacheEntry>();
 
-  public constructor(config: AuthGiteaConfig, options: PluginOptions<AuthGiteaConfig>) {
+  public constructor(config: AuthGiteaConfig, options: pluginUtils.PluginOptions) {
     this.giteaUrl = (config.gitea_url || process.env.GITEA_URL || DEFAULT_GITEA_URL).replace(/\/+$/, '');
     this.privateNamespace = namespaceFromConfig(config);
     this.cacheTtlMs = config.cache_ttl_ms ?? DEFAULT_CACHE_TTL_MS;
@@ -97,7 +98,7 @@ export default class AuthGitea implements IPluginAuth<AuthGiteaConfig> {
     );
   }
 
-  public authenticate(user: string, password: string, cb: AuthCallback): void {
+  public authenticate(user: string, password: string, cb: pluginUtils.AuthCallback): void {
     if (!user || !password) {
       cb(null, false);
       return;
@@ -123,7 +124,7 @@ export default class AuthGitea implements IPluginAuth<AuthGiteaConfig> {
       (err: Error) => {
         // err.message is built from status codes only — never from credentials
         this.logger.error({ user, msg: err.message }, 'auth-gitea: backend error for @{user}: @{msg}');
-        cb(backendUnavailable() as Parameters<AuthCallback>[0], false);
+        cb(backendUnavailable() as Parameters<pluginUtils.AuthCallback>[0], false);
       },
     );
   }

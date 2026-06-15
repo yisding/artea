@@ -17,9 +17,11 @@
     "test": "vitest run"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
-    "@verdaccio/types": "^10.8.0",
-    "typescript": "^5.7.0",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node": "^25.9.3",
+    "@verdaccio/core": "^8.1.1",
+    "@verdaccio/types": "^13.0.1",
+    "typescript": "^6.0.3",
     "vitest": "^4.0.0"
   }
 }

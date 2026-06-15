@@ -13,6 +13,6 @@
 # dependencies via relative symlinks into plugins/node_modules/.pnpm
 # (verdaccio/README.md), and COPY preserves those symlinks.
 # busybox (not scratch) so the init container has `sh`/`cp`/`chmod`.
-FROM busybox:1.37@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+FROM busybox:1.38@sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d
 
 COPY . /plugins/

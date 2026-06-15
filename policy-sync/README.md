@@ -37,7 +37,7 @@ Sync triggers: once at startup, on every valid Gitea push webhook, and a poll
 every 5 minutes as fallback. All triggers are coalesced into a single worker
 thread, so syncs never run concurrently.
 
-Python 3.12, stdlib only — no pip dependencies in the image at all.
+Python 3.14, stdlib only — no pip dependencies in the image at all.
 
 The container runs the service as the non-root `policysync` user (uid 8920).
 Its entrypoint starts as root only to repair the ownership of the shared
@@ -95,5 +95,5 @@ uid.
 
 ```sh
 cd policy-sync
-python3.12 -m pytest          # unit tests, no network, no docker, < 2s
+python3.14 -m pytest          # unit tests, no network, no docker, < 2s
 ```
