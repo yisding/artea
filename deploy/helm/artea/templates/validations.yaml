@@ -1,0 +1,35 @@
+{{- /*
+Validation-only template: renders no Kubernetes objects, but fails fast when a
+release/production value set would otherwise drift from fixed contracts.
+*/ -}}
+{{- /* Owned images are validated by the artea.image helper where each is emitted,
+EXCEPT verdaccio.pluginAssets.image, which the verdaccio subchart renders inline.
+Pre-validate the full set here through the shared helper so the digest contract
+holds even for images not emitted via artea.image. */ -}}
+{{- $owned := list .Values.devpi.image .Values.policySync.image .Values.bootstrap.image .Values.verdaccio.pluginAssets.image -}}
+{{- range $image := $owned -}}
+{{- include "artea.validateImageDigest" $image -}}
+{{- end -}}
+{{- $secretValues := dict "adminUsername" (include "artea.adminUsername" .) "adminPassword" .Values.secrets.adminPassword "dev1Password" .Values.secrets.dev1Password "devpiRootPassword" .Values.secrets.devpiRootPassword "webhookSecret" .Values.secrets.webhookSecret -}}
+{{- range $name, $value := $secretValues -}}
+{{- if empty $value -}}
+{{- fail (printf "secrets.%s must not be empty" $name) -}}
+{{- end -}}
+{{- if and (not $.Values.secrets.allowDevPlaceholders) (hasPrefix "change-me-" (toString $value)) -}}
+{{- fail "secrets.* still contain change-me placeholders; set real secrets or secrets.allowDevPlaceholders=true for a throwaway dev install" -}}
+{{- end -}}
+{{- end -}}
+{{- if and .Values.bootstrap.emitCredentials (not .Values.secrets.allowDevPlaceholders) -}}
+{{- fail "bootstrap.emitCredentials=true is only allowed with secrets.allowDevPlaceholders=true for throwaway dev/e2e installs" -}}
+{{- end -}}
+{{- if .Values.gateway.ingress.enabled -}}
+{{- if empty .Values.gateway.ingress.host -}}
+{{- fail "gateway.ingress.enabled=true requires gateway.ingress.host" -}}
+{{- end -}}
+{{- if not (regexMatch "^https://[^/]+.*$" .Values.global.baseUrl) -}}
+{{- fail "gateway.ingress.enabled=true requires global.baseUrl to start with https://" -}}
+{{- end -}}
+{{- if and (empty .Values.gateway.ingress.tls) (not .Values.gateway.ingress.externalTLS) -}}
+{{- fail "gateway.ingress.enabled=true requires gateway.ingress.tls or gateway.ingress.externalTLS=true" -}}
+{{- end -}}
+{{- end -}}

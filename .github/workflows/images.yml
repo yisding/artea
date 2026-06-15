@@ -1,9 +1,8 @@
 # Multi-arch (amd64+arm64) image builds pushed to
 # ghcr.io/<owner>/artea-{devpi,policy-sync,bootstrap,verdaccio-assets}
 # (docs/ARCHITECTURE.md "Kubernetes deployment"). Tags: latest on main,
-# sha-<full sha> always, semver on v* tags. The plan job builds only the
-# Dockerfiles that exist, so this stays green while parallel work
-# (scripts/Dockerfile.bootstrap, deploy/docker/verdaccio-assets) lands.
+# sha-<full sha> always, semver on v* tags. All four Artea-owned image
+# Dockerfiles are required for release builds.
 name: images
 
 on:
@@ -18,6 +17,7 @@ on:
       - 'policy/**'
       - 'verdaccio/plugins/**'
       - 'deploy/docker/**'
+      - '.dockerignore'
       - '.github/workflows/images.yml'
   workflow_dispatch:
 
@@ -30,43 +30,26 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  plan:
-    name: discover buildable images
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      matrix: ${{ steps.plan.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - id: plan
-        # bootstrap builds from the repo root (it needs scripts/ AND policy/);
-        # verdaccio-assets builds from the built plugin workspace — the image
-        # must carry /plugins/verdaccio-<name> for verdaccio's plugin loader
-        run: |
-          matrix='[]'
-          add() {
-            matrix=$(jq -c --arg n "$1" --arg c "$2" --arg f "$3" \
-              '. + [{name: $n, context: $c, dockerfile: $f}]' <<< "$matrix")
-          }
-          if [ -f devpi/Dockerfile ]; then add devpi devpi devpi/Dockerfile; fi
-          if [ -f policy-sync/Dockerfile ]; then add policy-sync policy-sync policy-sync/Dockerfile; fi
-          if [ -f scripts/Dockerfile.bootstrap ]; then add bootstrap . scripts/Dockerfile.bootstrap; fi
-          if [ -f deploy/docker/verdaccio-assets/Dockerfile ]; then
-            add verdaccio-assets verdaccio/plugins deploy/docker/verdaccio-assets/Dockerfile
-          fi
-          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
-          jq -r '"will build: " + ([.[].name] | join(", "))' <<< "$matrix"
-
   build:
     name: artea-${{ matrix.name }}
-    needs: plan
-    if: needs.plan.outputs.matrix != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+        include:
+          - name: devpi
+            context: devpi
+            dockerfile: devpi/Dockerfile
+          - name: policy-sync
+            context: policy-sync
+            dockerfile: policy-sync/Dockerfile
+          - name: bootstrap
+            context: .
+            dockerfile: scripts/Dockerfile.bootstrap
+          - name: verdaccio-assets
+            context: verdaccio/plugins
+            dockerfile: deploy/docker/verdaccio-assets/Dockerfile
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       # the assets image carries pre-built plugins (dist/ + node_modules);

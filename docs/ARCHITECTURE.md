@@ -61,12 +61,14 @@ One public entrypoint (the gateway). Everything else is internal.
 
 ### Gitea endpoint paths (verified against upstream source)
 
-- npm: `/api/packages/{owner}/npm/` (publish = PUT by npm client to the same registry URL)
-- pypi upload (twine): `POST /api/packages/{owner}/pypi/`
-- pypi simple index: `GET /api/packages/{owner}/pypi/simple/{name}` (PEP 503)
-- pypi files: `GET /api/packages/{owner}/pypi/files/{name}/{version}/{filename}`
-- auth check: `GET /api/v1/user` (accepts Basic `user:PAT` and `Authorization: token <PAT>`)
+- npm: `/api/packages/${ARTEA_NAMESPACE}/npm/` (publish = PUT by npm client to the same registry URL)
+- pypi upload (twine): `POST /api/packages/${ARTEA_NAMESPACE}/pypi/`
+- pypi simple index: `GET /api/packages/${ARTEA_NAMESPACE}/pypi/simple/{name}` (PEP 503)
+- pypi files: `GET /api/packages/${ARTEA_NAMESPACE}/pypi/files/{name}/{version}/{filename}`
+- user auth check: `GET /api/v1/user` (accepts Basic `user:PAT` and `Authorization: token <PAT>`)
 - orgs/teams for group mapping: `GET /api/v1/user/orgs`, `GET /api/v1/user/teams`
+- org membership guard: `GET /api/v1/orgs/{org}/members/{username}` (gateway
+  guard for package proxy paths; 2xx = authenticated org member)
 
 Gitea must run with `ROOT_URL = http://localhost:8080/` so generated tarball/file URLs
 resolve through the gateway.
@@ -113,8 +115,10 @@ and `docs/guides/clients-npm.md`).
   scoped location but whose raw form matches neither map pattern is rejected
   with 400 instead of falling through.
   (Double-encoded separators such as `%252f` also fail the raw-map match and
-  are rejected with 400.) No `auth_request` on this route — Gitea authenticates
-  itself. Publish and install use the same URL, same token (R6).
+  are rejected with 400.) The gateway guard runs before Gitea, so non-org users
+  and PATs without package scope fail before any Gitea package 404 can fall
+  through or obscure authorization. Gitea remains the final package-specific
+  permission check. Publish and install use the same URL, same token (R6).
 - Everything else under `/npm/` → Verdaccio: pull-through cache of npmjs.org with
   the policy filter applied (R2, R3). Verdaccio is **read-only**: publish is
   denied in its config — the only writable surface is Gitea.
@@ -147,13 +151,23 @@ devpi redirect that would skip the precedence check.
 
 - Publishes: `twine upload` → `https://host/api/packages/${ARTEA_NAMESPACE}/pypi/` (Gitea direct).
   **Artifacts/wheels live in Gitea**, never in devpi. devpi is a disposable cache.
-- devpi file URLs (`/root/...`) are routed by the gateway to devpi. The Artea
-  devpi policy plugin guards public mirror files (`root/pypi/+f/...` and
-  `root/pypi/+e/...`) so direct URLs cannot bypass an active upstream age
-  policy. Gitea file URLs (`/api/packages/...`) route to Gitea.
+- Current devpi file URLs (`/root/pypi/+(f|e)/...`) are routed by the gateway
+  to devpi only after an internal Artea devpi policy endpoint confirms the
+  mirror file is still allowed by the current constrained-index policy; stale
+  file URLs for newly blocked versions get 403 without nginx buffering and
+  scanning large simple pages. Gitea package routes are limited at the gateway to
+  `/api/packages/${ARTEA_NAMESPACE}/npm/` and
+  `/api/packages/${ARTEA_NAMESPACE}/pypi/`; those direct package routes use the
+  same gateway org/package-scope guard before Gitea's package-specific
+  read/write checks. Other owners and non-v1 package formats get 404. The
+  Artea devpi policy plugin also guards direct public mirror files when age
+  verification is required.
 - devpi has no auth of its own and is not exposed; the gateway enforces auth on all
-  devpi-bound paths via nginx `auth_request` subrequests to Gitea `/api/v1/user`,
-  forwarding the client's Authorization header (R1).
+  devpi-bound paths via nginx `auth_request`/njs subrequests to Gitea's user API,
+  `${ARTEA_NAMESPACE}` org membership check, and package-scope probe, forwarding the client's
+  Authorization header (R1). Client-reachable devpi paths are limited to
+  file/external-link routes generated from constrained simple pages; raw
+  `/root/*/+simple/` browsing is not exposed.
 
 ## Auth model
 
@@ -163,13 +177,19 @@ devpi redirect that would skip the precedence check.
   auth on Gitea paths). PATs are created in Gitea, currently non-expiring (satisfies
   R5; an expiry patch is a planned v2 fork patch), scoped `read:package` or
   `write:package` (Gitea's actual scope strings are singular; write implies read →
-  R6). PATs must additionally carry `read:user` — the gateway's `auth_request`
-  guard calls `GET /api/v1/user`, which requires it — and `read:organization` so
-  Verdaccio's org→group mapping works.
+  R6). PATs must additionally carry `read:user` for Verdaccio's user validation and
+  the gateway's credential-to-login lookup, and `read:organization` for the
+  gateway's org-membership guard plus Verdaccio's configured namespace
+  org/team→group mapping.
+  The gateway also probes Gitea's package-management API
+  (`GET /api/v1/packages/${ARTEA_NAMESPACE}/?type=pypi&limit=1`) so package
+  proxy and direct package API routes fail closed for PATs missing package
+  scope without relying on "package not found" responses.
 - **Verdaccio**: our auth plugin validates each request's Basic credential against
-  Gitea `/api/v1/user`, maps Gitea org/team membership to Verdaccio groups, caches
-  positive results for 30s (matching the gateway's auth_request cache, so PAT
-  revocation takes effect comfortably within the 60s budget of S12).
+  Gitea `/api/v1/user`, maps configured namespace org/team membership to
+  Verdaccio groups, caches positive results for 30s (matching the gateway's
+  auth_request cache, so PAT revocation takes effect comfortably within the 60s
+  budget of S12).
 - **devpi**: no plugin needed — the gateway's `auth_request` guard covers it.
 - **Anonymous access**: none, anywhere. The gateway's `auth_request` guard covers
   Verdaccio-bound `/npm/` paths as well as the devpi paths, so Verdaccio's service
@@ -292,9 +312,11 @@ shape. R7 extends to deployment artifacts: **reuse official upstream charts**.
 - **State**: gitea-data PVC is the only store of record; devpi/verdaccio cache PVCs
   are safe to delete (the fail-closed seed makes cache loss benign). Default
   `replicas: 1` everywhere except the stateless gateway.
-- **Images**: `ghcr.io/yisding/artea-{devpi,policy-sync,bootstrap,verdaccio-assets}`,
-  digest-pinned in values; CI builds/pushes them. Locally, colima's docker-runtime
-  k3s sees locally-built images directly.
+- **Images**: `ghcr.io/yisding/artea-{devpi,policy-sync,bootstrap,verdaccio-assets}`.
+  Production release values digest-pin them; CI builds/pushes both tags and
+  digests. Local dev values may use locally-built `:local` tags with
+  `pullPolicy: Never` because colima's docker-runtime k3s sees those images
+  directly.
 - **Local dev contract**: `colima start --kubernetes` (k3s), then
   `kubectl port-forward svc/<gateway> 8080:80` — the e2e suite only knows BASE_URL,
   so S1–S17 run unchanged against compose or K8s.

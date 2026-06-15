@@ -152,7 +152,7 @@ describe('verdaccio-filter-artea', () => {
       expect(after.versions).toEqual({});
     });
 
-    it('skips rules with invalid semver ranges instead of failing the load', async () => {
+    it('fails closed when a rule has an invalid semver range', async () => {
       const file = tmpPolicyPath();
       writePolicy(
         file,
@@ -160,9 +160,29 @@ describe('verdaccio-filter-artea', () => {
       );
       const plugin = makePlugin(file);
 
-      const lodash = packument('lodash', ['1.0.0']);
-      expect(await plugin.filter_metadata(lodash)).toBe(lodash); // bad rule dropped
-      expect((await plugin.filter_metadata(packument('left-pad', ['1.0.0']))).versions).toEqual({}); // good rule kept
+      expect((await plugin.filter_metadata(packument('lodash', ['1.0.0']))).versions).toEqual({});
+      expect((await plugin.filter_metadata(packument('left-pad', ['1.0.0']))).versions).toEqual({});
+      const result = runMiddleware(plugin, '/left-pad/-/left-pad-1.0.0.tgz');
+      expect(result.status).toBe(503);
+      expect(result.body!.error).toContain('policy unavailable');
+    });
+
+    it('fails closed when a scope entry is malformed', async () => {
+      const file = tmpPolicyPath();
+      writePolicy(file, 'blocked:\n  scopes:\n    - 123\n');
+      const plugin = makePlugin(file);
+
+      expect((await plugin.filter_metadata(packument('left-pad', ['1.0.0']))).versions).toEqual({});
+      expect(runMiddleware(plugin, '/left-pad/-/left-pad-1.0.0.tgz').status).toBe(503);
+    });
+
+    it('fails closed when a package rule is missing its name', async () => {
+      const file = tmpPolicyPath();
+      writePolicy(file, 'blocked:\n  packages:\n    - nam: left-pad\n');
+      const plugin = makePlugin(file);
+
+      expect((await plugin.filter_metadata(packument('left-pad', ['1.0.0']))).versions).toEqual({});
+      expect(runMiddleware(plugin, '/left-pad/-/left-pad-1.0.0.tgz').status).toBe(503);
     });
   });
 

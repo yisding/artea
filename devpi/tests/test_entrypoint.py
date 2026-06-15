@@ -38,7 +38,7 @@ with open(marker, "w") as f:
 # state survives container "restarts" within a test
 FAKE_SERVER = """\
 #!/usr/bin/env python3
-import os, sys
+import json, os, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 args = sys.argv[1:]
 with open(os.environ["FAKE_LOG"], "a") as f:
@@ -61,7 +61,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/root/constrained"):
             self._log("GET /root/constrained")
             if os.path.exists(marker):
-                self._reply(200, '{"result": {"type": "constrained", "bases": ["root/pypi"]}}')
+                bases = ["wrong/base"] if os.environ.get("FAKE_BAD_BASES") else ["root/pypi"]
+                self._reply(200, '{"result": {"type": "constrained", "bases": %s}}' % json.dumps(bases))
             else:
                 self._reply(404, '{}')
         else:  # /+status readiness probe etc.
@@ -165,6 +166,14 @@ def test_index_recreated_if_missing(env):
     assert res.returncode == 0, res.stderr
     creates = [c for c in calls(env) if c.startswith("PUT /root/constrained")]
     assert len(creates) == 2
+
+
+def test_existing_index_requires_root_pypi_base(env):
+    assert run_entrypoint(env).returncode == 0
+    env["FAKE_BAD_BASES"] = "1"
+    res = run_entrypoint(env)
+    assert res.returncode != 0
+    assert "expected root/pypi" in res.stderr
 
 
 def test_requires_root_password(env):

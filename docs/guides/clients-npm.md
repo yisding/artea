@@ -22,16 +22,17 @@ anonymous access anywhere.
    manually created account or Okta SSO if configured; see [okta.md](okta.md).
 2. Avatar menu → **Settings** → **Applications** (`/user/settings/applications`).
 3. Under *Manage Access Tokens*: enter a token name, expand **Select permissions**,
-   set **user** to **Read** (`read:user`), set **organization** to **Read**
-   (`read:organization`), and set **package** to:
-   - **Read** (`read:package`) — install only
-   - **Read and Write** (`write:package`) — install *and* publish
+   and set these permissions:
+   - **user**: **Read** (`read:user`), required by the gateway auth guard
+   - **organization**: **Read** (`read:organization`), required for Verdaccio
+     org/group mapping
+   - **package**: **Read** (`read:package`) for install-only tokens, or
+     **Read and Write** (`write:package`) for install-and-publish tokens
 4. Click **Generate Token** and copy it immediately — it is shown only once.
 
-One token is enough for everything (install, publish, npm, pip, twine). The
-`read:user` scope lets the gateway validate the token, and `read:organization`
-lets Verdaccio map org membership. See [publishing.md](publishing.md) for the
-scope model.
+One token is enough for everything (install, publish, npm, pip, twine), but it
+must include `read:user`, `read:organization`, and either `read:package` or
+`write:package`. See [publishing.md](publishing.md) for the scope model.
 
 ## 2. Configure npm — the `.npmrc`
 
@@ -172,8 +173,8 @@ unsafeHttpWhitelist:
 
 | Symptom | Likely cause |
 |---------|--------------|
-| `401` on any install | Missing/expired token, `_auth` not base64-encoded, or credentials line doesn't match the registry URL prefix |
-| `401` on publish | Token is `read:package` only, or user lacks write permission in the configured namespace org |
+| `401` on any install | Missing/expired token, missing `read:user` / `read:organization`, `_auth` not base64-encoded, or credentials line doesn't match the registry URL prefix |
+| `401` on publish | Token is `read:package` only, missing the supporting scopes, or user lacks write permission in the configured namespace org |
 | `ENEEDAUTH` on publish, no request sent | The `//localhost:8080/npm/:_auth` line is missing — npm's publish preflight checks only the exact registry nerf-dart, never the host-rooted line |
 | Publish of an unscoped package rejected | Expected: the cache is read-only; only `@${ARTEA_NAMESPACE}/*` (→ Gitea) is publishable |
 | `404` for `@${ARTEA_NAMESPACE}/*` | The package or version is not published — the gateway routes the scope server-side, so a missing client scope line is no longer a cause (legacy scope registry configs also still work) |

@@ -21,6 +21,7 @@ For a guided first deployment and first package publish, start with
 
 ```sh
 cp .env.example .env   # change every placeholder secret for non-throwaway use
+make plugins           # build the Verdaccio plugins (mounted, gitignored dist/)
 make up                # docker compose up (also generates gitea/secrets/)
 make bootstrap         # create admin, org, tokens, policy repo (idempotent)
 make smoke             # fast gateway/client sanity checks
@@ -32,8 +33,10 @@ is the only exposed service at `http://localhost:8080`; Gitea, Verdaccio,
 devpi and policy-sync stay internal.
 
 For production-style Kubernetes installs, use the Helm guide:
-[Kubernetes](docs/guides/kubernetes.md). Replace all `.env` / Helm placeholder
-secrets before first use; the dev defaults are for local smoke tests only.
+[Kubernetes](docs/guides/kubernetes.md). Expose only the gateway and keep
+Gitea, Verdaccio, devpi and policy-sync internal. Replace all `.env` / Helm
+placeholder secrets before first use; the dev defaults are for local smoke
+tests only.
 
 Client setup:
 [npm/pnpm/yarn](docs/guides/clients-npm.md),

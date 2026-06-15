@@ -11,6 +11,8 @@
 #   BASE_URL          public gateway URL (beats the recorded GATEWAY_URL)
 #   CREDENTIALS_FILE  credentials path (default e2e/tmp/credentials.env)
 #   RUNTIME           compose (default) | k8s — docker compose vs kubectl
+#   E2E_SCENARIOS     optional comma/space list of prerequisite-aware scenario
+#                     ids to run (for example: S1,S2,S15)
 # `make k8s-e2e` (scripts/k8s-e2e.sh) wires all of this up for a cluster.
 #
 # Re-runnable: package versions are unique per run, fixed-version fixtures
@@ -81,12 +83,14 @@ SHADOW_NAME="tinynetrc" # real PyPI package, published privately as 0.0.1 in S9
 SHADOW_VERSION="0.0.1"
 
 RO_TOKEN_NAME="e2e-ro-${RUN_ID}"
+NO_PACKAGE_TOKEN_NAME="e2e-no-package-${RUN_ID}"
 REVOKE_TOKEN_NAME="e2e-revoke-${RUN_ID}"
 S14_TOKEN_NAME="e2e-s14-${RUN_ID}"
 
 NPMRC="${WORK}/npmrc"
 NPM_CACHE="${WORK}/npm-cache"
 VENV="${ROOT}/e2e/tmp/venv"
+VENV_PYTHON_STAMP="${VENV}/.artea-e2e-python"
 
 # the seed file ends with an empty 'blocked:' mapping; appending would be
 # invalid YAML, so S5/S13 replace the whole file (each scenario reverts it)
@@ -103,6 +107,8 @@ CONSTRAINTS_DIRTY=0
 POLICY_FILE_REMOVED=0 # S15/compose: /policy/npm-rules.yaml deleted in the live volume
 POLICY_SYNC_SCALED=0  # S15/k8s: policy-sync scaled to 0 replicas
 DEVPI_WIPED=0         # S15: devpi cache wiped, constraints not yet re-synced
+E2E_SCENARIOS="${E2E_SCENARIOS:-}"
+ALL_SCENARIOS="S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14 S15 S16 S17"
 
 # ---- cleanup (idempotent, tolerates partial runs) ---------------------------------
 cleanup() {
@@ -120,6 +126,7 @@ cleanup() {
   delete_pkg_version pypi "${PY_NAME}" "${PY_RO_VERSION}" >/dev/null
   delete_pkg_version pypi "${SHADOW_NAME}" "${SHADOW_VERSION}" >/dev/null
   delete_dev1_token "${RO_TOKEN_NAME}" >/dev/null
+  delete_dev1_token "${NO_PACKAGE_TOKEN_NAME}" >/dev/null
   delete_dev1_token "${REVOKE_TOKEN_NAME}" >/dev/null
   delete_dev1_token "${S14_TOKEN_NAME}" >/dev/null
   # S15 partial-failure recovery: put the policy source back and make sure
@@ -156,10 +163,16 @@ ORIG_CONSTRAINTS=$(get_policy_file pypi-constraints.txt) || die "cannot read pyp
 write_npmrc "${NPMRC}" "${DEV1_TOKEN}"
 mkdir -p "${NPM_CACHE}"
 
-if [ ! -f "${VENV}/.artea-e2e-ready" ]; then
+CURRENT_PYTHON=$(python3 -c 'import os, sys; print(os.path.realpath(sys.executable))') \
+  || die "cannot resolve python3 path"
+if [ ! -x "${VENV}/bin/python" ] \
+  || [ ! -f "${VENV}/.artea-e2e-ready" ] \
+  || [ "$(cat "${VENV_PYTHON_STAMP}" 2>/dev/null || true)" != "${CURRENT_PYTHON}" ]; then
   log "creating python venv with build/twine (one-time, network)"
+  rm -rf "${VENV}"
   python3 -m venv "${VENV}" || die "venv creation failed"
   pip_env "${VENV}/bin/pip" install -q -U pip setuptools wheel build twine || die "venv tool install failed"
+  printf '%s\n' "${CURRENT_PYTHON}" > "${VENV_PYTHON_STAMP}"
   touch "${VENV}/.artea-e2e-ready"
 fi
 
@@ -177,6 +190,7 @@ npm_fresh() { # npm with a throwaway cache: defeats packument 304-staleness
 # ---- scenario harness ----------------------------------------------------------------
 RESULTS=""
 FAILED=0
+SELECTED_SCENARIOS=0
 
 scenario() { # <id> <description> <function>
   local id=$1 desc=$2 fn=$3 t0 t1 status
@@ -194,6 +208,35 @@ scenario() { # <id> <description> <function>
     sed 's/^/     | /' "$logf" | tail -25
   fi
   RESULTS="${RESULTS}${id} ${status} ${desc}"$'\n'
+}
+
+scenario_selected() { # <id>
+  local id=$1 requested
+  [ -z "${E2E_SCENARIOS}" ] && return 0
+  requested=" ${E2E_SCENARIOS//,/ } "
+  case "$requested" in
+    *" ${id} "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+run_scenario() { # <id> <description> <function>
+  local id=$1 desc=$2 fn=$3
+  if scenario_selected "$id"; then
+    SELECTED_SCENARIOS=$((SELECTED_SCENARIOS + 1))
+    scenario "$id" "$desc" "$fn"
+  fi
+}
+
+validate_scenario_selection() {
+  local token requested=" ${E2E_SCENARIOS//,/ } " valid=" ${ALL_SCENARIOS} "
+  [ -z "${E2E_SCENARIOS}" ] && return 0
+  for token in $requested; do
+    case "$valid" in
+      *" ${token} "*) ;;
+      *) die "unknown E2E_SCENARIOS id: ${token} (valid: ${ALL_SCENARIOS})" ;;
+    esac
+  done
 }
 
 # ---- S1: bootstrap state ----------------------------------------------------------------
@@ -378,11 +421,28 @@ urllib3_v2_visible() {
 }
 
 s10_pypi_policy_constraint() {
-  local out line wheel
+  local out line wheel code body blocked_file_path
+  body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/urllib3/") \
+    || { echo "pre-policy urllib3 simple fetch failed"; return 1; }
+  blocked_file_path=$(echo "$body" \
+    | grep -Eo 'href="[^"]*urllib3-2[^"]*\.(whl|tar\.gz|zip)[^"]*"' \
+    | head -1 \
+    | sed -E 's/^href="//; s/"$//; s#^https?://[^/]+##; s/#.*$//')
+  [ -n "$blocked_file_path" ] \
+    || { echo "could not find a urllib3 2.x file link before applying constraints"; return 1; }
   CONSTRAINTS_DIRTY=1
   put_policy_file pypi-constraints.txt "${ORIG_CONSTRAINTS}"$'\n'"urllib3<2" \
     "test(e2e): S10 constrain urllib3<2" || return 1
   wait_for 45 2 "urllib3 2.x filtered from simple index" urllib3_v2_hidden || return 1
+  for path in "/root/pypi/+simple/urllib3/" "/root/constrained/+simple/urllib3/"; do
+    code=$(http_code -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}${path}")
+    [ "$code" = 404 ] || { echo "direct devpi route ${path} got HTTP ${code}, expected 404"; return 1; }
+  done
+  echo "direct devpi simple routes are not reachable through the gateway"
+  code=$(http_code -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}${blocked_file_path}")
+  [ "$code" = 403 ] \
+    || { echo "blocked direct devpi file ${blocked_file_path} got HTTP ${code}, expected 403"; return 1; }
+  echo "direct devpi file URLs obey current PyPI constraints"
   out=$(pip_e2e index versions urllib3 --index-url "${INDEX_URL}" 2>&1) \
     || { echo "pip index versions failed: ${out}"; return 1; }
   line=$(echo "$out" | grep '^Available versions:') || { echo "no versions line"; return 1; }
@@ -405,7 +465,7 @@ s10_pypi_policy_constraint() {
 
 # ---- S11: one PAT everywhere; read:package can pull but not publish (401) ---------------------
 s11_token_scopes() {
-  local ro_token out code proj="${WORK}/proj-s11"
+  local ro_token no_package_token out code proj="${WORK}/proj-s11"
   # dev1's single write:package PAT already drove S2-S10 (publish+install, npm+pypi)
   ro_token=$(mint_dev1_token "${RO_TOKEN_NAME}" '["read:package","read:user","read:organization"]') \
     || { echo "minting read-only token failed"; return 1; }
@@ -442,7 +502,23 @@ s11_token_scopes() {
   pkg_version_exists pypi "${PY_NAME}" "${PY_RO_VERSION}" && { echo "package was created anyway"; return 1; }
   echo "twine upload with read-only token rejected with 401"
 
+  no_package_token=$(mint_dev1_token "${NO_PACKAGE_TOKEN_NAME}" '["read:user","read:organization"]') \
+    || { echo "minting no-package-scope token failed"; return 1; }
+  for url in \
+    "${GATEWAY_URL}/npm/left-pad" \
+    "${GATEWAY_URL}/npm/${NPM_NAME_ENC}" \
+    "${GATEWAY_URL}/pypi/simple/six/" \
+    "${GATEWAY_URL}/api/packages/${ARTEA_NAMESPACE}/pypi/simple/${PY_NAME}/"
+  do
+    code=$(http_code -u "dev1:${no_package_token}" "$url")
+    [ "$code" = 403 ] || { echo "no-package-scope token got HTTP ${code} for ${url}, expected 403"; return 1; }
+  done
+  code=$(http_code -u "dev1:${no_package_token}" "${GATEWAY_URL}/api/v1/packages/${ARTEA_NAMESPACE}/?type=pypi&limit=1")
+  [ "$code" = 403 ] || { echo "Gitea package-management probe with no package scope got HTTP ${code}, expected 403"; return 1; }
+  echo "token with read:user/read:organization but no package scope is rejected before package proxies"
+
   delete_dev1_token "${RO_TOKEN_NAME}"
+  delete_dev1_token "${NO_PACKAGE_TOKEN_NAME}"
 }
 
 # ---- S12: PAT revocation takes effect within 60s ----------------------------------------------
@@ -511,16 +587,19 @@ s13_tarball_enforcement() {
 
 # ---- S14: branch protection on registry-policy@main (governance) ------------------------------
 s14_branch_protection() {
-  local token clone="${WORK}/s14-policy-clone" out code sha b64
+  local token auth_header clone="${WORK}/s14-policy-clone" out code sha b64
   token=$(mint_dev1_token "${S14_TOKEN_NAME}" '["write:repository","read:user"]') \
     || { echo "minting dev1 repo-scoped token failed"; return 1; }
+  auth_header=$(printf 'dev1:%s' "$token" | base64 | tr -d '\n')
 
   # a real git push to main as dev1 must hit the protected-branch pre-receive hook
-  git clone -q "http://dev1:${token}@${GATEWAY_HOSTPORT}/${POLICY_REPO}.git" "$clone" \
+  git -c "http.extraHeader=Authorization: Basic ${auth_header}" \
+    clone -q "http://${GATEWAY_HOSTPORT}/${POLICY_REPO}.git" "$clone" \
     || { echo "git clone as dev1 failed (developers team should have code read)"; return 1; }
   (cd "$clone" && echo "# e2e S14 direct-push probe" >> npm-rules.yaml \
     && git -c user.email=dev1@localhost -c user.name=dev1 commit -aqm "test(e2e): S14 probe") || return 1
-  if out=$(git -C "$clone" push origin HEAD:main 2>&1); then
+  if out=$(git -C "$clone" -c "http.extraHeader=Authorization: Basic ${auth_header}" \
+    push origin HEAD:main 2>&1); then
     echo "direct push to main as dev1 unexpectedly succeeded"; echo "$out"; return 1
   fi
   grep -qi 'protected branch' <<<"$out" \
@@ -563,9 +642,13 @@ npm_recovered() {
     | jq -e '.versions | length > 0' >/dev/null
 }
 six_blocked() { # fresh '*'-seeded mirror exposes no six files through the gateway
-  local body
-  body=$(curl -s -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/six/") || return 1
-  ! grep -q 'six-1\.' <<<"$body"
+  local body code
+  body=$(curl -s -w '\n%{http_code}' -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/six/") || return 1
+  code=${body##*$'\n'}
+  body=${body%$'\n'*}
+  [ "$code" = 404 ] && return 0
+  [ "$code" = 200 ] || return 1
+  ! echo "$body" | grep -q 'six-1\.'
 }
 six_served() {
   local body
@@ -743,34 +826,45 @@ s17_legacy_and_encoding() {
   [ "$code" = 404 ] || { echo "/npm/@${ARTEA_NAMESPACE}-evil%2fnope -> HTTP ${code}, expected 404 (Verdaccio miss)"; return 1; }
   echo "/npm/@${ARTEA_NAMESPACE}-evil%2fnope -> 404 from the Verdaccio path, not the Gitea route"
 
-  # e. the private-scope route has no auth_request guard; Gitea itself must demand auth
+  # e. the private-scope route is guarded before Gitea; unauthenticated callers
+  # get the gateway Basic challenge.
   code=$(http_code "${GATEWAY_URL}/npm/${NPM_NAME_ENC}")
   [ "$code" = 401 ] || { echo "anonymous /npm/${NPM_NAME_ENC} -> HTTP ${code}, expected 401"; return 1; }
   echo "anonymous /npm/${NPM_NAME_ENC} -> 401"
 }
 
 # ---- run ---------------------------------------------------------------------------------------
-scenario S1 "bootstrap state: stack healthy, org/repo/webhook/PATs present" s1_bootstrap
-scenario S2 "npm publish ${NPM_NAME}@${NPM_VERSION} -> Gitea" s2_npm_publish
-scenario S3 "npm install ${NPM_NAME} resolves from Gitea (gateway scope routing)" s3_npm_install_private
-scenario S4 "npm install left-pad via Verdaccio pull-through" s4_npm_install_public
-scenario S5 "policy push hides left-pad 1.3.0 from npm view" s5_npm_policy_block
-scenario S6 "twine upload ${PY_NAME} ${PY_VERSION} -> Gitea" s6_twine_upload
-scenario S7 "pip install ${PY_NAME} via the gateway index" s7_pip_install_private
-scenario S8 "pip install six via gateway -> devpi -> PyPI" s8_pip_install_public
-scenario S9 "private ${SHADOW_NAME} fully shadows the PyPI name" s9_precedence_shadowing
-scenario S10 "constraints push limits urllib3 to <2 via gateway" s10_pypi_policy_constraint
-scenario S11 "read:package PAT installs but gets 401 on publish" s11_token_scopes
-scenario S12 "revoked PAT stops installing within 60s" s12_revocation
-scenario S13 "blocked version's tarball GET -> 403; anonymous /npm/ -> 401" s13_tarball_enforcement
-scenario S14 "dev1 cannot push registry-policy@main; admin allowlist works" s14_branch_protection
-scenario S15 "fail-closed: missing npm policy / wiped devpi, then recovery" s15_fail_closed
-scenario S16 "non-canonical pypi spellings still resolve to the private package" s16_normalization
-scenario S17 "legacy scoped .npmrc still works; encoded private-scope paths route to Gitea" s17_legacy_and_encoding
+validate_scenario_selection
+
+run_scenario S1 "bootstrap state: stack healthy, org/repo/webhook/PATs present" s1_bootstrap
+run_scenario S2 "npm publish ${NPM_NAME}@${NPM_VERSION} -> Gitea" s2_npm_publish
+run_scenario S3 "npm install ${NPM_NAME} resolves from Gitea (gateway scope routing)" s3_npm_install_private
+run_scenario S4 "npm install left-pad via Verdaccio pull-through" s4_npm_install_public
+run_scenario S5 "policy push hides left-pad 1.3.0 from npm view" s5_npm_policy_block
+run_scenario S6 "twine upload ${PY_NAME} ${PY_VERSION} -> Gitea" s6_twine_upload
+run_scenario S7 "pip install ${PY_NAME} via the gateway index" s7_pip_install_private
+run_scenario S8 "pip install six via gateway -> devpi -> PyPI" s8_pip_install_public
+run_scenario S9 "private ${SHADOW_NAME} fully shadows the PyPI name" s9_precedence_shadowing
+run_scenario S10 "constraints push limits urllib3 to <2 via gateway" s10_pypi_policy_constraint
+run_scenario S11 "read:package PAT installs but gets 401 on publish" s11_token_scopes
+run_scenario S12 "revoked PAT stops installing within 60s" s12_revocation
+run_scenario S13 "blocked version's tarball GET -> 403; anonymous /npm/ -> 401" s13_tarball_enforcement
+run_scenario S14 "dev1 cannot push registry-policy@main; admin allowlist works" s14_branch_protection
+run_scenario S15 "fail-closed: missing npm policy / wiped devpi, then recovery" s15_fail_closed
+run_scenario S16 "non-canonical pypi spellings still resolve to the private package" s16_normalization
+run_scenario S17 "legacy scoped .npmrc still works; encoded private-scope paths route to Gitea" s17_legacy_and_encoding
+
+if [ "$SELECTED_SCENARIOS" -eq 0 ]; then
+  die "E2E_SCENARIOS selected no scenarios: ${E2E_SCENARIOS}"
+fi
 
 echo
 if [ "$FAILED" = 0 ]; then
-  log "all 17 scenarios passed"
+  if [ -z "${E2E_SCENARIOS}" ]; then
+    log "all 17 scenarios passed"
+  else
+    log "${SELECTED_SCENARIOS} selected scenario(s) passed: ${E2E_SCENARIOS}"
+  fi
 else
   log "FAILURES:"
   echo "${RESULTS}" | grep ' FAIL ' || true

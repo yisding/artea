@@ -49,8 +49,8 @@ convention:
   PyPI constraints and the shared upstream age gate. A 200 from Gitea means the
   public index is never consulted for that name.
 - Auth is uniform (R1): Verdaccio validates Basic credentials against Gitea
-  via a plugin; devpi-bound paths are guarded by nginx `auth_request`
-  subrequests to Gitea `/api/v1/user`.
+  via a plugin; devpi-bound paths are guarded by nginx `auth_request`/njs
+  subrequests to Gitea's org-membership and package APIs.
 
 ## Consequences
 

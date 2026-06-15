@@ -33,7 +33,7 @@ check-chart-copies: ## verify Helm chart file copies match their source files
 plugins: ## install + build the Verdaccio plugins (required before first up)
 	cd verdaccio/plugins && pnpm install --frozen-lockfile && pnpm build
 
-up: .env render-configs secrets ## build images and start the full stack, wait for health
+up: .env render-configs secrets plugins ## render configs, build plugins/images, start the full stack
 	$(COMPOSE) up -d --build --wait --wait-timeout 300
 
 down: ## stop the stack (volumes are preserved)
@@ -52,6 +52,7 @@ e2e: smoke ## scenario suite S1-S17 (requires up + bootstrap)
 	./e2e/run.sh
 
 k8s-deploy: ## helm install/upgrade the chart (bootstrap runs as a chart hook Job)
+	helm dependency build $(HELM_CHART)
 	helm upgrade --install $(HELM_RELEASE) $(HELM_CHART) \
 		--namespace $(K8S_NAMESPACE) --create-namespace \
 		$(if $(wildcard $(HELM_VALUES)),--values $(HELM_VALUES),) \

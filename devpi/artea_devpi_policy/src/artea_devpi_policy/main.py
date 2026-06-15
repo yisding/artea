@@ -25,7 +25,7 @@ from devpi_common.validation import normalize_name
 from packaging_legacy.version import LegacyVersion
 from packaging_legacy.version import parse as parse_version
 from pluggy import HookimplMarker
-from pyramid.httpexceptions import HTTPForbidden
+from pyramid.httpexceptions import HTTPBadRequest, HTTPForbidden, HTTPNoContent
 import pkg_resources
 
 server_hookimpl = HookimplMarker("devpiserver")
@@ -274,6 +274,27 @@ class ConstrainedStage:
                 continue
             yield True
 
+    def link_allowed(self, project: str, link_info) -> bool:
+        constraints = self.constraints
+        version_filter = constraints.get(project)
+        if version_filter is None:
+            if constraints.constrain_all:
+                return False
+            if self.min_upstream_age_seconds <= 0:
+                return True
+
+        include_legacy = version_filter is None or not len(version_filter)
+        version = self._link_version(project, link_info)
+        if version is None:
+            return False
+        if not self._version_matches_filter(version, version_filter, constraints, include_legacy):
+            return False
+        if self.min_upstream_age_seconds > 0:
+            metadata = self._project_metadata(project)
+            if not self._file_old_enough(metadata, filename_from_link(link_info)):
+                return False
+        return True
+
     def file_allowed(self, project: str, filename: str) -> bool:
         if self.min_upstream_age_seconds <= 0:
             return True
@@ -313,7 +334,8 @@ class ConstrainedStage:
                     continue
                 return "-".join(parts[index:])
             return None
-        if link_info.name != project:
+        link_project = getattr(link_info, "project", None) or getattr(link_info, "name", None)
+        if link_project is None or normalize_name(link_project) != project:
             return None
         return link_info.version
 
@@ -355,9 +377,36 @@ def file_age_tween_factory(handler, registry):
     return tween
 
 
+def pypi_file_allowed_view(request):
+    raw_path = request.params.get("path", "")
+    path = raw_path.lstrip("/")
+    if not path.startswith(PYPI_FILE_PREFIXES):
+        raise HTTPBadRequest("path must point at a public PyPI mirror file")
+
+    customizer = constrained_customizer(request.registry)
+    mirror = request.registry["xom"].model.getstage(PYPI_MIRROR_INDEX)
+    link = mirror.get_link_from_entrypath(path) if mirror is not None else None
+    if customizer is None or link is None:
+        raise HTTPForbidden("public PyPI file is not in the mirror index")
+
+    # The project is derived from devpi's own mirror metadata, never from the
+    # request: the gateway forwards only the file path, so the policy decision is
+    # made against the file's actual project (no fragile filename parsing in njs).
+    project = normalize_name(getattr(link, "project", "") or getattr(link, "name", ""))
+    if not project:
+        raise HTTPForbidden("public PyPI file requires age-verifiable mirror metadata")
+
+    if not customizer.link_allowed(project, link):
+        raise HTTPForbidden("public PyPI file is blocked by current constraints or upstream age policy")
+
+    return HTTPNoContent()
+
+
 @server_hookimpl
 def devpiserver_pyramid_configure(config, pyramid_config):
     pyramid_config.add_tween("artea_devpi_policy.main.file_age_tween_factory")
+    pyramid_config.add_route("artea_pypi_file_allowed", "/+artea/file-allowed")
+    pyramid_config.add_view(pypi_file_allowed_view, route_name="artea_pypi_file_allowed", request_method="GET")
 
 
 @server_hookimpl

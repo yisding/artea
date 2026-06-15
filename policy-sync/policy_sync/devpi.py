@@ -60,6 +60,10 @@ def _effective_lines(value) -> list[str] | None:
     return [s for s in (line.strip() for line in lines) if s and not s.startswith("#")]
 
 
+def _has_expected_base(value) -> bool:
+    return value == "root/pypi" or value == ["root/pypi"]
+
+
 def apply_constraints(cfg: Config, constraints_text: str | None, min_upstream_age: str) -> bool:
     """Ensure the index holds constraints_text and min_upstream_age.
 
@@ -70,6 +74,10 @@ def apply_constraints(cfg: Config, constraints_text: str | None, min_upstream_ag
     config = _request(urllib.request.Request(url, headers={"Accept": "application/json"})).get("result")
     if not isinstance(config, dict):
         raise DevpiError(f"GET {url}: response has no index config in .result")
+    if config.get("type") != "constrained":
+        raise DevpiError(f"GET {url}: index type is {config.get('type')!r}, expected 'constrained'")
+    if not _has_expected_base(config.get("bases")):
+        raise DevpiError(f"GET {url}: index bases are {config.get('bases')!r}, expected root/pypi")
 
     constraints_match = (
         constraints_text is None

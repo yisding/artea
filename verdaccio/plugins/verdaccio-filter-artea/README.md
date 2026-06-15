@@ -92,8 +92,10 @@ Semantics:
   parseable `time[version]` publish timestamp is treated as blocked.
 - Range matching uses `{ includePrerelease: true, loose: true }`, so `<2` also blocks
   `2.0.0-beta`-style prereleases of blocked ranges — a blocklist should over-block.
-- Entries that are malformed (missing `name`, invalid semver range, non-string scope)
-  are skipped with a warning; the rest of the file still applies.
+- Invalid `versions` semver ranges fail the whole policy load so the registry fails
+  closed instead of silently weakening the block policy.
+- Other malformed entries (missing `name`, non-string scope) are skipped with a
+  warning; the rest of the file still applies.
 - An empty file, or a file without `blocked`, is an empty policy.
 
 ## Reload behavior
@@ -115,9 +117,29 @@ serving everything unfiltered (e2e scenario S15):
   (It cannot 503: Verdaccio swallows errors thrown by filter plugins and would serve
   the packument unfiltered — stripping is the only reliable rejection.)
 
-The failed state clears automatically through the same mtime/stat reload: as soon as
-the file reappears or is fixed, the policy applies again — no restart. Load failures
-are logged once per transition (`error` level); rejected requests log at `warn`.
+When rejection kicks in differs per mode:
+
+- **File mode**: immediately, whenever the file is **missing or unparsable**
+  (invalid YAML, wrong structure, or invalid semver ranges). The failed state clears
+  automatically through the same mtime/stat reload: as soon as the file reappears or
+  is fixed, the policy applies again — no restart.
+- **URL mode**: transient failures are normal on a network, so the last
+  successfully fetched policy keeps serving (last-known-good, in memory) while
+  polls fail — whether the failure is a connection error, a non-2xx response, or an
+  unparsable body. Only when failures persist past `fail_grace_ms` (default 60s)
+  does the plugin fail closed — plus on **cold start**, when nothing has ever been
+  fetched (there is no known-good policy to serve). The first successful poll
+  recovers automatically.
+
+Load failures and the open/closed transitions are logged once per transition
+(`warn`/`error` level); rejected requests log at `warn`.
+
+### `fail_open: true` (escape hatch, not advised)
+
+Never rejects, in either mode: a missing policy source is treated as an empty
+policy (nothing blocked) and a broken update keeps the last good policy in effect
+indefinitely. Only use this if availability of public packages matters more than
+policy enforcement.
 
 ## Develop
 
