@@ -33,10 +33,11 @@ is the only exposed service at `http://localhost:8080`; Gitea, Verdaccio,
 devpi and policy-sync stay internal.
 
 For production-style Kubernetes installs, use the Helm guide:
-[Kubernetes](docs/guides/kubernetes.md). Expose only the gateway and keep
-Gitea, Verdaccio, devpi and policy-sync internal. Replace all `.env` / Helm
-placeholder secrets before first use; the dev defaults are for local smoke
-tests only.
+[Kubernetes](docs/guides/kubernetes.md), or the turnkey
+[AWS EKS](docs/guides/aws-eks.md) walkthrough (cluster + ALB + TLS in one pass).
+Expose only the gateway and keep Gitea, Verdaccio, devpi and policy-sync
+internal. Replace all `.env` / Helm placeholder secrets before first use; the
+dev defaults are for local smoke tests only.
 
 Client setup:
 [npm/pnpm/yarn](docs/guides/clients-npm.md),
