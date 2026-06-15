@@ -63,17 +63,17 @@ a digest is not (R7,
 
 | Image Dockerfile | Base to re-resolve |
 |------------------|--------------------|
-| `devpi/Dockerfile` | `python:3.12-slim` |
-| `policy-sync/Dockerfile` | `python:3.12-slim` |
-| `scripts/Dockerfile.bootstrap` | `python:3.12-slim` |
-| `deploy/docker/verdaccio-assets/Dockerfile` | `busybox:1.37` |
+| `devpi/Dockerfile` | `python:3.14-slim` |
+| `policy-sync/Dockerfile` | `python:3.14-slim` |
+| `scripts/Dockerfile.bootstrap` | `python:3.14-slim` |
+| `deploy/docker/verdaccio-assets/Dockerfile` | `busybox:1.38` |
 
 To bump:
 
 ```sh
-docker buildx imagetools inspect python:3.12-slim   # copy the "Digest:" line
+docker buildx imagetools inspect python:3.14-slim   # copy the "Digest:" line
 # update the matching FROM lines, for example:
-#   FROM python:3.12-slim@sha256:<new digest>
+#   FROM python:3.14-slim@sha256:<new digest>
 make up
 make e2e
 ```

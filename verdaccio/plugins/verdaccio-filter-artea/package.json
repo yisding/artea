@@ -18,14 +18,14 @@
   },
   "dependencies": {
     "js-yaml": "^4.1.0",
-    "semver": "^7.7.0"
+    "semver": "^7.8.4"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
-    "@types/node": "^22.10.0",
+    "@types/node": "^25.9.3",
     "@types/semver": "^7.5.8",
     "@verdaccio/types": "^10.8.0",
-    "typescript": "^5.7.0",
+    "typescript": "^6.0.3",
     "vitest": "^4.0.0"
   }
 }

@@ -17,9 +17,9 @@
     "test": "vitest run"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
+    "@types/node": "^25.9.3",
     "@verdaccio/types": "^10.8.0",
-    "typescript": "^5.7.0",
+    "typescript": "^6.0.3",
     "vitest": "^4.0.0"
   }
 }
