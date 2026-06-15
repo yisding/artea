@@ -106,7 +106,7 @@ http {
         # Location headers from dropping the published port.
         absolute_redirect off;
         # auth_request propagates only 401/403; other njs guard statuses become a
-        # local 500. Map those guard outages to the package-surface failure shape.
+        # local 500. Guarded locations map those outages to package-surface 503s.
         error_page 500 = @registry_unavailable;
 
         # Encoded separators in the direct Gitea package API prefix can otherwise
@@ -134,6 +134,7 @@ http {
             auth_request /_registry_auth;
             error_page 401 = @registry_unauthorized;
             error_page 403 = @registry_forbidden;
+            error_page 500 = @registry_unavailable;
             rewrite ^/npm/(.*)$ /$1 break;
             proxy_pass http://$verdaccio_upstream;
         }
@@ -169,6 +170,7 @@ http {
             auth_request /_registry_auth;
             error_page 401 = @registry_unauthorized;
             error_page 403 = @registry_forbidden;
+            error_page 500 = @registry_unavailable;
             if ($private_npm_uri = "") { return 400; }
             proxy_pass http://$gitea_upstream$private_npm_uri;
         }
@@ -183,6 +185,7 @@ http {
             auth_request /_registry_auth;
             error_page 401 = @registry_unauthorized;
             error_page 403 = @registry_forbidden;
+            error_page 500 = @registry_unavailable;
             rewrite ^ /root/constrained/+simple/ break;
             proxy_pass http://$devpi_upstream;
         }
@@ -202,6 +205,7 @@ http {
             error_page 404 = @public_pypi;
             error_page 401 = @registry_unauthorized;
             error_page 403 = @registry_forbidden;
+            error_page 500 = @registry_unavailable;
 
             rewrite ^ /api/packages/__ARTEA_NAMESPACE__/pypi/simple/$pypi_project/ break;
             proxy_pass http://$gitea_upstream;
@@ -231,6 +235,7 @@ http {
             auth_request /_artea_pypi_file_guard;
             error_page 401 = @registry_unauthorized;
             error_page 403 = @registry_forbidden;
+            error_page 500 = @registry_unavailable;
             proxy_pass http://$devpi_upstream;
         }
         location /root/ {
@@ -343,24 +348,28 @@ http {
             auth_request /_registry_auth;
             error_page 401 = @registry_unauthorized;
             error_page 403 = @registry_forbidden;
+            error_page 500 = @registry_unavailable;
             proxy_pass http://$gitea_upstream;
         }
         location = /api/packages/__ARTEA_NAMESPACE__/npm {
             auth_request /_registry_auth;
             error_page 401 = @registry_unauthorized;
             error_page 403 = @registry_forbidden;
+            error_page 500 = @registry_unavailable;
             proxy_pass http://$gitea_upstream;
         }
         location ^~ /api/packages/__ARTEA_NAMESPACE__/pypi/ {
             auth_request /_registry_auth;
             error_page 401 = @registry_unauthorized;
             error_page 403 = @registry_forbidden;
+            error_page 500 = @registry_unavailable;
             proxy_pass http://$gitea_upstream;
         }
         location = /api/packages/__ARTEA_NAMESPACE__/pypi {
             auth_request /_registry_auth;
             error_page 401 = @registry_unauthorized;
             error_page 403 = @registry_forbidden;
+            error_page 500 = @registry_unavailable;
             proxy_pass http://$gitea_upstream;
         }
         location ^~ /api/packages/ {

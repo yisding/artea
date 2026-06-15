@@ -31,6 +31,13 @@ class FakeLink:
         self.basename = filename
 
 
+class FakeELink:
+    def __init__(self, version, filename):
+        self.project = "six"
+        self.version = version
+        self.basename = filename
+
+
 class FakeRequest:
     def __init__(self, path_info, registry=None, params=None, matchdict=None):
         self.path_info = path_info
@@ -109,6 +116,7 @@ def test_link_allowed_applies_constraints_without_rendering_simple_page():
 
     assert customizer.link_allowed("six", FakeLink("1.17.0", "six-1.17.0-py2.py3-none-any.whl")) is True
     assert customizer.link_allowed("six", FakeLink("2.0.0", "six-2.0.0-py3-none-any.whl")) is False
+    assert customizer.link_allowed("six", FakeELink("1.17.0", "six-1.17.0-py2.py3-none-any.whl")) is True
 
 
 def test_file_allowed_endpoint_uses_current_constrained_policy():
@@ -122,10 +130,10 @@ def test_file_allowed_endpoint_uses_current_constrained_policy():
     class FakeMirrorStage:
         def get_link_from_entrypath(self, path):
             return {
-                "root/pypi/+f/472/six-1.17.0-py2.py3-none-any.whl": FakeLink(
+                "root/pypi/+f/472/six-1.17.0-py2.py3-none-any.whl": FakeELink(
                     "1.17.0", "six-1.17.0-py2.py3-none-any.whl"
                 ),
-                "root/pypi/+f/bad/six-2.0.0-py3-none-any.whl": FakeLink(
+                "root/pypi/+f/bad/six-2.0.0-py3-none-any.whl": FakeELink(
                     "2.0.0", "six-2.0.0-py3-none-any.whl"
                 ),
             }.get(path)
