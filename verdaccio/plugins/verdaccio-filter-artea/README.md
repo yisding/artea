@@ -134,13 +134,6 @@ When rejection kicks in differs per mode:
 Load failures and the open/closed transitions are logged once per transition
 (`warn`/`error` level); rejected requests log at `warn`.
 
-### `fail_open: true` (escape hatch, not advised)
-
-Never rejects, in either mode: a missing policy source is treated as an empty
-policy (nothing blocked) and a broken update keeps the last good policy in effect
-indefinitely. Only use this if availability of public packages matters more than
-policy enforcement.
-
 ## Develop
 
 ```sh
