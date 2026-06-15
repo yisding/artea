@@ -295,6 +295,11 @@ verdaccio:
       digest: ""
       requireDigest: true
       pullPolicy: IfNotPresent
+  # Custom keys consumed by the tpl'd configMap below. Defaults match the
+  # plugin's production behavior; CI shortens them for fail-closed tests.
+  arteaPolicy:
+    pollIntervalMs: 10000
+    failGraceMs: 60000
   extraInitContainers:
     - name: copy-plugins
       image: '{{ .Values.pluginAssets.image.repository }}{{ if .Values.pluginAssets.image.digest }}@{{ .Values.pluginAssets.image.digest }}{{ else }}:{{ .Values.pluginAssets.image.tag }}{{ end }}'
@@ -354,6 +359,8 @@ verdaccio:
       filter-artea:
         policy_url: http://artea-policy-sync:8920/policy/npm-rules.yaml
         upstream_policy_url: http://artea-policy-sync:8920/policy/upstream-policy.yaml
+        poll_interval_ms: {{ .Values.arteaPolicy.pollIntervalMs }}
+        fail_grace_ms: {{ .Values.arteaPolicy.failGraceMs }}
 
     uplinks:
       npmjs:
@@ -391,6 +398,8 @@ verdaccio:
       filter-artea:
         policy_url: http://artea-policy-sync:8920/policy/npm-rules.yaml
         upstream_policy_url: http://artea-policy-sync:8920/policy/upstream-policy.yaml
+        poll_interval_ms: {{ .Values.arteaPolicy.pollIntervalMs }}
+        fail_grace_ms: {{ .Values.arteaPolicy.failGraceMs }}
 
     server:
       keepAliveTimeout: 60
