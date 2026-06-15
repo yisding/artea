@@ -103,13 +103,16 @@ sys.exit(0 if ready else 1)
   done
 }
 
-# env-provided credentials win over .env (the k8s Job has no .env at all)
+# env-provided credentials win over .env (the k8s Job has no .env at all).
+# ARTEA_ALLOW_DEV_SECRETS is preserved here too: the dev-secret guard below must
+# be enforceable from the environment even though .env.example ships it as true.
 ENV_NAMESPACE="${ARTEA_NAMESPACE:-}"
 ENV_ADMIN_USER="${ARTEA_ADMIN_USER:-}"
 ENV_ADMIN_PW="${ARTEA_ADMIN_PASSWORD:-}"
 ENV_DEV1_PW="${DEV1_PASSWORD:-}"
 ENV_WEBHOOK_SECRET="${POLICY_WEBHOOK_SECRET:-}"
 ENV_POLICY_TOKEN="${POLICY_SYNC_TOKEN:-}"
+ENV_ALLOW_DEV_SECRETS="${ARTEA_ALLOW_DEV_SECRETS:-}"
 if [ -f .env ]; then
   set -a
   # shellcheck disable=SC1091
@@ -124,6 +127,7 @@ fi
 [ -n "${ENV_DEV1_PW}" ] && DEV1_PASSWORD="${ENV_DEV1_PW}"
 [ -n "${ENV_WEBHOOK_SECRET}" ] && POLICY_WEBHOOK_SECRET="${ENV_WEBHOOK_SECRET}"
 [ -n "${ENV_POLICY_TOKEN}" ] && POLICY_SYNC_TOKEN="${ENV_POLICY_TOKEN}"
+[ -n "${ENV_ALLOW_DEV_SECRETS}" ] && ARTEA_ALLOW_DEV_SECRETS="${ENV_ALLOW_DEV_SECRETS}"
 ARTEA_NAMESPACE="${ARTEA_NAMESPACE:-artea}"
 if ! [[ "${ARTEA_NAMESPACE}" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
   die "ARTEA_NAMESPACE must be a lowercase npm/Gitea-safe name: [a-z0-9]([a-z0-9-]*[a-z0-9])?"

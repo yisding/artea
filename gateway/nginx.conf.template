@@ -303,7 +303,11 @@ http {
             # This management API returns 200 with a possibly empty list for
             # package-scoped tokens; tokens without the package category fail
             # at Gitea's token-scope middleware.
-            proxy_buffering on;
+            proxy_buffering on;               # proxy_cache requires buffering
+            proxy_cache registry_auth;        # third auth leg: cache like the other two
+            proxy_cache_key "$http_authorization|scope";
+            proxy_cache_valid 200 30s;        # successes only; failures never cached
+            proxy_ignore_headers Cache-Control Expires Set-Cookie Vary;
         }
 
         location @registry_auth_forbidden {

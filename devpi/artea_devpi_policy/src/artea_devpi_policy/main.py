@@ -334,7 +334,7 @@ class ConstrainedStage:
                     continue
                 return "-".join(parts[index:])
             return None
-        link_project = getattr(link_info, "name", None) or getattr(link_info, "project", None)
+        link_project = getattr(link_info, "project", None) or getattr(link_info, "name", None)
         if link_project is None or normalize_name(link_project) != project:
             return None
         return link_info.version

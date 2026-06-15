@@ -194,7 +194,11 @@ export default class AuthGitea implements IPluginAuth<AuthGiteaConfig> {
         }
         for (const org of orgs) {
           const name = typeof org?.username === 'string' ? org.username : org?.name;
-          if (name === this.privateNamespace) {
+          // Gitea org names are case-insensitive; the gateway's /members/{login}
+          // guard resolves them case-insensitively too, so match the configured
+          // (lowercased) namespace case-insensitively to avoid rejecting a valid
+          // member whose org is stored with non-lowercase casing.
+          if (typeof name === 'string' && name.toLowerCase() === this.privateNamespace) {
             groups.push(this.privateNamespace);
           }
         }
