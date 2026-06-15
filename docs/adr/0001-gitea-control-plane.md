@@ -24,8 +24,8 @@ Gitea is the control plane and the single source of truth. All identity, all
 credentials (PATs), all authorization, all private artifacts, and the policy
 repo live in Gitea. Every other component (gateway, Verdaccio, devpi,
 policy-sync) is stateless or holds only disposable caches, and validates every
-credential against Gitea (`GET /api/v1/user`). Git-hosting features are hidden
-via configuration and template overlay, not removed.
+credential against Gitea APIs. Git-hosting features are hidden via configuration
+and template overlay, not removed.
 
 ## Consequences
 

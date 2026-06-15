@@ -10,6 +10,7 @@
 # port, and the three upstream host:port values (hostnames only resolve inside
 # docker compose). All routing/rewrite/auth logic is exercised unmodified.
 
+import base64
 import http.client
 import http.server
 import pathlib
@@ -25,8 +26,19 @@ CONF = pathlib.Path(__file__).resolve().parent.parent / "nginx.conf.template"
 NJS_DIR = CONF.parent / "njs"
 TEST_NAMESPACE = "acme"
 
-GOOD_AUTH = "Basic dXNlcjpnb29kLXBhdA=="  # user:good-pat
-BAD_AUTH = "Basic dXNlcjpyZXZva2Vk"  # user:revoked
+GOOD_PAT = "good-pat"
+
+
+def basic_auth(user, token):
+    encoded = base64.b64encode(f"{user}:{token}".encode()).decode()
+    return "Basic " + encoded
+
+
+GOOD_AUTH = basic_auth("user", GOOD_PAT)
+GOOD_TOKEN_AUTH = "Bearer " + GOOD_PAT
+BAD_AUTH = basic_auth("user", "revoked")
+NONMEMBER_AUTH = basic_auth("outsider", GOOD_PAT)
+NO_PACKAGE_AUTH = basic_auth("user", "no-package")
 
 # Where distros/images put nginx's dynamic modules; the conf's load_module path
 # is relative to the prefix (-p), so the test needs an absolute host path.
@@ -96,8 +108,29 @@ class UpstreamHandler(http.server.BaseHTTPRequestHandler):
         server.requests.append((self.path, auth))
         if server.tag == "gitea":
             if self.path == "/api/v1/user":
-                if auth == GOOD_AUTH:
+                if auth in (GOOD_AUTH, GOOD_TOKEN_AUTH, NO_PACKAGE_AUTH):
                     self._reply(200, '{"login":"user"}')
+                elif auth == NONMEMBER_AUTH:
+                    self._reply(200, '{"login":"outsider"}')
+                else:
+                    self._reply(401, "unauthorized")
+                return
+            if self.path.startswith(f"/api/v1/orgs/{TEST_NAMESPACE}/members/"):
+                if auth in (GOOD_AUTH, GOOD_TOKEN_AUTH, NO_PACKAGE_AUTH):
+                    if self.path == f"/api/v1/orgs/{TEST_NAMESPACE}/members/user":
+                        self._reply(204, "")
+                    else:
+                        self._reply(404, "not found")
+                elif auth == NONMEMBER_AUTH:
+                    self._reply(404, "not found")
+                else:
+                    self._reply(401, "unauthorized")
+                return
+            if self.path == f"/api/v1/packages/{TEST_NAMESPACE}/?type=pypi&limit=1":
+                if auth in (GOOD_AUTH, GOOD_TOKEN_AUTH):
+                    self._reply(200, "[]")
+                elif auth == NO_PACKAGE_AUTH:
+                    self._reply(403, "missing package scope")
                 else:
                     self._reply(401, "unauthorized")
                 return
@@ -106,6 +139,9 @@ class UpstreamHandler(http.server.BaseHTTPRequestHandler):
                 self._reply(200, "gitea-simple private-pkg")
                 return
             if self.path.startswith(f"/api/packages/{TEST_NAMESPACE}/pypi/simple/"):
+                if auth not in (GOOD_AUTH, GOOD_TOKEN_AUTH):
+                    self._reply(401, "unauthorized")
+                    return
                 self._reply(404, "package does not exist")
                 return
         if server.tag == "verdaccio":
@@ -114,6 +150,21 @@ class UpstreamHandler(http.server.BaseHTTPRequestHandler):
                 self._reply(403, "blocked by policy")
                 return
         if server.tag == "devpi":
+            if self.path == "/root/constrained/+simple/six/":
+                filler = "\n".join(f'<a href="#filler-{i}">filler</a>' for i in range(2000))
+                body = (
+                    filler
+                    + '\n<a href="http://localhost:8080/root/pypi/%2Bf/472/1f391ed90541f/'
+                    + 'six-1.0.0-py3-none-any.whl#sha256=abc">six</a>'
+                )
+                self._reply(200, body)
+                return
+            if self.path.startswith("/+artea/file-allowed/six?path="):
+                if "six-1.0.0-py3-none-any.whl" in self.path:
+                    self._reply(204, "")
+                else:
+                    self._reply(403, "blocked by constraints")
+                return
             # devpi should never need to redirect (the gateway sends canonical
             # names), but if it does, the gateway must map it back to /pypi/
             if self.path == "/root/constrained/+simple/redirector/":
@@ -223,9 +274,56 @@ class GatewayTest(unittest.TestCase):
     def test_catchall_to_gitea_preserves_raw_uri(self):
         # npm scoped paths use %2f; the gateway must not decode or re-encode them
         path = f"/api/packages/{TEST_NAMESPACE}/npm/@{TEST_NAMESPACE}%2fhello"
-        status, body, _ = self._raw("GET", path)
+        status, body, _ = self._raw("GET", path, auth=GOOD_TOKEN_AUTH)
         self.assertEqual(status, 200)
         self.assertEqual(body, f"gitea {path}")
+
+    def test_gitea_package_api_limited_to_artea_npm_and_pypi(self):
+        before = len(self.upstreams["gitea"].requests)
+        for path in (
+            "/api/packages/dev1/npm/left-pad",
+            "/api/packages/other-org/pypi/simple/six/",
+            f"/api/packages/{TEST_NAMESPACE}/rubygems/gems/foo",
+            f"/api/packages/{TEST_NAMESPACE}/container/v2/foo/manifests/latest",
+        ):
+            status, body, _ = self._raw("GET", path)
+            self.assertEqual((status, body), (404, "not found\n"), path)
+        self.assertEqual(len(self.upstreams["gitea"].requests), before)
+
+    def test_gitea_package_api_encoded_prefix_variants_hidden(self):
+        before = len(self.upstreams["gitea"].requests)
+        for path in (
+            f"/api%2fpackages/{TEST_NAMESPACE}/npm/@{TEST_NAMESPACE}%2fhello",
+            f"/api/packages%2f{TEST_NAMESPACE}/npm/@{TEST_NAMESPACE}%2fhello",
+            f"/api/packages/{TEST_NAMESPACE}%2fnpm/@{TEST_NAMESPACE}%2fhello",
+            f"/api/packages/{TEST_NAMESPACE}/npm%2f@{TEST_NAMESPACE}%2fhello",
+            f"/api/packages/{TEST_NAMESPACE}/pypi%2fsimple/six/",
+        ):
+            status, body, _ = self._raw("GET", path, auth=GOOD_TOKEN_AUTH)
+            self.assertEqual((status, body), (404, "not found\n"), path)
+        self.assertEqual(len(self.upstreams["gitea"].requests), before)
+
+    def test_gitea_package_api_requires_org_and_package_scope(self):
+        paths = (
+            f"/api/packages/{TEST_NAMESPACE}/npm/@{TEST_NAMESPACE}%2fhello",
+            f"/api/packages/{TEST_NAMESPACE}/pypi/files/six/1.0.0/six-1.0.0-py3-none-any.whl",
+        )
+        for path in paths:
+            before = len([p for p in self.seen("gitea") if p == path])
+            status, _, headers = self._raw("GET", path)
+            self.assertEqual(status, 401, path)
+            self.assertEqual(headers.get("WWW-Authenticate"), 'Basic realm="Artea"')
+            status, _, headers = self._raw("GET", path, auth=NONMEMBER_AUTH)
+            self.assertEqual(status, 403, path)
+            self.assertNotIn("WWW-Authenticate", headers)
+            status, _, headers = self._raw("GET", path, auth=NO_PACKAGE_AUTH)
+            self.assertEqual(status, 403, path)
+            self.assertNotIn("WWW-Authenticate", headers)
+            self.assertEqual(len([p for p in self.seen("gitea") if p == path]), before)
+
+            status, body, _ = self._raw("GET", path, auth=GOOD_TOKEN_AUTH)
+            self.assertEqual(status, 200, path)
+            self.assertEqual(body, f"gitea {path}")
 
     def test_npm_prefix_stripped_for_verdaccio(self):
         status, body, _ = self._raw("GET", "/npm/left-pad", auth=GOOD_AUTH)
@@ -250,6 +348,21 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(status, 401)
         self.assertIn("WWW-Authenticate", headers)
 
+    def test_npm_missing_package_scope_rejected(self):
+        before = len(self.upstreams["verdaccio"].requests)
+        status, body, headers = self._raw("GET", "/npm/left-pad", auth=NO_PACKAGE_AUTH)
+        self.assertEqual((status, body), (403, "forbidden\n"))
+        self.assertNotIn("WWW-Authenticate", headers)
+        self.assertEqual(len(self.upstreams["verdaccio"].requests), before)
+
+    def test_package_scope_probe_uses_gitea_management_api(self):
+        status, _, _ = self._raw("GET", "/npm/left-pad", auth=GOOD_AUTH)
+        self.assertEqual(status, 200)
+        self.assertIn(
+            (f"/api/v1/packages/{TEST_NAMESPACE}/?type=pypi&limit=1", GOOD_AUTH),
+            self.upstreams["gitea"].requests,
+        )
+
     def test_npm_upstream_403_passes_through(self):
         # Verdaccio's own 401/403 (policy tarball block, S13) must NOT be
         # re-mapped to the gateway's Basic challenge — only auth_request
@@ -265,17 +378,32 @@ class GatewayTest(unittest.TestCase):
 
     def test_npm_private_scope_to_gitea_raw_encoding_preserved(self):
         # gateway scope routing: the %2f/%40 encodings npm sends must reach
-        # Gitea byte-for-byte, and the route takes no auth_request — Gitea
-        # authenticates itself
-        users_before = [p for p in self.seen("gitea") if p == "/api/v1/user"]
+        # Gitea byte-for-byte after the gateway guard proves org/package scope.
         for raw in (f"/npm/@{TEST_NAMESPACE}%2fscoped-a", f"/npm/%40{TEST_NAMESPACE}%2Fscoped-a"):
             status, body, _ = self._raw("GET", raw, auth=GOOD_AUTH)
             self.assertEqual(status, 200, raw)
             self.assertEqual(body, f"gitea /api/packages/{TEST_NAMESPACE}/npm{raw[4:]}", raw)
-        users_after = [p for p in self.seen("gitea") if p == "/api/v1/user"]
-        self.assertEqual(len(users_after), len(users_before),
-                         "scoped route must not fire an auth_request")
         self.assertFalse([p for p in self.seen("verdaccio") if "scoped-a" in p])
+
+    def test_npm_private_scope_requires_org_and_package_scope(self):
+        path = f"/npm/@{TEST_NAMESPACE}%2fscoped-auth"
+        g_before = len([p for p in self.seen("gitea") if "scoped-auth" in p])
+        v_before = len([p for p in self.seen("verdaccio") if "scoped-auth" in p])
+
+        status, _, headers = self._raw("GET", path)
+        self.assertEqual(status, 401)
+        self.assertEqual(headers.get("WWW-Authenticate"), 'Basic realm="Artea"')
+
+        status, body, headers = self._raw("GET", path, auth=NONMEMBER_AUTH)
+        self.assertEqual((status, body), (403, "forbidden\n"))
+        self.assertNotIn("WWW-Authenticate", headers)
+
+        status, body, headers = self._raw("GET", path, auth=NO_PACKAGE_AUTH)
+        self.assertEqual((status, body), (403, "forbidden\n"))
+        self.assertNotIn("WWW-Authenticate", headers)
+
+        self.assertEqual(len([p for p in self.seen("gitea") if "scoped-auth" in p]), g_before)
+        self.assertEqual(len([p for p in self.seen("verdaccio") if "scoped-auth" in p]), v_before)
 
     def test_npm_private_scope_case_variants_to_gitea_never_verdaccio(self):
         # case variants must never reach Verdaccio (its private-scope deny is
@@ -342,6 +470,20 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(status, 401)
         self.assertIn("WWW-Authenticate", headers)
 
+    def test_pypi_non_org_member_rejected(self):
+        status, _, headers = self._raw("GET", "/pypi/simple/six/",
+                                       auth=NONMEMBER_AUTH)
+        self.assertEqual(status, 403)
+        self.assertNotIn("WWW-Authenticate", headers)
+
+    def test_pypi_missing_package_scope_rejected(self):
+        before = len(self.upstreams["devpi"].requests)
+        status, body, headers = self._raw("GET", "/pypi/simple/six/",
+                                          auth=NO_PACKAGE_AUTH)
+        self.assertEqual((status, body), (403, "forbidden\n"))
+        self.assertNotIn("WWW-Authenticate", headers)
+        self.assertEqual(len(self.upstreams["devpi"].requests), before)
+
     def test_pypi_private_served_from_gitea_only(self):
         status, body, _ = self._raw("GET", "/pypi/simple/private-pkg/", auth=GOOD_AUTH)
         self.assertEqual(status, 200)
@@ -352,7 +494,7 @@ class GatewayTest(unittest.TestCase):
     def test_pypi_404_falls_through_to_devpi_constrained_index(self):
         status, body, _ = self._raw("GET", "/pypi/simple/six/", auth=GOOD_AUTH)
         self.assertEqual(status, 200)
-        self.assertEqual(body, "devpi /root/constrained/+simple/six/")
+        self.assertIn("six-1.0.0-py3-none-any.whl", body)
         # Gitea really was asked first, under the org pypi endpoint
         self.assertIn(f"/api/packages/{TEST_NAMESPACE}/pypi/simple/six/", self.seen("gitea"))
         self.assertIn("/root/constrained/+simple/six/", self.seen("devpi"))
@@ -381,7 +523,7 @@ class GatewayTest(unittest.TestCase):
         # redirect, letting redirect-following clients skip the check)
         status, body, _ = self._raw("GET", "/pypi/simple/six", auth=GOOD_AUTH)
         self.assertEqual(status, 200)
-        self.assertEqual(body, "devpi /root/constrained/+simple/six/")
+        self.assertIn("six-1.0.0-py3-none-any.whl", body)
         self.assertIn(f"/api/packages/{TEST_NAMESPACE}/pypi/simple/six/", self.seen("gitea"))
         self.assertNotIn("/root/constrained/+simple/six", self.seen("devpi"))
 
@@ -391,13 +533,51 @@ class GatewayTest(unittest.TestCase):
         status, body, _ = self._raw("GET", "/pypi/simple/", auth=GOOD_AUTH)
         self.assertEqual((status, body), (200, "devpi /root/constrained/+simple/"))
 
-    def test_devpi_file_downloads_guarded_and_passed_to_devpi(self):
-        path = "/root/constrained/+f/abc/six.whl"
+    def test_pypi_devpi_redirect_mapped_back_into_gateway(self):
+        # belt-and-braces: a devpi Location header may never point the client
+        # at /root/... directly — it must re-enter the precedence check
+        status, _, headers = self._raw("GET", "/pypi/simple/redirector/",
+                                       auth=GOOD_AUTH)
+        self.assertEqual(status, 302)
+        self.assertEqual(headers["Location"], "/pypi/simple/target/")
+
+    def test_devpi_file_downloads_guarded_and_passed_through(self):
+        path = "/root/pypi/%2Bf/472/1f391ed90541f/six-1.0.0-py3-none-any.whl"
         status, _, _ = self._raw("GET", path)
         self.assertEqual(status, 401)
         status, body, _ = self._raw("GET", path, auth=GOOD_AUTH)
         self.assertEqual(status, 200)
-        self.assertEqual(body, f"devpi {path}")
+        self.assertIn("six-1.0.0-py3-none-any.whl", body)
+        self.assertTrue(any("six-1.0.0-py3-none-any.whl" in p
+                            for p in self.seen("devpi")))
+        self.assertTrue(any(p.startswith("/+artea/file-allowed/six?path=")
+                            for p in self.seen("devpi")))
+
+    def test_devpi_file_download_requires_current_constrained_link(self):
+        path = "/root/pypi/%2Bf/472/1f391ed90541f/six-9.9.9-py3-none-any.whl"
+        before = len([p for p in self.seen("devpi") if "six-9.9.9" in p])
+        status, body, headers = self._raw("GET", path, auth=GOOD_AUTH)
+        self.assertEqual((status, body), (403, "forbidden\n"))
+        self.assertNotIn("WWW-Authenticate", headers)
+        after = len([p for p in self.seen("devpi") if "six-9.9.9" in p])
+        self.assertEqual(after, before, "blocked file must not be proxied to devpi")
+
+    def test_devpi_file_download_missing_package_scope_rejected(self):
+        path = "/root/pypi/%2Bf/472/1f391ed90541f/six-1.0.0-py3-none-any.whl"
+        status, body, headers = self._raw("GET", path, auth=NO_PACKAGE_AUTH)
+        self.assertEqual((status, body), (403, "forbidden\n"))
+        self.assertNotIn("WWW-Authenticate", headers)
+
+    def test_raw_devpi_simple_routes_not_publicly_reachable(self):
+        before = len(self.upstreams["devpi"].requests)
+        for path in (
+            "/root/pypi/+simple/six/",
+            "/root/constrained/+simple/six/",
+            "/root/constrained/+simple/private-pkg/",
+        ):
+            status, body, _ = self._raw("GET", path, auth=GOOD_AUTH)
+            self.assertEqual((status, body), (404, "not found\n"), path)
+        self.assertEqual(len(self.upstreams["devpi"].requests), before)
 
     def test_auth_result_cached(self):
         for _ in range(3):

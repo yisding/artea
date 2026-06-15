@@ -10,6 +10,7 @@ venv/
 .DS_Store
 data/
 e2e/tmp/
+.generated/
 backups/
 .generated/
 .claude/

@@ -40,6 +40,12 @@ app.kubernetes.io/instance: {{ .ctx.Release.Name }}
 
 {{/* Image reference with digest pin taking precedence over tag; pass the image map */}}
 {{- define "artea.image" -}}
+{{- if and .requireDigest (not .digest) -}}
+{{- fail (printf "image %s requires .digest; set a sha256 digest or explicitly disable requireDigest for local/dev installs" .repository) -}}
+{{- end -}}
+{{- if and .digest (not (regexMatch "^sha256:[a-f0-9]{64}$" .digest)) -}}
+{{- fail (printf "image %s has invalid .digest %q; expected sha256:<64 lowercase hex chars>" .repository .digest) -}}
+{{- end -}}
 {{- if .digest -}}
 {{ printf "%s@%s" .repository .digest }}
 {{- else -}}

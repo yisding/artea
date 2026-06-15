@@ -105,6 +105,18 @@ http {
         # Clients reach us on :8080 but we listen on 80; relative redirects keep
         # Location headers from dropping the published port.
         absolute_redirect off;
+        # auth_request propagates only 401/403; other njs guard statuses become a
+        # local 500. Map those guard outages to the package-surface failure shape.
+        error_page 500 = @registry_unavailable;
+
+        # Encoded separators in the direct Gitea package API prefix can otherwise
+        # miss the literal /api/packages/ locations below on some nginx builds and
+        # fall through to the UI catch-all. Keep npm's encoded package-name
+        # separator legal only after the literal /api/packages/<namespace>/npm/.
+        if ($request_uri ~* "^/api%2fpackages(?:[/?#]|%2f|/)") { return 404 "not found\n"; }
+        if ($request_uri ~* "^/api/packages%2f") { return 404 "not found\n"; }
+        if ($request_uri ~* "^/api/packages/[^/%?#]+%2f") { return 404 "not found\n"; }
+        if ($request_uri ~* "^/api/packages/[^/%?#]+/(?:npm|pypi)%2f") { return 404 "not found\n"; }
 
         # ---- npm: everything unscoped -> Verdaccio pull-through cache -------------
         # Verdaccio runs with url_prefix=/npm/ but serves at its root, so the prefix
@@ -120,7 +132,8 @@ http {
         location = /npm { return 301 /npm/; }
         location /npm/ {
             auth_request /_registry_auth;
-            error_page 401 403 = @registry_unauthorized;
+            error_page 401 = @registry_unauthorized;
+            error_page 403 = @registry_forbidden;
             rewrite ^/npm/(.*)$ /$1 break;
             proxy_pass http://$verdaccio_upstream;
         }
@@ -141,8 +154,9 @@ http {
         # neither allowed form (for example encoded scope letters or double-encoded
         # separators) — reject so it reaches neither Verdaccio nor Gitea.
         # "if" + lone "return" is one of the safe if-patterns.
-        # All methods route identically; no auth_request here (Gitea-bound, see the
-        # guard comment below). Disjoint from the pypi regex location by prefix.
+        # All methods route identically; the gateway guard proves org membership
+        # and package scope before Gitea enforces package-specific permissions.
+        # Disjoint from the pypi regex location by prefix.
         # CLIENT CAVEAT (verified, npm 11.16.0): publish gates on a local credential
         # preflight (getCredentialsByURI) that checks ONLY the exact nerf-dart of
         # the registry (//host/npm/:) — unlike npm-registry-fetch, it never walks
@@ -152,6 +166,9 @@ http {
         # //host/:_auth (covers /api/... tarballs) and //host/npm/:_auth (covers
         # the publish preflight). See docs/guides/clients-npm.md.
         location ~* ^/npm/(?:-/package/)?(?:@|%40)__ARTEA_NAMESPACE__(?:%2f|/) {
+            auth_request /_registry_auth;
+            error_page 401 = @registry_unauthorized;
+            error_page 403 = @registry_forbidden;
             if ($private_npm_uri = "") { return 400; }
             proxy_pass http://$gitea_upstream$private_npm_uri;
         }
@@ -164,7 +181,8 @@ http {
         # devpi-bound path.
         location = /pypi/simple/ {
             auth_request /_registry_auth;
-            error_page 401 403 = @registry_unauthorized;
+            error_page 401 = @registry_unauthorized;
+            error_page 403 = @registry_forbidden;
             rewrite ^ /root/constrained/+simple/ break;
             proxy_pass http://$devpi_upstream;
         }
@@ -182,7 +200,8 @@ http {
 
             proxy_intercept_errors on;        # let error_page act on Gitea's status
             error_page 404 = @public_pypi;
-            error_page 401 403 = @registry_unauthorized;
+            error_page 401 = @registry_unauthorized;
+            error_page 403 = @registry_forbidden;
 
             rewrite ^ /api/packages/__ARTEA_NAMESPACE__/pypi/simple/$pypi_project/ break;
             proxy_pass http://$gitea_upstream;
@@ -193,25 +212,45 @@ http {
         # runs in between.
         location @public_pypi {
             rewrite ^ /root/constrained/+simple/$pypi_project/ break;
+            # devpi receives the canonical form (normalized + trailing slash), so it
+            # has no reason to redirect; if it ever does, route the client back
+            # through the gateway's precedence check, never into /root/ directly.
+            proxy_redirect ~*^(?:https?://[^/]+)?/root/constrained/\+simple/(.*)$ /pypi/simple/$1;
             proxy_pass http://$devpi_upstream;
         }
 
-        # ---- devpi simple/file paths ------------------------------------------------
-        # devpi is internal-only and has no auth of its own. The Artea devpi
-        # policy plugin filters the constrained index and guards root/pypi files
-        # from bypassing upstream age policy.
-        location /root/ {
-            auth_request /_registry_auth;
-            error_page 401 403 = @registry_unauthorized;
+        # ---- devpi file downloads (URLs inside constrained simple pages) -----------
+        # Clients legitimately reach only file/external-link routes generated by
+        # devpi's constrained pages. Raw simple/index routes under /root/ stay
+        # closed so users cannot browse the unfiltered root/pypi mirror or bypass
+        # the Gitea-first private-name check. The njs guard asks Artea's devpi
+        # plugin whether the mirror file is still allowed by the current
+        # constrained-index policy, avoiding whole simple-page buffering in nginx.
+        location ~ ^/root/pypi/\+(?:f|e)/ {
+            set $artea_original_uri $uri;
+            auth_request /_artea_pypi_file_guard;
+            error_page 401 = @registry_unauthorized;
+            error_page 403 = @registry_forbidden;
             proxy_pass http://$devpi_upstream;
+        }
+        location /root/ {
+            return 404 "not found\n";
         }
 
         # ---- auth_request guard (R1) ------------------------------------------------
         # Every devpi-bound path (devpi has no auth of its own) and /npm/ (Verdaccio's
-        # service endpoints would answer anonymously) is gated by a subrequest to
-        # Gitea carrying the client's credential. Gitea-bound locations skip this:
-        # Gitea enforces auth itself.
+        # service endpoints would answer anonymously) is gated by njs subrequests to
+        # Gitea carrying the client's credential. The product model is one org:
+        # only members of the configured private namespace with Gitea accounts/PATs
+        # may reach package surfaces at all, so this check validates PAT, org
+        # membership, and package scope before any proxy backend sees the request.
+        # Gitea still enforces package-specific read/write permissions afterward.
         location = /_registry_auth {
+            internal;
+            js_content pep503.auth;
+        }
+
+        location = /_artea_user {
             internal;
             proxy_pass http://$gitea_upstream/api/v1/user;
             proxy_method GET;
@@ -222,17 +261,74 @@ http {
 
             proxy_buffering on;               # proxy_cache requires buffering
             proxy_cache registry_auth;
-            proxy_cache_key $http_authorization;
+            proxy_cache_key "$http_authorization|user";
             proxy_cache_valid 200 30s;        # successes only; failures never cached
+            proxy_ignore_headers Cache-Control Expires Set-Cookie Vary;
+        }
+
+        location ~ ^/_artea_org_member/(?<artea_member>[^/]+)$ {
+            internal;
+            proxy_pass http://$gitea_upstream/api/v1/orgs/__ARTEA_NAMESPACE__/members/$artea_member;
+            proxy_method GET;
+            proxy_pass_request_body off;
+            proxy_set_header Content-Length "";
+            proxy_set_header Authorization $http_authorization;
+            proxy_set_header X-Original-URI $request_uri;
+
+            proxy_intercept_errors on;        # Gitea returns 404 for non-members
+            error_page 404 = @registry_auth_forbidden;
+            proxy_buffering on;               # proxy_cache requires buffering
+            proxy_cache registry_auth;
+            proxy_cache_key "$http_authorization|org|$artea_member";
+            proxy_cache_valid 200 204 30s;    # successes only; failures never cached
             # Gitea API replies carry no-cache headers and cookies; ignore them so
             # the positive cache works.
             proxy_ignore_headers Cache-Control Expires Set-Cookie Vary;
+        }
+
+        location = /_artea_package_scope {
+            internal;
+            proxy_pass http://$gitea_upstream/api/v1/packages/__ARTEA_NAMESPACE__/?type=pypi&limit=1;
+            proxy_method GET;
+            proxy_pass_request_body off;
+            proxy_set_header Content-Length "";
+            proxy_set_header Authorization $http_authorization;
+            proxy_set_header X-Original-URI $request_uri;
+
+            # This management API returns 200 with a possibly empty list for
+            # package-scoped tokens; tokens without the package category fail
+            # at Gitea's token-scope middleware.
+            proxy_buffering on;
+        }
+
+        location @registry_auth_forbidden {
+            internal;
+            return 403;
+        }
+
+        location = /_artea_pypi_file_guard {
+            internal;
+            js_content pep503.pypiFileGuard;
+        }
+
+        location ~ ^/_artea_devpi_file_allowed/(?<pypi_guard_project>[^/]+)/$ {
+            internal;
+            proxy_buffering on;
+            proxy_pass http://$devpi_upstream/+artea/file-allowed/$pypi_guard_project?path=$arg_path;
         }
 
         # pip needs a Basic challenge on 401 to retry with netrc/keyring credentials.
         location @registry_unauthorized {
             add_header WWW-Authenticate 'Basic realm="Artea"' always;
             return 401 "authentication required\n";
+        }
+
+        location @registry_forbidden {
+            return 403 "forbidden\n";
+        }
+
+        location @registry_unavailable {
+            return 503 "registry unavailable\n";
         }
 
         # Gateway-local liveness probe (no upstream involved). Gitea reserves the
@@ -242,10 +338,39 @@ http {
             return 200 "ok\n";
         }
 
+        # ---- Gitea package API: v1 is single-org npm + PyPI only --------------------
+        location ^~ /api/packages/__ARTEA_NAMESPACE__/npm/ {
+            auth_request /_registry_auth;
+            error_page 401 = @registry_unauthorized;
+            error_page 403 = @registry_forbidden;
+            proxy_pass http://$gitea_upstream;
+        }
+        location = /api/packages/__ARTEA_NAMESPACE__/npm {
+            auth_request /_registry_auth;
+            error_page 401 = @registry_unauthorized;
+            error_page 403 = @registry_forbidden;
+            proxy_pass http://$gitea_upstream;
+        }
+        location ^~ /api/packages/__ARTEA_NAMESPACE__/pypi/ {
+            auth_request /_registry_auth;
+            error_page 401 = @registry_unauthorized;
+            error_page 403 = @registry_forbidden;
+            proxy_pass http://$gitea_upstream;
+        }
+        location = /api/packages/__ARTEA_NAMESPACE__/pypi {
+            auth_request /_registry_auth;
+            error_page 401 = @registry_unauthorized;
+            error_page 403 = @registry_forbidden;
+            proxy_pass http://$gitea_upstream;
+        }
+        location ^~ /api/packages/ {
+            return 404 "not found\n";
+        }
+
         # ---- everything else -> Gitea ----------------------------------------------
-        # UI, /api/v1/..., npm scope registry, pypi uploads, and pypi file
-        # downloads. No rewrite here, so the raw client
-        # URI is forwarded byte-for-byte (important: npm uses %2f in scoped paths).
+        # UI and /api/v1/... No rewrite here, so the raw client URI is forwarded
+        # byte-for-byte. Package API routes are handled explicitly above so v1
+        # exposes only the configured namespace's npm/PyPI surfaces.
         location / {
             proxy_pass http://$gitea_upstream;
         }

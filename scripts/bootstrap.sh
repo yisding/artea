@@ -21,9 +21,10 @@
 #              and DEPLOYMENT_NAME is rollout-restarted, both via kubectl in
 #              NAMESPACE (empty = context default). Admin actions use the
 #              Gitea HTTP API (the chart provisions the admin user).
-#              Credentials are printed to stdout between BEGIN/END markers
-#              (the harness extracts them from Job logs) and, if
-#              WRITE_CREDENTIALS_PATH is set and writable, written there too.
+#              Set EMIT_CREDENTIALS=true for e2e/dev to print credentials to
+#              stdout between BEGIN/END markers (the harness extracts them
+#              from Job logs) and, if WRITE_CREDENTIALS_PATH is set and
+#              writable, write them there too.
 #
 # Other knobs (all optional): GITEA_URL (where this script reaches Gitea),
 # GATEWAY_URL (public base recorded in the credentials), GITEA_READY_TIMEOUT,
@@ -36,6 +37,7 @@ cd "$(dirname "$0")/.."
 
 log() { echo "[bootstrap] $*"; }
 die() { echo "[bootstrap] ERROR: $*" >&2; exit 1; }
+truthy() { case "${1:-}" in 1 | true | TRUE | yes | YES | on | ON) return 0 ;; *) return 1 ;; esac; }
 
 TOKEN_SINK="${TOKEN_SINK:-env-file}"
 case "${TOKEN_SINK}" in env-file | k8s-secret) ;; *) die "TOKEN_SINK must be 'env-file' or 'k8s-secret', got '${TOKEN_SINK}'" ;; esac
@@ -54,7 +56,8 @@ REPO=registry-policy
 CRED_FILE="${WRITE_CREDENTIALS_PATH:-e2e/tmp/credentials.env}"
 case "${CRED_FILE}" in /*) ;; *) CRED_FILE="./${CRED_FILE}" ;; esac
 RESP="$(mktemp)"
-trap 'rm -f "$RESP"' EXIT
+PATCH_FILE=""
+trap 'rm -f "$RESP" ${PATCH_FILE:+"$PATCH_FILE"}' EXIT
 
 if in_k8s; then
   command -v kubectl >/dev/null || die "TOKEN_SINK=k8s-secret requires kubectl"
@@ -67,6 +70,38 @@ if in_k8s; then
   KC=(kubectl)
   [ -n "${NAMESPACE:-}" ] && KC=(kubectl -n "${NAMESPACE}")
 fi
+
+wait_deployment_rollout() { # <deployment-name>; k8s mode only
+  local name="$1" deadline json
+  deadline=$((SECONDS + ROLLOUT_TIMEOUT))
+  while :; do
+    if json=$("${KC[@]}" get "deployment/${name}" -o json 2>/dev/null); then
+      if printf '%s' "${json}" | python3 -c '
+import json
+import sys
+
+d = json.load(sys.stdin)
+meta = d.get("metadata") or {}
+spec = d.get("spec") or {}
+status = d.get("status") or {}
+desired = spec.get("replicas")
+if desired is None:
+    desired = 1
+ready = (
+    status.get("observedGeneration", 0) >= meta.get("generation", 0)
+    and status.get("updatedReplicas", 0) >= desired
+    and status.get("replicas", 0) <= desired
+    and status.get("availableReplicas", 0) >= desired
+)
+sys.exit(0 if ready else 1)
+'; then
+        return 0
+      fi
+    fi
+    [ "${SECONDS}" -lt "${deadline}" ] || return 1
+    sleep 2
+  done
+}
 
 # env-provided credentials win over .env (the k8s Job has no .env at all)
 ENV_NAMESPACE="${ARTEA_NAMESPACE:-}"
@@ -99,6 +134,11 @@ POLICY_REPO="${ORG}/${REPO}"
 [ -n "${ARTEA_ADMIN_PASSWORD:-}" ] || die "ARTEA_ADMIN_PASSWORD must be set (env or .env)"
 [ -n "${DEV1_PASSWORD:-}" ] || die "DEV1_PASSWORD must be set (env or .env)"
 [ -n "${POLICY_WEBHOOK_SECRET:-}" ] || die "POLICY_WEBHOOK_SECRET must be set (env or .env)"
+if ! truthy "${ARTEA_ALLOW_DEV_SECRETS:-false}"; then
+  case "${ARTEA_ADMIN_PASSWORD}:${DEV1_PASSWORD}:${POLICY_WEBHOOK_SECRET}:${DEVPI_ROOT_PASSWORD:-}" in
+    *change-me-*) die "change-me placeholder secrets are not allowed; set real secrets or ARTEA_ALLOW_DEV_SECRETS=true for a throwaway dev stack" ;;
+  esac
+fi
 
 # compose-only: file-mounted gitea secrets; the chart manages these in k8s
 in_k8s || ./gitea/scripts/gen-secrets.sh
@@ -296,8 +336,9 @@ else
 fi
 
 # ---- dev1 PAT --------------------------------------------------------------------
-# write:package: publish+install. read:user: required by the gateway auth_request
-# guard (GET /api/v1/user). read:organization: verdaccio org->group mapping.
+# write:package: publish+install and satisfies the gateway package-scope probe.
+# read:user: required by Verdaccio's user check.
+# read:organization: gateway org guard plus Verdaccio Artea team group mapping.
 DEV1_SCOPES="write:package,read:user,read:organization"
 DEV1_TOKEN=""
 # shellcheck disable=SC1090
@@ -363,14 +404,26 @@ else
   POLICY_SYNC_TOKEN=$(mint_token "${SVC_USER}" read:repository)
   if in_k8s; then
     log "patching secret ${SECRET_NAME} (key ${SECRET_KEY}) and restarting ${DEPLOYMENT_NAME}"
-    "${KC[@]}" create secret generic "${SECRET_NAME}" \
-      --from-literal="${SECRET_KEY}=${POLICY_SYNC_TOKEN}" \
-      --dry-run=client -o yaml | "${KC[@]}" apply -f - >/dev/null
+    PATCH_FILE=$(mktemp)
+    token_b64=$(printf '%s' "${POLICY_SYNC_TOKEN}" | base64 | tr -d '\n')
+    printf '{"data":{"%s":"%s"}}\n' "${SECRET_KEY}" "${token_b64}" > "${PATCH_FILE}"
+    "${KC[@]}" patch secret "${SECRET_NAME}" --type=merge --patch-file "${PATCH_FILE}" >/dev/null
+    rm -f "${PATCH_FILE}"
+    PATCH_FILE=""
     "${KC[@]}" rollout restart "deployment/${DEPLOYMENT_NAME}" >/dev/null
-    "${KC[@]}" rollout status "deployment/${DEPLOYMENT_NAME}" --timeout="${ROLLOUT_TIMEOUT}s" >/dev/null
+    wait_deployment_rollout "${DEPLOYMENT_NAME}" \
+      || die "deployment ${DEPLOYMENT_NAME} did not complete rollout within ${ROLLOUT_TIMEOUT}s"
   else
     log "updating .env and recreating policy-sync with the new token"
-    sed -i.bak "s|^POLICY_SYNC_TOKEN=.*|POLICY_SYNC_TOKEN=${POLICY_SYNC_TOKEN}|" .env && rm -f .env.bak
+    if grep -q '^POLICY_SYNC_TOKEN=' .env; then
+      sed -i.bak "s|^POLICY_SYNC_TOKEN=.*|POLICY_SYNC_TOKEN=${POLICY_SYNC_TOKEN}|" .env
+      rm -f .env.bak
+    else
+      if [ -s .env ] && [ "$(tail -c 1 .env)" != "" ]; then
+        printf '\n' >> .env
+      fi
+      printf 'POLICY_SYNC_TOKEN=%s\n' "${POLICY_SYNC_TOKEN}" >> .env
+    fi
     # --build: also picks up image changes (e.g. the non-root migration) when
     # bootstrap is re-run without a prior `make up`
     docker compose up -d --build --wait policy-sync >/dev/null
@@ -432,16 +485,20 @@ write_credentials() { # <path> ; subshell so umask stays contained
   (mkdir -p "$(dirname "$1")" && umask 177 && emit_credentials > "$1")
 }
 if in_k8s; then
-  # the harness/CI extracts this block from the Job logs (scripts/k8s-e2e.sh)
-  echo "----- BEGIN ARTEA CREDENTIALS -----"
-  emit_credentials
-  echo "----- END ARTEA CREDENTIALS -----"
-  if [ -n "${WRITE_CREDENTIALS_PATH:-}" ]; then
-    if write_credentials "${CRED_FILE}" 2>/dev/null; then
-      log "credentials also written to ${CRED_FILE}"
-    else
-      log "WARN: WRITE_CREDENTIALS_PATH=${CRED_FILE} not writable; rely on the log block"
+  if truthy "${EMIT_CREDENTIALS:-false}"; then
+    # the harness/CI extracts this block from the Job logs (scripts/k8s-e2e.sh)
+    echo "----- BEGIN ARTEA CREDENTIALS -----"
+    emit_credentials
+    echo "----- END ARTEA CREDENTIALS -----"
+    if [ -n "${WRITE_CREDENTIALS_PATH:-}" ]; then
+      if write_credentials "${CRED_FILE}" 2>/dev/null; then
+        log "credentials also written to ${CRED_FILE}"
+      else
+        log "WARN: WRITE_CREDENTIALS_PATH=${CRED_FILE} not writable; rely on the log block"
+      fi
     fi
+  else
+    log "credential emission disabled (set EMIT_CREDENTIALS=true for e2e/dev)"
   fi
 else
   write_credentials "${CRED_FILE}"

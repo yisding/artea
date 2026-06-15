@@ -32,7 +32,7 @@ spec:
       labels:
         {{- include "artea.selectorLabels" (dict "ctx" $ "component" "gateway") | nindent 8 }}
       annotations:
-        # roll the pods when the rendered nginx config changes
+        # roll the pods when the rendered nginx config or njs helper changes
         checksum/config: {{ printf "%s\n%s" (tpl (.Files.Get "files/gateway/nginx.conf") .) (.Files.Get "files/gateway/pep503.js") | sha256sum }}
     spec:
       containers:

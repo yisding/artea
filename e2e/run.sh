@@ -81,6 +81,7 @@ SHADOW_NAME="tinynetrc" # real PyPI package, published privately as 0.0.1 in S9
 SHADOW_VERSION="0.0.1"
 
 RO_TOKEN_NAME="e2e-ro-${RUN_ID}"
+NO_PACKAGE_TOKEN_NAME="e2e-no-package-${RUN_ID}"
 REVOKE_TOKEN_NAME="e2e-revoke-${RUN_ID}"
 S14_TOKEN_NAME="e2e-s14-${RUN_ID}"
 
@@ -120,6 +121,7 @@ cleanup() {
   delete_pkg_version pypi "${PY_NAME}" "${PY_RO_VERSION}" >/dev/null
   delete_pkg_version pypi "${SHADOW_NAME}" "${SHADOW_VERSION}" >/dev/null
   delete_dev1_token "${RO_TOKEN_NAME}" >/dev/null
+  delete_dev1_token "${NO_PACKAGE_TOKEN_NAME}" >/dev/null
   delete_dev1_token "${REVOKE_TOKEN_NAME}" >/dev/null
   delete_dev1_token "${S14_TOKEN_NAME}" >/dev/null
   # S15 partial-failure recovery: put the policy source back and make sure
@@ -378,11 +380,28 @@ urllib3_v2_visible() {
 }
 
 s10_pypi_policy_constraint() {
-  local out line wheel
+  local out line wheel code body blocked_file_path
+  body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/urllib3/") \
+    || { echo "pre-policy urllib3 simple fetch failed"; return 1; }
+  blocked_file_path=$(echo "$body" \
+    | grep -Eo 'href="[^"]*urllib3-2[^"]*\.(whl|tar\.gz|zip)[^"]*"' \
+    | head -1 \
+    | sed -E 's/^href="//; s/"$//; s#^https?://[^/]+##; s/#.*$//')
+  [ -n "$blocked_file_path" ] \
+    || { echo "could not find a urllib3 2.x file link before applying constraints"; return 1; }
   CONSTRAINTS_DIRTY=1
   put_policy_file pypi-constraints.txt "${ORIG_CONSTRAINTS}"$'\n'"urllib3<2" \
     "test(e2e): S10 constrain urllib3<2" || return 1
   wait_for 45 2 "urllib3 2.x filtered from simple index" urllib3_v2_hidden || return 1
+  for path in "/root/pypi/+simple/urllib3/" "/root/constrained/+simple/urllib3/"; do
+    code=$(http_code -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}${path}")
+    [ "$code" = 404 ] || { echo "direct devpi route ${path} got HTTP ${code}, expected 404"; return 1; }
+  done
+  echo "direct devpi simple routes are not reachable through the gateway"
+  code=$(http_code -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}${blocked_file_path}")
+  [ "$code" = 403 ] \
+    || { echo "blocked direct devpi file ${blocked_file_path} got HTTP ${code}, expected 403"; return 1; }
+  echo "direct devpi file URLs obey current PyPI constraints"
   out=$(pip_e2e index versions urllib3 --index-url "${INDEX_URL}" 2>&1) \
     || { echo "pip index versions failed: ${out}"; return 1; }
   line=$(echo "$out" | grep '^Available versions:') || { echo "no versions line"; return 1; }
@@ -405,7 +424,7 @@ s10_pypi_policy_constraint() {
 
 # ---- S11: one PAT everywhere; read:package can pull but not publish (401) ---------------------
 s11_token_scopes() {
-  local ro_token out code proj="${WORK}/proj-s11"
+  local ro_token no_package_token out code proj="${WORK}/proj-s11"
   # dev1's single write:package PAT already drove S2-S10 (publish+install, npm+pypi)
   ro_token=$(mint_dev1_token "${RO_TOKEN_NAME}" '["read:package","read:user","read:organization"]') \
     || { echo "minting read-only token failed"; return 1; }
@@ -442,7 +461,23 @@ s11_token_scopes() {
   pkg_version_exists pypi "${PY_NAME}" "${PY_RO_VERSION}" && { echo "package was created anyway"; return 1; }
   echo "twine upload with read-only token rejected with 401"
 
+  no_package_token=$(mint_dev1_token "${NO_PACKAGE_TOKEN_NAME}" '["read:user","read:organization"]') \
+    || { echo "minting no-package-scope token failed"; return 1; }
+  for url in \
+    "${GATEWAY_URL}/npm/left-pad" \
+    "${GATEWAY_URL}/npm/${NPM_NAME_ENC}" \
+    "${GATEWAY_URL}/pypi/simple/six/" \
+    "${GATEWAY_URL}/api/packages/${ARTEA_NAMESPACE}/pypi/simple/${PY_NAME}/"
+  do
+    code=$(http_code -u "dev1:${no_package_token}" "$url")
+    [ "$code" = 403 ] || { echo "no-package-scope token got HTTP ${code} for ${url}, expected 403"; return 1; }
+  done
+  code=$(http_code -u "dev1:${no_package_token}" "${GATEWAY_URL}/api/v1/packages/${ARTEA_NAMESPACE}/?type=pypi&limit=1")
+  [ "$code" = 403 ] || { echo "Gitea package-management probe with no package scope got HTTP ${code}, expected 403"; return 1; }
+  echo "token with read:user/read:organization but no package scope is rejected before package proxies"
+
   delete_dev1_token "${RO_TOKEN_NAME}"
+  delete_dev1_token "${NO_PACKAGE_TOKEN_NAME}"
 }
 
 # ---- S12: PAT revocation takes effect within 60s ----------------------------------------------
@@ -511,16 +546,19 @@ s13_tarball_enforcement() {
 
 # ---- S14: branch protection on registry-policy@main (governance) ------------------------------
 s14_branch_protection() {
-  local token clone="${WORK}/s14-policy-clone" out code sha b64
+  local token auth_header clone="${WORK}/s14-policy-clone" out code sha b64
   token=$(mint_dev1_token "${S14_TOKEN_NAME}" '["write:repository","read:user"]') \
     || { echo "minting dev1 repo-scoped token failed"; return 1; }
+  auth_header=$(printf 'dev1:%s' "$token" | base64 | tr -d '\n')
 
   # a real git push to main as dev1 must hit the protected-branch pre-receive hook
-  git clone -q "http://dev1:${token}@${GATEWAY_HOSTPORT}/${POLICY_REPO}.git" "$clone" \
+  git -c "http.extraHeader=Authorization: Basic ${auth_header}" \
+    clone -q "http://${GATEWAY_HOSTPORT}/${POLICY_REPO}.git" "$clone" \
     || { echo "git clone as dev1 failed (developers team should have code read)"; return 1; }
   (cd "$clone" && echo "# e2e S14 direct-push probe" >> npm-rules.yaml \
     && git -c user.email=dev1@localhost -c user.name=dev1 commit -aqm "test(e2e): S14 probe") || return 1
-  if out=$(git -C "$clone" push origin HEAD:main 2>&1); then
+  if out=$(git -C "$clone" -c "http.extraHeader=Authorization: Basic ${auth_header}" \
+    push origin HEAD:main 2>&1); then
     echo "direct push to main as dev1 unexpectedly succeeded"; echo "$out"; return 1
   fi
   grep -qi 'protected branch' <<<"$out" \
@@ -563,9 +601,13 @@ npm_recovered() {
     | jq -e '.versions | length > 0' >/dev/null
 }
 six_blocked() { # fresh '*'-seeded mirror exposes no six files through the gateway
-  local body
-  body=$(curl -s -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/six/") || return 1
-  ! grep -q 'six-1\.' <<<"$body"
+  local body code
+  body=$(curl -s -w '\n%{http_code}' -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/six/") || return 1
+  code=${body##*$'\n'}
+  body=${body%$'\n'*}
+  [ "$code" = 404 ] && return 0
+  [ "$code" = 200 ] || return 1
+  ! echo "$body" | grep -q 'six-1\.'
 }
 six_served() {
   local body
@@ -743,7 +785,8 @@ s17_legacy_and_encoding() {
   [ "$code" = 404 ] || { echo "/npm/@${ARTEA_NAMESPACE}-evil%2fnope -> HTTP ${code}, expected 404 (Verdaccio miss)"; return 1; }
   echo "/npm/@${ARTEA_NAMESPACE}-evil%2fnope -> 404 from the Verdaccio path, not the Gitea route"
 
-  # e. the private-scope route has no auth_request guard; Gitea itself must demand auth
+  # e. the private-scope route is guarded before Gitea; unauthenticated callers
+  # get the gateway Basic challenge.
   code=$(http_code "${GATEWAY_URL}/npm/${NPM_NAME_ENC}")
   [ "$code" = 401 ] || { echo "anonymous /npm/${NPM_NAME_ENC} -> HTTP ${code}, expected 401"; return 1; }
   echo "anonymous /npm/${NPM_NAME_ENC} -> 401"

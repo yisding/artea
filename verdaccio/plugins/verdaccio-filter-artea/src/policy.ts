@@ -92,8 +92,7 @@ export function compilePolicy(doc: unknown, logger: Logger): CompiledPolicy {
     }
     for (const scope of scopes) {
       if (typeof scope !== 'string' || scope.length === 0) {
-        logger.warn({}, 'filter-artea: skipping non-string scope entry');
-        continue;
+        throw new Error('"blocked.scopes" entries must be non-empty strings');
       }
       policy.scopes.add(scope.startsWith('@') ? scope : `@${scope}`);
     }
@@ -105,18 +104,19 @@ export function compilePolicy(doc: unknown, logger: Logger): CompiledPolicy {
     }
     for (const entry of packages) {
       // a bare string is shorthand for blocking every version
+      if (typeof entry !== 'string' && (entry === null || typeof entry !== 'object' || Array.isArray(entry))) {
+        throw new Error('"blocked.packages" entries must be package names or mappings');
+      }
       const rule: RawPackageRule = typeof entry === 'string' ? { name: entry } : (entry as RawPackageRule);
       if (rule == null || typeof rule.name !== 'string' || rule.name.length === 0) {
-        logger.warn({}, 'filter-artea: skipping packages entry without a name');
-        continue;
+        throw new Error('"blocked.packages" entries must include a non-empty "name"');
       }
       if (rule.versions == null) {
         policy.names.add(rule.name);
         continue;
       }
       if (typeof rule.versions !== 'string' || semver.validRange(rule.versions, SEMVER_OPTS) === null) {
-        logger.warn({ name: rule.name }, 'filter-artea: skipping rule for @{name}: "versions" is not a valid semver range');
-        continue;
+        throw new Error(`"blocked.packages" rule for "${rule.name}" has invalid "versions" semver range`);
       }
       const list = policy.ranges.get(rule.name) ?? [];
       list.push(rule.versions);

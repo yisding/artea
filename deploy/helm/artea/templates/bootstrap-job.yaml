@@ -12,6 +12,8 @@
 #   GITEA_URL                direct Gitea URL (bypasses the gateway)
 #   POLICY_SYNC_URL          policy-sync base URL (health/sync wait)
 #   POLICY_SYNC_HOOK_URL     push-webhook target wired into Gitea
+#   EMIT_CREDENTIALS         optional dev/e2e log emission of credentials
+#   ARTEA_ALLOW_DEV_SECRETS  optional dev/e2e allowance for change-me secrets
 #   ARTEA_NAMESPACE          Gitea org and npm private scope
 #   ARTEA_ADMIN_USER/_PASSWORD, DEV1_PASSWORD, POLICY_WEBHOOK_SECRET   secrets
 apiVersion: batch/v1
@@ -54,6 +56,10 @@ spec:
               value: {{ include "artea.policySyncUrl" . | quote }}
             - name: POLICY_SYNC_HOOK_URL
               value: {{ printf "%s/hooks/policy" (include "artea.policySyncUrl" .) | quote }}
+            - name: EMIT_CREDENTIALS
+              value: {{ ternary "true" "false" .Values.bootstrap.emitCredentials | quote }}
+            - name: ARTEA_ALLOW_DEV_SECRETS
+              value: {{ ternary "true" "false" .Values.secrets.allowDevPlaceholders | quote }}
             - name: ARTEA_NAMESPACE
               value: {{ include "artea.privateNamespace" . | quote }}
             - name: ARTEA_ADMIN_USER

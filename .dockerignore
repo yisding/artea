@@ -1,0 +1,10 @@
+# Root-context Docker builds are for scripts/Dockerfile.bootstrap only.
+# Keep local secrets, generated state, caches, and VCS metadata out of context.
+*
+
+!policy/
+!policy/**
+!scripts/
+!scripts/bootstrap.sh
+!scripts/Dockerfile.bootstrap
+!.dockerignore

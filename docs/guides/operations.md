@@ -32,18 +32,49 @@ If an upgrade truly requires changing upstream behavior that config/overlay/
 plugins cannot reach, that is an ADR + `gitea/patches/` decision — not an ad-hoc
 fork (first expected candidate: PAT expiry dates).
 
+### Client PAT migration
+
+Current package clients must authenticate with a Gitea PAT that has the package
+scope plus `read:user` and `read:organization`, and the account must be an
+member of the configured namespace org (`ARTEA_NAMESPACE`, default `artea`).
+Tokens minted before the org-membership gateway guard may only have
+`read:package` or `write:package`; replace those before rollout or installs
+through `/npm/` and `/pypi/simple/` will start returning 401.
+
+## Production security caveats
+
+The compose defaults are local-dev conveniences. Before any non-throwaway
+deployment, replace every placeholder secret in `.env` (and every
+`.Values.secrets.*` value in Helm) before first start. Keep `.env` and
+generated credentials out of git.
+
+The gateway is the only public entrypoint. Do not publish or ingress the
+internal Gitea, Verdaccio, devpi, or policy-sync ports directly; they assume the
+gateway's auth, routing, and precedence checks. In Kubernetes, expose the
+gateway Ingress for TLS/host routing only and leave the package routing logic
+inside the gateway.
+
 ### Base-image digest pins
 
-The two images we build ourselves (`devpi/Dockerfile`, `policy-sync/Dockerfile`)
-digest-pin their `python:3.12-slim` base — a tag is floating, a digest is not
-(R7, [ADR-0004](../adr/0004-upstream-isolation-no-fork.md)). The tag stays in
-the `FROM` line for humans; docker ignores it once a digest is present. To bump:
+The images we build ourselves digest-pin their base images — a tag is floating,
+a digest is not (R7,
+[ADR-0004](../adr/0004-upstream-isolation-no-fork.md)). The tag stays in the
+`FROM` line for humans; docker ignores it once a digest is present.
+
+| Image Dockerfile | Base to re-resolve |
+|------------------|--------------------|
+| `devpi/Dockerfile` | `python:3.12-slim` |
+| `policy-sync/Dockerfile` | `python:3.12-slim` |
+| `scripts/Dockerfile.bootstrap` | `python:3.12-slim` |
+| `deploy/docker/verdaccio-assets/Dockerfile` | `busybox:1.37` |
+
+To bump:
 
 ```sh
 docker buildx imagetools inspect python:3.12-slim   # copy the "Digest:" line
-# update the FROM line in devpi/Dockerfile and policy-sync/Dockerfile:
+# update the matching FROM lines, for example:
 #   FROM python:3.12-slim@sha256:<new digest>
-make up    # rebuilds both images
+make up
 make e2e
 ```
 
@@ -143,13 +174,13 @@ Revoke a token in the Gitea UI (**Settings → Applications → Delete**) or via
 
 | Path | Effect |
 |------|--------|
-| Gitea-direct (npm `@${ARTEA_NAMESPACE}/*` — gateway scope route under `/npm/` or legacy `/api/packages/...`; twine; private pip files) | immediate |
-| public npm pull-through (non-private-scope `/npm/` via Verdaccio) | ≤ 30 s — the Verdaccio auth plugin caches *positive* validations for 30 s |
-| PyPI paths via the gateway (`/pypi/simple/`, `/root/...`) | per-request `auth_request` against Gitea — effectively immediate |
+| Gitea-direct (twine and private package files after the gateway guard) | immediate inside Gitea; guarded entrypoints may still honor a positive gateway cache for up to 30 s |
+| npm pull-through (`/npm/` via gateway + Verdaccio) | within 60 s worst-case — the gateway and Verdaccio each cache only *positive* auth validations for 30 s |
+| PyPI paths via the gateway (`/pypi/simple/`, `/root/...`) | within 30 s — the gateway positive auth cache is 30 s |
 
 So the system-wide guarantee is: **a revoked token stops working everywhere
-within 60 seconds** (e2e scenario S12). A revoked token appearing to work for
-under a minute on `npm install` of public packages is expected, not a bug.
+within 60 seconds** (e2e scenario S12). A revoked token appearing to work for a
+short time on pull-through package installs is expected, not a bug.
 
 Remember that Okta deactivation does not delete Gitea PATs — see
 [okta.md](okta.md#5-the-pat-after-sso-flow).
@@ -159,14 +190,14 @@ Remember that Okta deactivation does not delete Gitea PATs — see
 | Symptom | Likely cause | Fix / check |
 |---------|--------------|-------------|
 | Everything returns 502 | A backend container is down | `docker compose ps`, `docker compose logs gateway <service>` |
-| All requests 401 with valid token | Token revoked, or Gitea unreachable from verdaccio/gateway (auth validation goes to Gitea) | `curl -u user:PAT http://localhost:8080/api/v1/user`; check gitea logs |
+| Package proxy requests return 401 or 403 with a valid-looking token | Token revoked, missing `read:user`/`read:organization`/package scope, non-member of the configured namespace org, or Gitea unreachable from verdaccio/gateway | `curl -u user:PAT http://localhost:8080/api/v1/user`; then `curl -u user:PAT http://localhost:8080/api/v1/orgs/${ARTEA_NAMESPACE}/members/user` (204 means org guard can pass); package-scope probes should return 200 with a JSON package list: `curl -u user:PAT "http://localhost:8080/api/v1/packages/${ARTEA_NAMESPACE}/?type=pypi&limit=1"`; check Gitea logs |
 | `npm install @${ARTEA_NAMESPACE}/x` 404s | Package/version not published — the gateway routes `@${ARTEA_NAMESPACE}/*` to Gitea server-side, so missing client scope config is no longer a cause (legacy scope-registry configs still work) | Check the configured namespace org's package list in Gitea; client setup in [clients-npm.md](clients-npm.md) |
-| `npm publish` rejected | Read-only cache (unscoped publish), missing `write:package`, or no org write permission | Scope the package `@${ARTEA_NAMESPACE}/*`; check token scope and org membership |
+| `npm publish` rejected | Read-only cache (unscoped publish), missing `write:package` / `read:user` / `read:organization`, or no org write permission | Scope the package `@${ARTEA_NAMESPACE}/*`; check token scope and org membership |
 | Public npm package has missing versions | Policy block in `npm-rules.yaml` or shared `upstream.min_age` in `upstream-policy.yaml` | Intentional; edit the policy repo via PR |
 | Policy change has no effect | Webhook not delivered, or policy-sync down | Repo settings → Webhooks → recent deliveries on `${ARTEA_NAMESPACE}/registry-policy`; `docker compose logs policy-sync`; verify `/policy/npm-rules.yaml`, `/policy/upstream-policy.yaml`, and `/policy/pypi-constraints.txt` changed as expected; the slow-poll fallback will also catch up eventually |
 | `pip install <private>` resolves a public version | Gateway 404-fallback misrouting (or a client `extra-index-url` bypass) | Treat as a security incident if client config is clean: verify the gateway serves Gitea's 200 for `/pypi/simple/<name>/` and only falls back on 404 |
 | `pip install <public>` 404s | devpi mirror cold/unreachable, name blocked by `pypi-constraints.txt`, still too new under `upstream-policy.yaml`, or a freshly recreated cache still fail-closed (`*` seed) | `docker compose logs devpi` and `policy-sync`; check the policy files in the policy repo; check policy-sync `/healthz` for `last_sync_ok` |
 | npm/pip download URLs point at the wrong host | Gitea `ROOT_URL` misconfigured | Must be exactly `http://localhost:8080/` (the public gateway URL) so generated file URLs resolve through the gateway |
-| Revoked PAT still works on npm installs | 30 s positive-auth cache in Verdaccio | Expected; see above |
+| Revoked PAT still works on installs | 30 s positive-auth caches in the gateway and Verdaccio; worst-case remains within 60 s | Expected; see above |
 | Pull-through is slow / disk is filling | Cache volumes grow unbounded | Safe to wipe: `make clean && make up && make bootstrap` (caches refill; PyPI comes back fail-closed until policy-sync syncs) |
 | `twine upload` 409 Conflict | Re-uploading an already-uploaded file | Bump the version; Gitea package files are immutable |

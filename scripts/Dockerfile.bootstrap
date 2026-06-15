@@ -45,7 +45,8 @@ USER bootstrap
 # Job env contract (chart sets these): TOKEN_SINK=k8s-secret, GITEA_URL,
 # SECRET_NAME, SECRET_KEY?, DEPLOYMENT_NAME, NAMESPACE, POLICY_SYNC_URL,
 # ARTEA_ADMIN_PASSWORD, DEV1_PASSWORD, POLICY_WEBHOOK_SECRET,
-# WRITE_CREDENTIALS_PATH? (see scripts/bootstrap.sh header)
+# ARTEA_ALLOW_DEV_SECRETS?, EMIT_CREDENTIALS?, WRITE_CREDENTIALS_PATH?
+# (see scripts/bootstrap.sh header)
 ENV TOKEN_SINK=k8s-secret \
     PYTHONUNBUFFERED=1
 ENTRYPOINT ["/app/scripts/bootstrap.sh"]

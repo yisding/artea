@@ -4,13 +4,16 @@ import type { Logger } from '@verdaccio/types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import AuthGitea, { type AuthGiteaConfig } from '../src/index';
 
-/** Minimal in-process Gitea: /api/v1/user and /api/v1/user/orgs with Basic auth. */
+/** Minimal in-process Gitea: /api/v1/user, /api/v1/user/orgs, and /api/v1/user/teams. */
 class MockGitea {
   public tokens = new Map<string, string>(); // user -> PAT
   public orgs = new Map<string, string[]>(); // user -> org names
+  public teams = new Map<string, Array<{ org: string; name: string }>>(); // user -> team memberships
   public userHits = 0;
   public orgHits = 0;
+  public teamHits = 0;
   public failOrgs = false;
+  public failTeams = false;
   public loginOverride: string | undefined;
   private server: Server;
 
@@ -51,6 +54,16 @@ class MockGitea {
       const limit = Number(params.get('limit') ?? '50');
       const slice = (this.orgs.get(user) ?? []).slice((page - 1) * limit, page * limit);
       return json(200, slice.map((name) => ({ username: name })));
+    }
+    if (req.url?.startsWith('/api/v1/user/teams')) {
+      this.teamHits++;
+      if (!authed) return json(401, { message: 'unauthorized' });
+      if (this.failTeams) return json(500, { message: 'boom' });
+      const params = new URL(req.url, 'http://mock').searchParams;
+      const page = Number(params.get('page') ?? '1');
+      const limit = Number(params.get('limit') ?? '50');
+      const slice = (this.teams.get(user) ?? []).slice((page - 1) * limit, page * limit);
+      return json(200, slice.map((team) => ({ name: team.name, organization: { username: team.org } })));
     }
     if (req.url === '/api/v1/user') {
       this.userHits++;
@@ -98,16 +111,35 @@ describe('verdaccio-auth-gitea', () => {
     gitea = undefined;
   });
 
-  it('accepts a valid PAT and maps Gitea orgs to groups', async () => {
+  it('accepts a valid PAT and maps only the configured namespace org and teams to groups', async () => {
     gitea = new MockGitea();
     gitea.tokens.set('alice', 'pat-alice');
     gitea.orgs.set('alice', ['artea', 'platform']);
+    gitea.teams.set('alice', [
+      { org: 'artea', name: 'developers' },
+      { org: 'platform', name: 'ops' },
+    ]);
     const plugin = makePlugin({ gitea_url: await gitea.start() });
 
     const { err, groups } = await auth(plugin, 'alice', 'pat-alice');
     expect(err).toBeNull();
     // username leads: verdaccio rejects empty group arrays, so it must never be empty
-    expect(groups).toEqual(['alice', 'artea', 'platform']);
+    expect(groups).toEqual(['alice', 'artea', 'artea/developers']);
+  });
+
+  it('uses the configured private namespace for org and team groups', async () => {
+    gitea = new MockGitea();
+    gitea.tokens.set('alice', 'pat-alice');
+    gitea.orgs.set('alice', ['acme', 'artea']);
+    gitea.teams.set('alice', [
+      { org: 'acme', name: 'developers' },
+      { org: 'artea', name: 'owners' },
+    ]);
+    const plugin = makePlugin({ gitea_url: await gitea.start(), private_namespace: 'acme' });
+
+    const { err, groups } = await auth(plugin, 'alice', 'pat-alice');
+    expect(err).toBeNull();
+    expect(groups).toEqual(['alice', 'acme', 'acme/developers']);
   });
 
   it('rejects an invalid PAT with (null, false)', async () => {
@@ -157,18 +189,31 @@ describe('verdaccio-auth-gitea', () => {
 
     expect((await auth(plugin, 'alice', 'pat-alice')).groups).toBe(false);
     gitea.tokens.set('alice', 'pat-alice');
-    expect((await auth(plugin, 'alice', 'pat-alice')).groups).toEqual(['alice']);
+    gitea.orgs.set('alice', ['artea']);
+    expect((await auth(plugin, 'alice', 'pat-alice')).groups).toEqual(['alice', 'artea']);
+  });
+
+  it('rejects valid Gitea users outside the configured namespace org', async () => {
+    gitea = new MockGitea();
+    gitea.tokens.set('mallory', 'pat-mallory');
+    gitea.orgs.set('mallory', ['platform']);
+    const plugin = makePlugin({ gitea_url: await gitea.start() });
+
+    const { err, groups } = await auth(plugin, 'mallory', 'pat-mallory');
+    expect(err).toBeNull();
+    expect(groups).toBe(false);
   });
 
   it('follows org pagination so users in more than 50 orgs get all groups', async () => {
     gitea = new MockGitea();
     gitea.tokens.set('alice', 'pat-alice');
     const orgs = Array.from({ length: 120 }, (_, i) => `org-${i}`);
+    orgs[119] = 'artea';
     gitea.orgs.set('alice', orgs);
     const plugin = makePlugin({ gitea_url: await gitea.start() });
 
     const { groups } = await auth(plugin, 'alice', 'pat-alice');
-    expect(groups).toEqual(['alice', ...orgs]);
+    expect(groups).toEqual(['alice', 'artea']);
     expect(gitea.orgHits).toBe(3); // 50 + 50 + short page of 20
   });
 
@@ -179,11 +224,11 @@ describe('verdaccio-auth-gitea', () => {
     const plugin = makePlugin({ gitea_url: await gitea.start() });
 
     const { groups } = await auth(plugin, 'alice', 'pat-alice');
-    expect((groups as string[]).length).toBe(1 + 1000); // username + 20 full pages
+    expect(groups).toBe(false);
     expect(gitea.orgHits).toBe(20);
   });
 
-  it('still authenticates (username group only) when the orgs endpoint fails', async () => {
+  it('rejects when the orgs endpoint fails', async () => {
     gitea = new MockGitea();
     gitea.tokens.set('alice', 'pat-alice');
     gitea.orgs.set('alice', ['artea']);
@@ -192,7 +237,21 @@ describe('verdaccio-auth-gitea', () => {
 
     const { err, groups } = await auth(plugin, 'alice', 'pat-alice');
     expect(err).toBeNull();
-    expect(groups).toEqual(['alice']);
+    expect(groups).toBe(false);
+  });
+
+  it('still authenticates with org groups when the teams endpoint fails', async () => {
+    gitea = new MockGitea();
+    gitea.tokens.set('alice', 'pat-alice');
+    gitea.orgs.set('alice', ['artea']);
+    gitea.teams.set('alice', [{ org: 'artea', name: 'developers' }]);
+    gitea.failTeams = true;
+    const plugin = makePlugin({ gitea_url: await gitea.start() });
+
+    const { err, groups } = await auth(plugin, 'alice', 'pat-alice');
+    expect(err).toBeNull();
+    expect(groups).toEqual(['alice', 'artea']);
+    expect(gitea.teamHits).toBe(1);
   });
 
   it('returns a 503 error when Gitea is unreachable', async () => {

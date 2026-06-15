@@ -1,0 +1,36 @@
+{{- /*
+Validation-only template: renders no Kubernetes objects, but fails fast when a
+release/production value set would otherwise drift from fixed contracts.
+*/ -}}
+{{- $owned := list .Values.devpi.image .Values.policySync.image .Values.bootstrap.image .Values.verdaccio.pluginAssets.image -}}
+{{- range $image := $owned -}}
+{{- if and $image.requireDigest (not $image.digest) -}}
+{{- fail (printf "image %s requires .digest; set a sha256 digest or explicitly disable requireDigest for local/dev installs" $image.repository) -}}
+{{- end -}}
+{{- if and $image.digest (not (regexMatch "^sha256:[a-f0-9]{64}$" $image.digest)) -}}
+{{- fail (printf "image %s has invalid .digest %q; expected sha256:<64 lowercase hex chars>" $image.repository $image.digest) -}}
+{{- end -}}
+{{- end -}}
+{{- $secretValues := dict "adminUsername" (include "artea.adminUsername" .) "adminPassword" .Values.secrets.adminPassword "dev1Password" .Values.secrets.dev1Password "devpiRootPassword" .Values.secrets.devpiRootPassword "webhookSecret" .Values.secrets.webhookSecret -}}
+{{- range $name, $value := $secretValues -}}
+{{- if empty $value -}}
+{{- fail (printf "secrets.%s must not be empty" $name) -}}
+{{- end -}}
+{{- if and (not $.Values.secrets.allowDevPlaceholders) (hasPrefix "change-me-" (toString $value)) -}}
+{{- fail "secrets.* still contain change-me placeholders; set real secrets or secrets.allowDevPlaceholders=true for a throwaway dev install" -}}
+{{- end -}}
+{{- end -}}
+{{- if and .Values.bootstrap.emitCredentials (not .Values.secrets.allowDevPlaceholders) -}}
+{{- fail "bootstrap.emitCredentials=true is only allowed with secrets.allowDevPlaceholders=true for throwaway dev/e2e installs" -}}
+{{- end -}}
+{{- if .Values.gateway.ingress.enabled -}}
+{{- if empty .Values.gateway.ingress.host -}}
+{{- fail "gateway.ingress.enabled=true requires gateway.ingress.host" -}}
+{{- end -}}
+{{- if not (regexMatch "^https://[^/]+.*$" .Values.global.baseUrl) -}}
+{{- fail "gateway.ingress.enabled=true requires global.baseUrl to start with https://" -}}
+{{- end -}}
+{{- if and (empty .Values.gateway.ingress.tls) (not .Values.gateway.ingress.externalTLS) -}}
+{{- fail "gateway.ingress.enabled=true requires gateway.ingress.tls or gateway.ingress.externalTLS=true" -}}
+{{- end -}}
+{{- end -}}

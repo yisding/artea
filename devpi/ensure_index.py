@@ -34,6 +34,10 @@ def log(msg):
     print(f"[ensure-index] {msg}", file=sys.stderr)
 
 
+def has_expected_base(value):
+    return value == "root/pypi" or value == ["root/pypi"]
+
+
 def main():
     base = sys.argv[1].rstrip("/")
     url = f"{base}/{INDEX}"
@@ -45,6 +49,10 @@ def main():
         actual = config.get("type")
         if actual != "constrained":
             log(f"ERROR: {INDEX} exists with type={actual!r}, expected 'constrained'")
+            return 1
+        bases = config.get("bases")
+        if not has_expected_base(bases):
+            log(f"ERROR: {INDEX} exists with bases={bases!r}, expected root/pypi")
             return 1
         log(f"index {INDEX} already exists")
         return 0

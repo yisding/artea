@@ -2,7 +2,8 @@
 # Artea k8s e2e driver (make k8s-e2e). The suite itself only knows BASE_URL;
 # everything cluster-specific is wired up here:
 #   1. extract the credentials block from the bootstrap hook Job's logs
-#      (falls back to a previously extracted file when the Job is gone)
+#      (requires bootstrap.emitCredentials=true; falls back to a previously
+#      extracted file when the Job is gone)
 #   2. port-forward the gateway Service to localhost in the background
 #   3. run scripts/smoke.sh + e2e/run.sh with BASE_URL + RUNTIME=k8s
 #   4. tear the port-forward down on exit
@@ -41,7 +42,7 @@ if [ -n "${block}" ]; then
 elif [ -s "${CREDENTIALS_FILE}" ]; then
   log "no bootstrap Job logs (hook already cleaned up?); reusing ${CREDENTIALS_FILE}"
 else
-  die "no credentials: no succeeded pod for job ${BOOTSTRAP_JOB} in ${K8S_NAMESPACE} and ${CREDENTIALS_FILE} is missing"
+  die "no credentials: bootstrap logs did not contain an emitted credentials block and ${CREDENTIALS_FILE} is missing; deploy with bootstrap.emitCredentials=true for e2e/dev"
 fi
 
 # ---- port-forward the gateway (the only public entrypoint) ----------------------

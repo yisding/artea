@@ -77,8 +77,9 @@ policy is delivered over HTTP, there is no shared volume.
   `bootstrap-pending` and policy-sync idles until the hook completes.
 
 All non-token values come from `.Values.secrets.*` (dev placeholders — always
-override, e.g. `-f my-secrets.yaml`). Bring-your-own-Secret support is not
-implemented yet; see the open items in `docs/guides/kubernetes.md`.
+override before any non-throwaway install, e.g. `-f my-secrets.yaml`).
+Bring-your-own-Secret support is not implemented yet; see the open items in
+`docs/guides/kubernetes.md`.
 
 ## Bootstrap Job env contract
 
@@ -87,10 +88,11 @@ k8s mode): `TOKEN_SINK=k8s-secret`, `SECRET_NAME=artea-policy-sync`,
 `DEPLOYMENT_NAME=artea-policy-sync`, `GATEWAY_URL=http://artea-gateway`,
 `GITEA_URL=http://artea-gitea-http:3000`,
 `POLICY_SYNC_URL=http://artea-policy-sync:8920`,
-`POLICY_SYNC_HOOK_URL=http://artea-policy-sync:8920/hooks/policy`, plus
-`ARTEA_ADMIN_USER`, `ARTEA_ADMIN_PASSWORD`, `DEV1_PASSWORD`,
-`POLICY_WEBHOOK_SECRET` from the Secrets above. The Job's Role allows exactly
-get/patch on the `artea-policy-sync` Secret and Deployment.
+`POLICY_SYNC_HOOK_URL=http://artea-policy-sync:8920/hooks/policy`, optional
+`EMIT_CREDENTIALS=true` for e2e/dev log extraction, plus `ARTEA_ADMIN_USER`,
+`ARTEA_ADMIN_PASSWORD`, `DEV1_PASSWORD`, `POLICY_WEBHOOK_SECRET` from the
+Secrets above. The Job's Role allows get/patch on the `artea-policy-sync`
+Secret and get/patch on the policy-sync Deployment.
 
 ## Single-node vs production
 
@@ -100,8 +102,15 @@ toggles (see the Gitea chart's HA docs): switch to `postgresql-ha` +
 `valkey-cluster` (only one of each pair may be enabled), raise
 `gitea.replicaCount` with RWX `gitea.persistence.accessModes`, and front the
 gateway with the optional Ingress (`gateway.ingress.*`) — TLS/host routing
-only, never the routing logic. Pin our images by `digest` (takes precedence
-over `tag`).
+only, never the routing logic. Keep Gitea, Verdaccio, devpi and policy-sync
+cluster-internal. `values-local.yaml` intentionally uses local tags with
+`pullPolicy: Never`; production release values must pin our images by `digest`
+(takes precedence over `tag`).
+
+When `gateway.ingress.enabled=true`, chart validation requires
+`global.baseUrl` to be `https://...`, `gateway.ingress.host` to be set, and
+either `gateway.ingress.tls` or `gateway.ingress.externalTLS=true` for setups
+where TLS terminates before the Ingress.
 
 ## Files copied into the chart (keep in sync)
 
@@ -125,7 +134,8 @@ compose config.
 
 ```sh
 helm dependency update deploy/helm/artea
-helm lint deploy/helm/artea
-helm template artea deploy/helm/artea > /dev/null
+helm lint deploy/helm/artea -f deploy/helm/artea/values-local.yaml
 helm template artea deploy/helm/artea -f deploy/helm/artea/values-local.yaml > /dev/null
+# Default/release values intentionally fail until Artea-owned image digests are set.
+helm template artea deploy/helm/artea
 ```

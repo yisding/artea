@@ -29,6 +29,9 @@ global:
 # POLICY_SYNC_TOKEN is NOT set here: the bootstrap Job mints it and patches the
 # artea-policy-sync Secret in-cluster (helm upgrade preserves it via lookup).
 secrets:
+  # Keep false for real installs. values-local.yaml sets this true for throwaway
+  # local e2e/dev stacks that intentionally use change-me-* placeholders.
+  allowDevPlaceholders: false
   # Gitea bootstrap admin. Empty defaults to "<global.privateNamespace>-admin".
   # Consumed by the Gitea subchart (gitea.gitea.admin.existingSecret) and the
   # bootstrap Job.
@@ -70,6 +73,9 @@ gateway:
     className: ""
     host: ""
     annotations: {}
+    # Set true only when TLS terminates before this Ingress (for example at a
+    # managed load balancer) while clients still use an https:// global.baseUrl.
+    externalTLS: false
     # - secretName: artea-tls
     #   hosts: [registry.example.com]
     tls: []
@@ -78,10 +84,12 @@ gateway:
 devpi:
   image:
     repository: ghcr.io/yisding/artea-devpi
-    # CI builds/pushes this image; production should pin `digest` (takes
-    # precedence over tag).
+    # CI builds/pushes this image; release/production installs must pin `digest`
+    # (takes precedence over tag). values-local.yaml disables requireDigest for
+    # locally built images.
     tag: main
     digest: ""
+    requireDigest: true
     pullPolicy: IfNotPresent
   # Disposable pypi pull-through cache: safe to delete, a fresh volume is
   # seeded fail-closed ('*' constraint) until policy-sync syncs.
@@ -96,6 +104,7 @@ policySync:
     repository: ghcr.io/yisding/artea-policy-sync
     tag: main
     digest: ""
+    requireDigest: true
     pullPolicy: IfNotPresent
   # Slow-poll fallback interval (seconds) behind the push webhook.
   pollSeconds: 300
@@ -104,10 +113,14 @@ policySync:
 # ---- bootstrap Job (post-install/post-upgrade hook) ---------------------------
 bootstrap:
   enabled: true
+  # Production default: do not put throwaway credentials in Job logs. Local
+  # e2e/dev flows set this true and extract the framed block from the hook log.
+  emitCredentials: false
   image:
     repository: ghcr.io/yisding/artea-bootstrap
     tag: main
     digest: ""
+    requireDigest: true
     pullPolicy: IfNotPresent
   # Bootstrap waits for Gitea health and the first policy sync; on a fresh
   # cluster image pulls + PVC provisioning can be slow.
@@ -280,6 +293,7 @@ verdaccio:
       repository: ghcr.io/yisding/artea-verdaccio-assets
       tag: main
       digest: ""
+      requireDigest: true
       pullPolicy: IfNotPresent
   extraInitContainers:
     - name: copy-plugins
@@ -329,9 +343,10 @@ verdaccio:
 
     auth:
       # replaces htpasswd entirely: validates user:PAT against Gitea and maps
-      # org/team membership to groups
+      # configured namespace org/team membership to groups
       auth-gitea:
         gitea_url: http://artea-gitea-http:3000
+        private_namespace: '{{ include "artea.privateNamespace" . }}'
 
     filters:
       # policy over HTTP from policy-sync; missing/unparsable policy FAILS

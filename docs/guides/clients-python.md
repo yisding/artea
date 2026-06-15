@@ -23,9 +23,10 @@ Replace `<namespace>` with your `ARTEA_NAMESPACE`.
 
 There is no anonymous access. Credentials are your Gitea username plus a
 personal access token (PAT) — see step 1 of [clients-npm.md](clients-npm.md)
-for how to create one (`read:user` + `read:organization` + `read:package` to
-install; use `write:package` instead of `read:package` to publish), and
-[publishing.md](publishing.md) for the scope model.
+for how to create one. Install tokens need `read:package`; publish tokens need
+`write:package`; both also need `read:user` and `read:organization` so the
+gateway and npm cache can validate the same credential. See
+[publishing.md](publishing.md) for the full scope model.
 
 ## 1. Credentials via `~/.netrc`
 
@@ -117,9 +118,9 @@ password = your-token
 twine upload -r artea dist/*
 ```
 
-Requires a `write:package` token and write permission in the configured
-namespace org. `.pypirc` does not expand environment variables; substitute the
-actual namespace in the URL.
+Requires a token with `write:package`, `read:user`, and `read:organization`,
+plus write permission in the configured namespace org. `.pypirc` does not
+expand environment variables; substitute the actual namespace in the URL.
 Or without a `.pypirc`:
 
 ```sh
@@ -139,8 +140,8 @@ using any spelling; the index entry is the normalized one.
 
 | Symptom | Likely cause |
 |---------|--------------|
-| `401` on install | netrc missing/typo'd, wrong machine name, or revoked token |
-| `401`/`403` on `twine upload` | Token is `read:package` only, or user lacks write permission in the configured namespace org |
+| `401` on install | netrc missing/typo'd, wrong machine name, revoked token, or missing `read:user` / `read:organization` |
+| `401`/`403` on `twine upload` | Token is `read:package` only, missing the supporting scopes, or user lacks write permission in the configured namespace org |
 | `404` for a private package | Not published yet, or name-normalization mismatch — check `http://localhost:8080/pypi/simple/<normalized-name>/` |
 | pip resolves a *public* version of a private name | Should never happen — check for stray `extra-index-url` config on the client; if absent, report it (gateway precedence bug) |
 | A public package/version refuses to install | Blocked by `pypi-constraints.txt` or still too new under `upstream-policy.yaml` — intentional |
