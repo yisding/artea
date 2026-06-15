@@ -139,9 +139,14 @@ POLICY_REPO="${ORG}/${REPO}"
 [ -n "${DEV1_PASSWORD:-}" ] || die "DEV1_PASSWORD must be set (env or .env)"
 [ -n "${POLICY_WEBHOOK_SECRET:-}" ] || die "POLICY_WEBHOOK_SECRET must be set (env or .env)"
 if ! truthy "${ARTEA_ALLOW_DEV_SECRETS:-false}"; then
-  case "${ARTEA_ADMIN_PASSWORD}:${DEV1_PASSWORD}:${POLICY_WEBHOOK_SECRET}:${DEVPI_ROOT_PASSWORD:-}" in
-    *change-me-*) die "change-me placeholder secrets are not allowed; set real secrets or ARTEA_ALLOW_DEV_SECRETS=true for a throwaway dev stack" ;;
-  esac
+  # match the .env.example placeholders by PREFIX (mirroring the Helm validator's
+  # hasPrefix check) so a real secret that merely contains "change-me-" is allowed
+  for _secret in "${ARTEA_ADMIN_PASSWORD}" "${DEV1_PASSWORD}" "${POLICY_WEBHOOK_SECRET}" "${DEVPI_ROOT_PASSWORD:-}"; do
+    case "${_secret}" in
+      change-me-*) die "change-me placeholder secrets are not allowed; set real secrets or ARTEA_ALLOW_DEV_SECRETS=true for a throwaway dev stack" ;;
+    esac
+  done
+  unset _secret
 fi
 
 # compose-only: file-mounted gitea secrets; the chart manages these in k8s

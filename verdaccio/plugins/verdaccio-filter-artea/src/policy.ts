@@ -354,9 +354,12 @@ export class HttpPolicyLoader implements PolicyLoader {
 }
 
 export class CompositePolicyLoader implements PolicyLoader {
+  private warnedNpmMinAge = false;
+
   public constructor(
     private readonly npmLoader: PolicyLoader,
     private readonly upstreamLoader: PolicyLoader,
+    private readonly logger: Logger,
   ) {}
 
   public current(): PolicyState {
@@ -367,6 +370,16 @@ export class CompositePolicyLoader implements PolicyLoader {
     const upstreamState = this.upstreamLoader.current();
     if (!upstreamState.ok) {
       return { ok: false, reason: `upstream policy unavailable: ${upstreamState.reason}` };
+    }
+    // The upstream policy source owns min_age; any min_age in the npm policy is
+    // ignored here. Warn once so an operator who set it in the npm policy is not
+    // surprised by a silently-different quarantine window.
+    if (!this.warnedNpmMinAge && npmState.policy.minAgeMs > 0) {
+      this.warnedNpmMinAge = true;
+      this.logger.warn(
+        {},
+        'filter-artea: upstream.min_age in the npm policy is ignored; the configured upstream policy source owns min_age',
+      );
     }
     return {
       ok: true,
@@ -436,5 +449,5 @@ export function createPolicyLoader(config: PolicySourceConfig, logger: Logger): 
     );
   }
   const upstreamLoader = createSinglePolicyLoader(config, logger, 'upstream_policy_file', 'upstream_policy_url');
-  return upstreamLoader === null ? npmLoader : new CompositePolicyLoader(npmLoader, upstreamLoader);
+  return upstreamLoader === null ? npmLoader : new CompositePolicyLoader(npmLoader, upstreamLoader, logger);
 }

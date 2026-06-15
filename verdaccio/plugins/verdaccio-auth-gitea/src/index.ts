@@ -164,7 +164,11 @@ export default class AuthGitea implements IPluginAuth<AuthGiteaConfig> {
     return [user, ...membershipGroups];
   }
 
-  /** The configured namespace org and its teams become Verdaccio groups. Failures are non-fatal. */
+  /**
+   * The configured namespace org and its teams become Verdaccio groups. An org
+   * lookup failure is fatal and rethrown (-> 503) because it gates membership;
+   * a team lookup failure is non-fatal (auth proceeds with the org groups).
+   */
   private async fetchMembershipGroups(user: string, headers: Record<string, string>): Promise<string[]> {
     const groups: string[] = [];
     const seen = new Set<string>();
@@ -179,42 +183,40 @@ export default class AuthGitea implements IPluginAuth<AuthGiteaConfig> {
 
   private async fetchOrgGroups(user: string, headers: Record<string, string>): Promise<string[]> {
     const groups: string[] = [];
-    try {
-      for (let page = 1; page <= MAX_MEMBERSHIP_PAGES; page++) {
-        const res = await fetch(`${this.giteaUrl}/api/v1/user/orgs?page=${page}&limit=${MEMBERSHIP_PAGE_LIMIT}`, {
-          headers,
-        });
-        if (!res.ok) {
-          this.logger.warn({ user, status: res.status }, 'auth-gitea: org lookup for @{user} failed: HTTP @{status}');
-          return groups;
-        }
-        const orgs = (await res.json()) as Array<{ username?: unknown; name?: unknown }>;
-        if (!Array.isArray(orgs)) {
-          return groups;
-        }
-        for (const org of orgs) {
-          const name = typeof org?.username === 'string' ? org.username : org?.name;
-          // Gitea org names are case-insensitive; the gateway's /members/{login}
-          // guard resolves them case-insensitively too, so match the configured
-          // (lowercased) namespace case-insensitively to avoid rejecting a valid
-          // member whose org is stored with non-lowercase casing.
-          if (typeof name === 'string' && name.toLowerCase() === this.privateNamespace) {
-            groups.push(this.privateNamespace);
-          }
-        }
-        if (orgs.length < MEMBERSHIP_PAGE_LIMIT) {
-          return groups; // short page = last page
+    // Org membership is the authorization gate, so a backend failure here means
+    // membership is UNKNOWN, not "not a member": let it throw so authenticate()
+    // returns a retryable 503 rather than a 401 that npm/pip read as bad
+    // credentials. A genuine "not a member" answer still returns [] -> reject.
+    for (let page = 1; page <= MAX_MEMBERSHIP_PAGES; page++) {
+      const res = await fetch(`${this.giteaUrl}/api/v1/user/orgs?page=${page}&limit=${MEMBERSHIP_PAGE_LIMIT}`, {
+        headers,
+      });
+      if (!res.ok) {
+        throw new Error(`GET /api/v1/user/orgs -> HTTP ${res.status}`);
+      }
+      const orgs = (await res.json()) as Array<{ username?: unknown; name?: unknown }>;
+      if (!Array.isArray(orgs)) {
+        throw new Error('GET /api/v1/user/orgs returned a non-array body');
+      }
+      for (const org of orgs) {
+        const name = typeof org?.username === 'string' ? org.username : org?.name;
+        // Gitea org names are case-insensitive; the gateway's /members/{login}
+        // guard resolves them case-insensitively too, so match the configured
+        // (lowercased) namespace case-insensitively to avoid rejecting a valid
+        // member whose org is stored with non-lowercase casing.
+        if (typeof name === 'string' && name.toLowerCase() === this.privateNamespace) {
+          groups.push(this.privateNamespace);
         }
       }
-      this.logger.warn(
-        { user, max: MAX_MEMBERSHIP_PAGES },
-        'auth-gitea: org list for @{user} truncated after @{max} pages',
-      );
-      return groups;
-    } catch {
-      this.logger.warn({ user }, 'auth-gitea: org lookup for @{user} failed');
-      return groups;
+      if (orgs.length < MEMBERSHIP_PAGE_LIMIT) {
+        return groups; // short page = last page
+      }
     }
+    this.logger.warn(
+      { user, max: MAX_MEMBERSHIP_PAGES },
+      'auth-gitea: org list for @{user} truncated after @{max} pages',
+    );
+    return groups;
   }
 
   private async fetchTeamGroups(user: string, headers: Record<string, string>): Promise<string[]> {

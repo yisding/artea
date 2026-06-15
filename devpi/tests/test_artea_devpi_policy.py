@@ -147,20 +147,52 @@ def test_file_allowed_endpoint_uses_current_constrained_policy():
 
     registry = {"xom": FakeXom()}
     allowed = pypi_file_allowed_view(FakeRequest(
-        "/+artea/file-allowed/six",
+        "/+artea/file-allowed",
         registry=registry,
         params={"path": "/root/pypi/+f/472/six-1.17.0-py2.py3-none-any.whl"},
-        matchdict={"project": "six"},
     ))
     assert allowed.status_code == 204
 
     with pytest.raises(HTTPForbidden):
         pypi_file_allowed_view(FakeRequest(
-            "/+artea/file-allowed/six",
+            "/+artea/file-allowed",
             registry=registry,
             params={"path": "/root/pypi/+f/bad/six-2.0.0-py3-none-any.whl"},
-            matchdict={"project": "six"},
         ))
+
+
+def test_file_allowed_endpoint_derives_project_from_mirror_link():
+    # The project is taken from devpi's mirror link, never from the request, so a
+    # file whose name a naive parser would mis-split is still judged correctly.
+    customizer = make_stage("P0D")
+
+    class FakeConstrainedStage:
+        def __init__(self, stage_customizer):
+            self.customizer = stage_customizer
+
+    class TrickyLink:
+        project = "backports-tarfile"
+        name = "backports-tarfile"
+        version = "1.0.0"
+        basename = "backports.tarfile-1.0.0.tar.gz"
+
+    class FakeMirrorStage:
+        def get_link_from_entrypath(self, path):
+            return TrickyLink()
+
+    class FakeModel:
+        def getstage(self, name):
+            return {"root/constrained": FakeConstrainedStage(customizer), "root/pypi": FakeMirrorStage()}.get(name)
+
+    class FakeXom:
+        model = FakeModel()
+
+    allowed = pypi_file_allowed_view(FakeRequest(
+        "/+artea/file-allowed",
+        registry={"xom": FakeXom()},
+        params={"path": "/root/pypi/+f/abc/backports.tarfile-1.0.0.tar.gz"},
+    ))
+    assert allowed.status_code == 204
 
 
 def test_direct_public_file_tween_enforces_min_upstream_age(monkeypatch):

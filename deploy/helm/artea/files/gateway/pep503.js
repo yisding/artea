@@ -59,37 +59,6 @@ function auth(r) {
     });
 }
 
-function stripArchiveExtension(filename) {
-    var lower = filename.toLowerCase();
-    var exts = ['.tar.gz', '.tar.bz2', '.tar.xz', '.zip', '.tgz'];
-    for (var i = 0; i < exts.length; i++) {
-        if (lower.endsWith(exts[i])) {
-            return filename.slice(0, -exts[i].length);
-        }
-    }
-    return null;
-}
-
-function projectFromFilename(filename) {
-    if (filename.toLowerCase().endsWith('.whl')) {
-        var wheelBase = filename.slice(0, -4);
-        var firstDash = wheelBase.indexOf('-');
-        return firstDash > 0 ? normalizeName(wheelBase.slice(0, firstDash)) : null;
-    }
-
-    var base = stripArchiveExtension(filename);
-    if (base === null) {
-        return null;
-    }
-    var parts = base.split('-');
-    for (var i = parts.length - 1; i > 0; i--) {
-        if (/^v?\d/.test(parts[i])) {
-            return normalizeName(parts.slice(0, i).join('-'));
-        }
-    }
-    return null;
-}
-
 function originalUri(r) {
     if (r.parent && r.parent.uri) {
         return r.parent.uri;
@@ -97,7 +66,12 @@ function originalUri(r) {
     return r.variables.artea_original_uri || r.uri;
 }
 
-function canonicalPath(value) {
+// The path of a public-PyPI mirror file, stripped of scheme/host/query/fragment.
+// Returns null for anything that is not a /root/pypi/+f|+e/<dirs>/<file> path.
+// We deliberately do NOT derive the project here: the gateway forwards only the
+// path and devpi resolves the authoritative project from its own mirror
+// metadata (see pypi_file_allowed_view), so njs never parses package filenames.
+function pypiFilePath(value) {
     if (!value) {
         return null;
     }
@@ -108,25 +82,10 @@ function canonicalPath(value) {
     if (cut >= 0) {
         path = path.slice(0, cut);
     }
-    if (path.charAt(0) !== '/') {
+    if (!/^\/root\/pypi\/\+(?:f|e)\/(?:[^/]+\/)+[^/]+$/.test(path)) {
         return null;
     }
-    try {
-        return decodeURIComponent(path);
-    } catch (e) {
-        return null;
-    }
-}
-
-function pypiFileProject(path) {
-    if (path === null) {
-        return null;
-    }
-    var match = /^\/root\/pypi\/\+(?:f|e)\/(?:[^/]+\/)+([^/?#]+)$/.exec(path);
-    if (match === null) {
-        return null;
-    }
-    return projectFromFilename(match[1]);
+    return path;
 }
 
 function responseBody(reply) {
@@ -146,14 +105,13 @@ function pypiFileGuard(r) {
             return;
         }
 
-        var uri = canonicalPath(originalUri(r));
-        var project = pypiFileProject(uri);
-        if (project === null) {
+        var path = pypiFilePath(originalUri(r));
+        if (path === null) {
             r.return(403);
             return;
         }
 
-        var probe = '/_artea_devpi_file_allowed/' + encodeURIComponent(project) + '/?path=' + encodeURIComponent(uri);
+        var probe = '/_artea_devpi_file_allowed?path=' + encodeURIComponent(path);
         r.subrequest(probe, {method: 'GET'}, function(allowed) {
             if (allowed.status >= 200 && allowed.status < 300) {
                 r.return(204);

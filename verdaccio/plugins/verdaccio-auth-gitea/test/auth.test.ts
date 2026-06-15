@@ -228,7 +228,7 @@ describe('verdaccio-auth-gitea', () => {
     expect(gitea.orgHits).toBe(20);
   });
 
-  it('rejects when the orgs endpoint fails', async () => {
+  it('returns a retryable 503 when the orgs endpoint fails (membership unknown)', async () => {
     gitea = new MockGitea();
     gitea.tokens.set('alice', 'pat-alice');
     gitea.orgs.set('alice', ['artea']);
@@ -236,8 +236,8 @@ describe('verdaccio-auth-gitea', () => {
     const plugin = makePlugin({ gitea_url: await gitea.start() });
 
     const { err, groups } = await auth(plugin, 'alice', 'pat-alice');
-    expect(err).toBeNull();
     expect(groups).toBe(false);
+    expect((err as { statusCode?: number }).statusCode).toBe(503);
   });
 
   it('still authenticates with org groups when the teams endpoint fails', async () => {

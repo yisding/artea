@@ -320,10 +320,12 @@ http {
             js_content pep503.pypiFileGuard;
         }
 
-        location ~ ^/_artea_devpi_file_allowed/(?<pypi_guard_project>[^/]+)/$ {
+        location = /_artea_devpi_file_allowed {
             internal;
             proxy_buffering on;
-            proxy_pass http://$devpi_upstream/+artea/file-allowed/$pypi_guard_project?path=$arg_path;
+            # devpi derives the project from the file path itself; the gateway
+            # forwards only ?path= (no parsed project), so njs never has to guess.
+            proxy_pass http://$devpi_upstream/+artea/file-allowed?path=$arg_path;
         }
 
         # pip needs a Basic challenge on 401 to retry with netrc/keyring credentials.

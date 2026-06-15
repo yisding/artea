@@ -52,7 +52,8 @@ after the Gitea-first private-name check, but raw `/root/*/+simple/...` routes
 are not client-visible. The only `/root/` paths exposed on the public origin are
 authenticated file/external-link routes: `/root/pypi/+f/...` and
 `/root/pypi/+e/...`; before proxying them, the gateway calls the internal
-`/+artea/file-allowed/{project}?path=...` endpoint exposed by this plugin, so
+`/+artea/file-allowed?path=...` endpoint exposed by this plugin (which derives
+the project from the mirror file at that path, not from the request), so
 stale direct file URLs for newly blocked versions return 403 without nginx
 buffering and scanning large simple pages. The same plugin also guards direct
 `root/pypi` file URLs so they cannot bypass `min_upstream_age`. Gitea-stored files use

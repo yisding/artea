@@ -159,7 +159,7 @@ class UpstreamHandler(http.server.BaseHTTPRequestHandler):
                 )
                 self._reply(200, body)
                 return
-            if self.path.startswith("/+artea/file-allowed/six?path="):
+            if self.path.startswith("/+artea/file-allowed?path="):
                 if "six-1.0.0-py3-none-any.whl" in self.path:
                     self._reply(204, "")
                 else:
@@ -550,7 +550,7 @@ class GatewayTest(unittest.TestCase):
         self.assertIn("six-1.0.0-py3-none-any.whl", body)
         self.assertTrue(any("six-1.0.0-py3-none-any.whl" in p
                             for p in self.seen("devpi")))
-        self.assertTrue(any(p.startswith("/+artea/file-allowed/six?path=")
+        self.assertTrue(any(p.startswith("/+artea/file-allowed?path=")
                             for p in self.seen("devpi")))
 
     def test_devpi_file_download_requires_current_constrained_link(self):

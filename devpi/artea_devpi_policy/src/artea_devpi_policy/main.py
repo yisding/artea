@@ -389,12 +389,14 @@ def pypi_file_allowed_view(request):
     if customizer is None or link is None:
         raise HTTPForbidden("public PyPI file is not in the mirror index")
 
-    expected_project = normalize_name(request.matchdict.get("project", ""))
-    actual_project = normalize_name(getattr(link, "project", "") or getattr(link, "name", ""))
-    if actual_project != expected_project:
-        raise HTTPForbidden("public PyPI file project does not match the requested policy project")
+    # The project is derived from devpi's own mirror metadata, never from the
+    # request: the gateway forwards only the file path, so the policy decision is
+    # made against the file's actual project (no fragile filename parsing in njs).
+    project = normalize_name(getattr(link, "project", "") or getattr(link, "name", ""))
+    if not project:
+        raise HTTPForbidden("public PyPI file requires age-verifiable mirror metadata")
 
-    if not customizer.link_allowed(expected_project, link):
+    if not customizer.link_allowed(project, link):
         raise HTTPForbidden("public PyPI file is blocked by current constraints or upstream age policy")
 
     return HTTPNoContent()
@@ -403,7 +405,7 @@ def pypi_file_allowed_view(request):
 @server_hookimpl
 def devpiserver_pyramid_configure(config, pyramid_config):
     pyramid_config.add_tween("artea_devpi_policy.main.file_age_tween_factory")
-    pyramid_config.add_route("artea_pypi_file_allowed", "/+artea/file-allowed/{project}")
+    pyramid_config.add_route("artea_pypi_file_allowed", "/+artea/file-allowed")
     pyramid_config.add_view(pypi_file_allowed_view, route_name="artea_pypi_file_allowed", request_method="GET")
 
 

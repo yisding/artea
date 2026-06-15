@@ -2,14 +2,13 @@
 Validation-only template: renders no Kubernetes objects, but fails fast when a
 release/production value set would otherwise drift from fixed contracts.
 */ -}}
+{{- /* Owned images are validated by the artea.image helper where each is emitted,
+EXCEPT verdaccio.pluginAssets.image, which the verdaccio subchart renders inline.
+Pre-validate the full set here through the shared helper so the digest contract
+holds even for images not emitted via artea.image. */ -}}
 {{- $owned := list .Values.devpi.image .Values.policySync.image .Values.bootstrap.image .Values.verdaccio.pluginAssets.image -}}
 {{- range $image := $owned -}}
-{{- if and $image.requireDigest (not $image.digest) -}}
-{{- fail (printf "image %s requires .digest; set a sha256 digest or explicitly disable requireDigest for local/dev installs" $image.repository) -}}
-{{- end -}}
-{{- if and $image.digest (not (regexMatch "^sha256:[a-f0-9]{64}$" $image.digest)) -}}
-{{- fail (printf "image %s has invalid .digest %q; expected sha256:<64 lowercase hex chars>" $image.repository $image.digest) -}}
-{{- end -}}
+{{- include "artea.validateImageDigest" $image -}}
 {{- end -}}
 {{- $secretValues := dict "adminUsername" (include "artea.adminUsername" .) "adminPassword" .Values.secrets.adminPassword "dev1Password" .Values.secrets.dev1Password "devpiRootPassword" .Values.secrets.devpiRootPassword "webhookSecret" .Values.secrets.webhookSecret -}}
 {{- range $name, $value := $secretValues -}}
