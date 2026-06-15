@@ -33,10 +33,9 @@ pnpm -C verdaccio/plugins install && pnpm -C verdaccio/plugins build
 docker build -t ghcr.io/yisding/artea-verdaccio-assets:local \
   -f deploy/docker/verdaccio-assets/Dockerfile verdaccio/plugins
 
-helm dependency update deploy/helm/artea
-helm install artea deploy/helm/artea -f deploy/helm/artea/values-local.yaml
+make k8s-deploy
 
-kubectl logs -f job/artea-bootstrap   # S1: idempotent bootstrap, runs as a hook
+kubectl -n artea logs -f job/artea-bootstrap   # idempotent bootstrap hook
 ```
 
 The bootstrap Job waits for Gitea and the first successful policy sync; first
@@ -48,7 +47,7 @@ minutes (`bootstrap.activeDeadlineSeconds` defaults to 1200s).
 The gateway is the single public URL. Locally nothing is exposed; forward it:
 
 ```sh
-kubectl port-forward svc/artea-gateway 8080:80
+kubectl -n artea port-forward svc/artea-gateway 8080:80
 ```
 
 `global.baseUrl` (default `http://localhost:8080`) must match how clients
@@ -57,7 +56,14 @@ generated tarball/file URLs resolve back through the gateway. The e2e suite
 only knows `BASE_URL`, so S1–S17 run unchanged against compose or K8s.
 
 Client setup (`.npmrc`, pip index URL, PATs) is identical to compose:
-`docs/guides/clients-npm.md`, `docs/guides/clients-python.md`.
+`docs/guides/clients-npm.md`, `docs/guides/clients-python.md`. For the first
+package publish flow, follow [getting-started.md](getting-started.md) after
+the port-forward is running.
+
+With `values-local.yaml`, the bootstrap Job emits a framed credentials block in
+its logs for local testing. For real installs, sign in as the configured admin,
+create users manually or through Okta/OIDC, add package publishers to the
+`developers` team, and have them create PATs in Gitea.
 
 ## Secrets
 
@@ -87,7 +93,9 @@ verdaccio:
   pluginAssets:
     image: {digest: sha256:...}
 EOF
-helm install artea deploy/helm/artea -f /tmp/artea-secrets.yaml
+helm install artea deploy/helm/artea \
+  --namespace artea --create-namespace \
+  -f /tmp/artea-secrets.yaml
 ```
 
 `POLICY_SYNC_TOKEN` is never supplied by you: the bootstrap Job mints the
@@ -149,13 +157,13 @@ the pin location:
 4. Apply + verify:
 
 ```sh
-helm upgrade artea deploy/helm/artea -f <your values>
+helm upgrade artea deploy/helm/artea --namespace artea -f <your values>
 # bootstrap re-runs automatically as a post-upgrade hook
 BASE_URL=http://localhost:8080 make e2e   # with the port-forward running
 ```
 
-Rollback: `helm rollback artea` — note that the bootstrap hook re-runs and the
-Gitea database (postgres PVC) is not rolled back by Helm.
+Rollback with `helm rollback artea --namespace artea`. The bootstrap hook
+re-runs, and the Gitea database (postgres PVC) is not rolled back by Helm.
 
 ## Production sizing
 
@@ -166,8 +174,9 @@ Defaults are single-node (plain `postgresql` + standalone `valkey`,
 
 ## Troubleshooting
 
-- `kubectl logs job/artea-bootstrap` — bootstrap is idempotent; re-run it with
-  `helm upgrade` (or delete the Job and `helm upgrade`) after fixing causes.
+- `kubectl -n artea logs job/artea-bootstrap`: bootstrap is idempotent; re-run
+  it with `helm upgrade` (or delete the Job and `helm upgrade`) after fixing
+  causes.
 - policy-sync `/healthz` reports `last_sync_ok`; until bootstrap has minted
   its token it idles with failing syncs by design (fail-closed: Verdaccio
   rejects public fetches, devpi serves nothing).

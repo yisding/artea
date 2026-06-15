@@ -18,8 +18,8 @@ anonymous access anywhere.
 
 ## 1. Get a personal access token (PAT)
 
-1. Sign in to `http://localhost:8080` (via Okta SSO if configured — see
-   [okta.md](okta.md)).
+1. Sign in to `http://localhost:8080` with your Gitea account. This can be a
+   manually created account or Okta SSO if configured; see [okta.md](okta.md).
 2. Avatar menu → **Settings** → **Applications** (`/user/settings/applications`).
 3. Under *Manage Access Tokens*: enter a token name, expand **Select permissions**,
    and set these permissions:
