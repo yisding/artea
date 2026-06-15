@@ -54,7 +54,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       # the assets image carries pre-built plugins (dist/ + node_modules);
       # build them on the host first — the Dockerfile only COPYies
-      - uses: pnpm/action-setup@008330803749db0355799c700092d9a85fd074e9 # v6.0.9
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         if: matrix.name == 'verdaccio-assets'
         with:
           version: 10
