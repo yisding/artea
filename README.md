@@ -6,7 +6,8 @@ an open-source alternative to Artifactory, built on [Gitea](https://about.gitea.
 
 **v1 formats: npm (JS/TS) and PyPI (Python).**
 
-- One login (Okta/OIDC via Gitea), one long-lived token per user for publish *and* install.
+- One Gitea identity, one long-lived token per user for publish *and* install.
+  Okta/OIDC SSO is supported for humans; manual Gitea accounts also work.
 - Private packages live in Gitea; public packages are pulled through caching proxies.
 - Private names always shadow public ones (dependency-confusion safe by construction).
 - Policy-as-code: block public packages/versions via a reviewed Gitea repo.
@@ -15,14 +16,27 @@ an open-source alternative to Artifactory, built on [Gitea](https://about.gitea.
 
 ## Quick start
 
+For a guided first deployment and first package publish, start with
+[Getting started](docs/guides/getting-started.md).
+
 ```sh
-cp .env.example .env   # edit passwords
-make plugins           # build the Verdaccio plugins (mounted, gitignored dist/)
+cp .env.example .env   # change every placeholder secret for non-throwaway use
 make up                # docker compose up (also generates gitea/secrets/)
 make bootstrap         # create admin, org, tokens, policy repo (idempotent)
+make smoke             # fast gateway/client sanity checks
 make e2e               # run the end-to-end scenario suite
 ```
 
-Credentials for local testing land in `e2e/tmp/credentials.env` (gitignored).
+Local credentials land in `e2e/tmp/credentials.env` (gitignored). The gateway
+is the only exposed service at `http://localhost:8080`; Gitea, Verdaccio,
+devpi and policy-sync stay internal.
 
-Client setup: see `docs/guides/`. Architecture: see `docs/ARCHITECTURE.md`.
+For production-style Kubernetes installs, use the Helm guide:
+[Kubernetes](docs/guides/kubernetes.md). Replace all `.env` / Helm placeholder
+secrets before first use; the dev defaults are for local smoke tests only.
+
+Client setup:
+[npm/pnpm/yarn](docs/guides/clients-npm.md),
+[pip/uv/poetry/twine](docs/guides/clients-python.md),
+[publishing and tokens](docs/guides/publishing.md).
+Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
