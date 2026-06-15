@@ -5,7 +5,10 @@
 Every credential in Artea is a Gitea **personal access token (PAT)**. The same
 token works on every surface — Gitea's package endpoints, the npm pull-through
 cache, and the PyPI gateway paths — because all of them validate credentials
-against Gitea (`GET /api/v1/user`). There are no separate registry accounts.
+against Gitea. Package proxy routes additionally require membership in the
+configured namespace org (`ARTEA_NAMESPACE`, default `artea`), checked with
+Gitea's org-membership API. There are no
+separate registry accounts.
 
 PATs are currently non-expiring (long-lived credentials are a v1 requirement);
 revoke them in **Settings → Applications** when no longer needed. Revocation
@@ -23,10 +26,22 @@ Gitea's scope for packages is the `package` permission category:
 | `read:package` | package: Read | install/download from all registries |
 | `write:package` | package: Read and Write | publish **and** install — write implies read |
 
-So: one token with `read:user`, `read:organization`, and `write:package` both
-publishes and consumes (requirement R6). Hand out `read:user`,
-`read:organization`, and `read:package` tokens to anything that only installs
-(CI build jobs, developer machines that never publish).
+So: one `write:package` token both publishes and consumes (requirement R6);
+hand out `read:package` tokens to anything that only installs (CI build jobs,
+developer machines that never publish).
+
+Every client PAT also needs:
+
+- `read:user` — Verdaccio validates npm credentials by calling Gitea
+  `GET /api/v1/user`.
+- `read:organization` — the gateway checks membership in the configured
+  namespace org before forwarding npm/PyPI proxy requests, and Verdaccio maps
+  that org membership into npm groups.
+
+The complete client scope sets are therefore `read:package,read:user,read:organization`
+for install-only tokens and `write:package,read:user,read:organization` for
+publish-capable tokens. Service tokens that do not authenticate package clients
+can be narrower; for example, policy-sync uses only `read:repository`.
 
 A token alone is not sufficient to publish: the user must also be a member of
 the configured namespace organization (`ARTEA_NAMESPACE`, default `artea`) with
@@ -34,6 +49,12 @@ write permission on its packages — normally via the `developers` team (see
 below). A `read:package` token — or a
 `write:package` token of a user without org write access — gets
 `401 Unauthorized` from Gitea on publish.
+
+A token alone is also not sufficient to install through the npm/PyPI proxy
+routes: the user must be a member of the configured namespace org. Older
+package-only tokens should be replaced with
+`read:package,read:user,read:organization` or
+`write:package,read:user,read:organization` before upgrading clients.
 
 ## Org roles and governance
 
@@ -66,10 +87,9 @@ Tokens are sent as:
 ## Creating tokens
 
 **Humans**: web UI — avatar → **Settings** → **Applications**, name the token,
-set the **package** permission, generate, copy once. This is the only flow for
-SSO users (they have no password, and the token REST API requires Basic auth).
-Also set **user** and **organization** to **Read** so gateway auth and Verdaccio
-group mapping work.
+set the package permission plus `read:user` and `read:organization`, generate,
+copy once. This is the only flow for SSO users (they have no password, and the
+token REST API requires Basic auth).
 
 **Service accounts** (CI bots): an admin can mint a token from the CLI without
 ever setting a password:

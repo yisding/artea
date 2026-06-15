@@ -16,6 +16,7 @@ import { makeLogger, packument, runMiddleware } from './helpers';
 const BLOCK_LEFT_PAD = 'blocked:\n  packages:\n    - name: left-pad\n';
 const BLOCK_LODASH = 'blocked:\n  packages:\n    - name: lodash\n';
 const MALFORMED = 'blocked: [this is: not, valid yaml\n';
+const INVALID_RANGE = 'blocked:\n  packages:\n    - name: lodash\n      versions: "not-a-range !!"\n';
 
 function etagOf(yaml: string): string {
   return `"${createHash('sha256').update(yaml).digest('hex')}"`;
@@ -218,6 +219,13 @@ describe('HttpPolicyLoader', () => {
   it('fails closed on cold start when the body is malformed YAML', async () => {
     const server = await makeServer();
     server.failMode = 'malformed';
+    const { loader } = makeLoader(server);
+    await loader.poll();
+    expect(loader.current().ok).toBe(false);
+  });
+
+  it('fails closed on cold start when a rule has an invalid semver range', async () => {
+    const server = await makeServer(INVALID_RANGE);
     const { loader } = makeLoader(server);
     await loader.poll();
     expect(loader.current().ok).toBe(false);

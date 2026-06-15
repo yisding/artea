@@ -28,19 +28,22 @@ still waits for the hot-path upstreams before marking the gateway healthy.
 
 | Path | Upstream | Auth mechanism |
 |------|----------|----------------|
-| `/npm/@${ARTEA_NAMESPACE}/**` and `/npm/-/package/@${ARTEA_NAMESPACE}/**` (dist-tag API; scope literal or `%40`-encoded, separator `/` or `%2f`, any letter case) | `gitea:3000` → `/api/packages/${ARTEA_NAMESPACE}/npm/...`. The regex location matches literal and encoded `@` / scope-separator spellings case-insensitively; npm publish/packument paths use `%2f`, which nginx keeps encoded during location matching. The forwarded path comes from a `map` over the **raw** `$request_uri`, so `%2f`/`%40` reach Gitea byte-for-byte. A scoped-location match without a raw-map match, including double-encoded separators (`%252f`/`%2540`), returns `400`, reaching neither upstream. All methods (publish `PUT` included) route identically | none at the gateway — Gitea enforces its own auth (Basic `user:PAT` or token); no `auth_request` |
-| `/npm/**` (everything outside the configured private scope) | `verdaccio:4873` (prefix stripped; Verdaccio `url_prefix=/npm/`) | gateway `auth_request` → Gitea `GET /api/v1/user` (same guard + 30s cache as pypi), so Verdaccio service endpoints (`/-/ping`, `/-/v1/search`, audit) are not anonymous; the `Authorization` header still passes through so Verdaccio's auth plugin authorizes npm-level access against Gitea |
-| `/pypi/simple/{name}[/]` | name PEP 503-normalized + trailing slash appended **in the gateway** (see below), then `gitea:3000` → `/api/packages/${ARTEA_NAMESPACE}/pypi/simple/{norm}/`; **on Gitea 404 only** → `devpi:3141` → `/root/constrained/+simple/{norm}/`, where the Artea devpi policy plugin applies PyPI constraints and the shared upstream age gate | gateway `auth_request` → Gitea `GET /api/v1/user` (Basic `user:PAT`); 200s cached 30s keyed on the `Authorization` header |
+| `/npm/@${ARTEA_NAMESPACE}/**` and `/npm/-/package/@${ARTEA_NAMESPACE}/**` (dist-tag API; scope literal or `%40`-encoded, separator `/` or `%2f`, any letter case) | `gitea:3000` → `/api/packages/${ARTEA_NAMESPACE}/npm/...`. The regex location matches literal and encoded `@` / scope-separator spellings case-insensitively; npm publish/packument paths use `%2f`, which nginx keeps encoded during location matching. The forwarded path comes from a `map` over the **raw** `$request_uri`, so `%2f`/`%40` reach Gitea byte-for-byte. A scoped-location match without a raw-map match, including double-encoded separators (`%252f`/`%2540`), returns `400`, reaching neither upstream. All methods (publish `PUT` included) route identically | gateway `auth_request` → njs guard → Gitea user lookup, `${ARTEA_NAMESPACE}` org-membership check, and package-scope probe, then Gitea enforces package-specific read/write permissions |
+| `/npm/**` (everything outside the configured private scope) | `verdaccio:4873` (prefix stripped; Verdaccio `url_prefix=/npm/`) | gateway `auth_request` → same njs guard, so Verdaccio service endpoints (`/-/ping`, `/-/v1/search`, audit) are not anonymous and only org members with package-scoped PATs reach the cache; the `Authorization` header still passes through so Verdaccio's auth plugin authorizes npm-level access against Gitea |
+| `/pypi/simple/{name}[/]` | name PEP 503-normalized + trailing slash appended **in the gateway** (see below), then `gitea:3000` → `/api/packages/${ARTEA_NAMESPACE}/pypi/simple/{norm}/`; **on Gitea 404 only** → `devpi:3141` → `/root/constrained/+simple/{norm}/`, where the Artea devpi policy plugin applies PyPI constraints and the shared upstream age gate | same njs guard; org/package-scope successes are cached 30s keyed on the `Authorization` header |
 | `/pypi/simple/` (bare full-index page) | `devpi:3141` → `/root/constrained/+simple/` directly (Gitea has no list-all route) | gateway `auth_request` (same guard) |
-| `/root/**` (public devpi file/simple paths) | `devpi:3141` (path unchanged). The Artea devpi policy plugin guards direct `root/pypi/+f/...` and `root/pypi/+e/...` public file URLs when age verification is required | gateway `auth_request` (same guard; devpi itself has no auth) |
+| `/root/pypi/+(f\|e)/**` (devpi file/external-link URLs; devpi may emit `%2Bf`) | `devpi:3141` (path unchanged) | same njs guard, then an internal Artea devpi policy endpoint confirms the mirror file is allowed by the current constrained-index policy; stale blocked file URLs return 403 |
+| `/root/**` (everything else, including raw devpi simple pages) | none | hidden with 404 so clients cannot bypass constraints or the Gitea-first lookup |
 | `/-/artea-gateway/health` | none (gateway-local liveness, for compose healthchecks) | none |
-| `/**` (everything else: UI, `/api/v1/...`, `/api/packages/${ARTEA_NAMESPACE}/npm/...`, `/api/packages/${ARTEA_NAMESPACE}/pypi/...` uploads + files) | `gitea:3000` (raw URI, byte-for-byte) | Gitea enforces its own auth; no gateway guard |
+| `/api/packages/${ARTEA_NAMESPACE}/npm/**`, `/api/packages/${ARTEA_NAMESPACE}/pypi/**` | `gitea:3000` (raw URI, byte-for-byte) | same gateway guard first, then Gitea enforces package-specific read/write permissions |
+| `/api/packages/**` for any other owner or format | none | hidden with 404; v1 exposes only the configured single org and npm/PyPI |
+| `/**` (everything else: UI, `/api/v1/...`) | `gitea:3000` (raw URI, byte-for-byte) | Gitea enforces its own auth; no gateway guard |
 
 Auth failures on guarded paths return `401` with `WWW-Authenticate: Basic
-realm="Artea"` so pip retries with netrc/keyring credentials. A `403` from the
-auth subrequest (e.g. a PAT lacking the required API scope) is also mapped to
-this `401` challenge. On `/npm/` only nginx-generated auth_request failures get
-this mapping: upstream 401/403s from Verdaccio itself (e.g. the policy
+realm="Artea"` so pip retries with netrc/keyring credentials. Valid credentials
+that fail authorization (non-member of the configured namespace or missing package scope) return
+`403` without a Basic challenge. On `/npm/` only nginx-generated auth_request
+failures get this mapping: upstream 401/403s from Verdaccio itself (e.g. the policy
 middleware's tarball 403, S13) pass through unmodified because
 `proxy_intercept_errors` stays off there. npm clients send credentials on every
 request (`always-auth=true` in the documented client config), so package flows
@@ -114,8 +117,10 @@ stop). Mechanism, in `nginx.conf.template`:
   neither Verdaccio nor Gitea. This covers percent-encoded scope letters and
   double-encoded separators (`%252f`, `%2540`); no canonical private-scope name can
   leak by these spellings.
-- No `auth_request` on this route: it is Gitea-bound and Gitea authenticates
-  itself. The guard's job on `/npm/` remains the Verdaccio-bound paths.
+- The private-scope route still runs the gateway guard before proxying to Gitea,
+  so non-org users and PATs without package scope fail before any Gitea 404 can
+  blur "not found" with "not allowed". Gitea remains the final package
+  permission check for reads and writes.
 
 Verdaccio's deny rule for `@${ARTEA_NAMESPACE}/*` stays as defense in depth,
 and the legacy client-side scope routing (`@${ARTEA_NAMESPACE}:registry=` in
@@ -143,16 +148,20 @@ CLIENT CAVEAT comment in `nginx.conf.template`.
 
 ## Auth-result cache
 
-`auth_request` subrequests hit Gitea `GET /api/v1/user` forwarding the client's
-`Authorization` header. Successful (200) results are cached for 30 s keyed on the
-raw header value; failures are never cached, so bad credentials are re-checked
-every time. Net effect: PAT revocation takes effect on guarded paths (`/npm/`
-and all devpi-bound paths) within 30 s (budget is 60 s, scenario S12).
-Trade-offs, accepted and documented:
+The njs guard first hits Gitea's `/api/v1/user` forwarding the client's
+`Authorization` header, then checks `${ARTEA_NAMESPACE}` org membership for the
+returned login, then probes Gitea's package-management API
+(`/api/v1/packages/${ARTEA_NAMESPACE}/?type=pypi&limit=1`) to prove the PAT has
+package scope. Successful user/org/package-scope results are cached for 30 s
+keyed on the raw header value plus the probe type; failures are never cached,
+so bad credentials or removed org memberships are re-checked every time. Net
+effect: PAT revocation takes effect on guarded paths within 30 s for the
+gateway guard itself (budget is 60 s, scenario S12). Trade-offs, accepted and
+documented:
 
-- Cached entries (header value + small user JSON) live on disk inside the
-  container's ephemeral layer at `/var/cache/nginx/registry_auth` — never on a
-  volume. Restarting the container clears them.
+- Cached entries (header value + small auth response metadata) live on disk
+  inside the container's ephemeral layer at `/var/cache/nginx/registry_auth` —
+  never on a volume. Restarting the container clears them.
 - The cache key is the credential itself; nginx stores it md5-hashed in the file
   name but verbatim inside the cache file. Same blast radius as nginx access
   logs; acceptable for v1.
@@ -161,33 +170,34 @@ Trade-offs, accepted and documented:
 
 1. **404-vs-401 interplay (the big one).** The fallback keys on Gitea's 404, and
    Gitea answers 404 both for "name not published" *and* for "exists but this
-   authenticated user may not see it" (it hides private resources). With the v1
-   single configured org every authenticated org member can read org packages, so
-   404 reliably means "not private". If the org is ever switched to
-   private/limited visibility, non-member users would silently fall through to
-   the public mirror for *private* names — reopening dependency confusion. e2e
-   S9 should run once as an org member and once as a plain authenticated
-   non-member to pin this down.
-2. **PAT scopes for the guard.** The guard calls `/api/v1/user`, which in Gitea
-   requires the `read:user` token scope — `read:package` alone yields 403 (the
-   gateway converts it to a 401 challenge, but pip still can't get in). The
-   same now applies to every Verdaccio-bound `/npm/` request (configured private-scope
-   paths skip the guard; Gitea authenticates them itself). **Bootstrap must mint PATs with
-   `read:user` and `read:organization` in addition to `read:package`/`write:package`.** Basic auth
-   with the account password (or a token used as Basic password, which Gitea
-   treats as full-scope) is not affected.
+   authenticated user may not see it" (it hides private resources). The gateway
+   first validates that the PAT belongs to a `${ARTEA_NAMESPACE}` org member
+   with package scope, so only authorized org members can reach the fallback
+   path at all. e2e S9 pins the private-name precedence check, and gateway
+   routing tests pin non-member rejection.
+2. **PAT scopes for the guard.** The guard first calls `/api/v1/user` so Basic
+   `user:PAT` and npm's token-style Gitea auth both resolve to a Gitea login. It
+   then calls `/api/v1/orgs/${ARTEA_NAMESPACE}/members/{login}`, which requires
+   the `read:organization` token scope, and probes the package-management API so
+   a user/org-only token cannot pull packages. Verdaccio's user check also
+   requires `read:user`. **Bootstrap must mint PATs with `read:user` and
+   `read:organization` in addition to `read:package`/`write:package`.** Basic
+   auth with the account password is not the supported client path for package
+   installs.
 3. **devpi link generation.** devpi's `+simple/` pages are served to the client
    under `/pypi/simple/{name}/` but generated for `/root/constrained/+simple/{name}/`
    — one path segment deeper. If devpi emits *relative* file hrefs
    (`../../+f/...`), pip resolves them to `/pypi/+f/...`, which routes to Gitea
    and 404s. The gateway already sends `X-outside-url`; **devpi must be run with
-   `--absolute-urls`** so file links come out as gateway-origin `/root/...`
-   URLs. The `/root/` location is a guarded path to devpi, and the devpi policy
-   plugin enforces public-file age policy there. S8 is the canary.
+   `--absolute-urls`** so file links come out as
+   `http://localhost:8080/root/pypi/%2Bf/...`, which the restricted devpi file
+   location serves after canonicalizing `%2Bf` to `+f` for the constrained-link
+   check. S8 is the canary. Raw `/root/*/+simple/` routes intentionally stay
+   hidden.
 4. **PEP 503 name normalization happens in the gateway.** The Gitea-first
    lookup and the devpi fallback both use the njs-normalized name (see "PEP 503
    name normalization" above) — shadowing no longer relies on the client, Gitea,
-   or devpi normalizing. Non-canonical spellings (`Artea-Hello`, `artea_hello`)
+   or devpi normalizing. Non-canonical spellings (`Acme-Hello`, `acme_hello`)
    of a private name hit the private package and never fall through to the
    public mirror (S16; probe S9 with such a name too). devpi only ever sees
    canonical names, so it has no reason to redirect; if it ever does, the
@@ -206,19 +216,18 @@ Trade-offs, accepted and documented:
    is the complete pypi.org name list, several MB. pip doesn't fetch it during
    `install`; nothing breaks, just don't be surprised in logs.
 7. **Scoped-npm URL encoding.** Gitea-bound paths carry the raw URI
-   byte-for-byte (`%2f` preserved — covered by a test): `/api/packages/...`
-   via `location /` (no rewrite), and private-scope traffic under `/npm/` via the
-   `$private_npm_uri` map over the raw `$request_uri` (see "npm scope routing"
-   above). For other scopes the `/npm/` location rewrites (strips the prefix),
-   which makes nginx re-encode the URI, so Verdaccio may see `@scope/name`
-   where the client sent `@scope%2fname`. Verdaccio's own documented nginx
-   sub-path setup has the same property and it accepts both forms; S4/S5
-   exercise this.
-8. **Auth caching vs revocation.** A revoked PAT keeps working on guarded
-   paths — `/npm/` and devpi-bound — for up to 30 s (S12's budget is 60 s, matching
-   the gateway and Verdaccio positive caches). Gitea-bound paths (npm
-   publish/install of `@${ARTEA_NAMESPACE}/*`, twine) are revoked instantly — no gateway
-   cache involved.
+   byte-for-byte (`%2f` preserved — covered by a test): direct
+   `/api/packages/...` paths via exact locations, and private-scope traffic
+   under `/npm/` via the `$private_npm_uri` map over the raw `$request_uri` (see
+   "npm scope routing" above). For other scopes the `/npm/` location rewrites
+   (strips the prefix), which makes nginx re-encode the URI, so Verdaccio may
+   see `@scope/name` where the client sent `@scope%2fname`. Verdaccio's own
+   documented nginx sub-path setup has the same property and it accepts both
+   forms; S4/S5 exercise this.
+8. **Auth caching vs revocation.** A revoked PAT keeps working on guarded paths
+   while positive cache entries are live. The gateway and Verdaccio positive
+   auth caches are each 30 s, so the conservative worst-case remains within
+   S12's 60 s budget.
 9. **`/npm/` is guarded but transparent.** Anonymous requests to Verdaccio's
    service endpoints (`/-/ping`, `/-/v1/search`, audit) get the 401 Basic
    challenge instead of answers ("anonymous access: none, anywhere").
@@ -226,9 +235,9 @@ Trade-offs, accepted and documented:
    untouched, and Verdaccio's own 401/403 responses (policy tarball 403, S13)
    reach the client unmodified — `proxy_intercept_errors` stays off on
    `/npm/`, so only nginx-generated auth_request failures are re-mapped to the
-   Basic challenge. Configured private-scope paths peel off to Gitea before the guard
-   and are authenticated by Gitea itself (their 401s come from Gitea, not the
-   gateway). S2–S5 must keep passing with the guard in place.
+   Basic challenge. Configured private-scope paths peel off to Gitea before
+   Verdaccio but still run the same gateway guard first. S2–S5 must keep
+   passing with the guard in place.
 
 ## Validating the config
 

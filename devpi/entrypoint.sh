@@ -67,7 +67,11 @@ log "devpi-server is up"
 # a fresh index is seeded fail-closed ('*' = block all) and an existing one is
 # left alone — its constraints are owned by policy-sync (see ensure_index.py).
 # Uses the JSON API, not devpi-client: --outside-url rewrites client URLs (README)
-python3 "${SCRIPT_DIR}/ensure_index.py" "${LOCAL_URL}"
+if ! python3 "${SCRIPT_DIR}/ensure_index.py" "${LOCAL_URL}"; then
+  shutdown
+  wait "${SERVER_PID}" 2>/dev/null || true
+  exit 1
+fi
 
 # test/maintenance hook: init everything, then exit instead of serving
 if [ "${DEVPI_ONESHOT:-0}" = "1" ]; then

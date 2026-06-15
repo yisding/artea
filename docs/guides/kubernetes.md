@@ -23,7 +23,7 @@ layout, the Verdaccio plugin delivery): `deploy/helm/artea/README.md`.
 ```sh
 colima start --kubernetes
 
-# our images, tagged :local (values-local.yaml uses pullPolicy: Never)
+# our images, tagged :local for local-only values-local.yaml (pullPolicy: Never)
 docker build -t ghcr.io/yisding/artea-devpi:local devpi/
 docker build -t ghcr.io/yisding/artea-policy-sync:local policy-sync/
 # bootstrap image (scripts/bootstrap.sh in k8s-secret mode) builds from the
@@ -65,7 +65,8 @@ Set real values for every key under `secrets:` (the defaults are dev
 placeholders, mirroring `.env.example`). The private package namespace defaults
 to `artea`; override `global.privateNamespace` to use another Gitea org / npm
 scope. When `secrets.adminUsername` is omitted or empty, it defaults to
-`<global.privateNamespace>-admin`.
+`<global.privateNamespace>-admin`. Do not reuse the dev placeholders outside
+local smoke tests:
 
 ```sh
 cat > /tmp/artea-secrets.yaml <<'EOF'
@@ -76,6 +77,15 @@ secrets:
   dev1Password: ...
   devpiRootPassword: ...
   webhookSecret: ...
+devpi:
+  image: {digest: sha256:...}
+policySync:
+  image: {digest: sha256:...}
+bootstrap:
+  image: {digest: sha256:...}
+verdaccio:
+  pluginAssets:
+    image: {digest: sha256:...}
 EOF
 helm install artea deploy/helm/artea -f /tmp/artea-secrets.yaml
 ```
@@ -88,8 +98,9 @@ the in-cluster token; re-running bootstrap rotates it only when invalid or
 over-privileged — the same idempotency contract as `make bootstrap` in
 compose.
 
-For production, expose the gateway via the optional Ingress (TLS + host
-routing only — the routing logic stays in the gateway, by architecture rule):
+For production, expose only the gateway via the optional Ingress (TLS + host
+routing only — the routing logic stays in the gateway, by architecture rule).
+Do not expose the Gitea, Verdaccio, devpi, or policy-sync Services directly:
 
 ```yaml
 global:
@@ -103,6 +114,11 @@ gateway:
       - secretName: artea-tls
         hosts: [registry.example.com]
 ```
+
+If TLS terminates before the Ingress, keep `global.baseUrl` on `https://...`
+and set `gateway.ingress.externalTLS: true` instead of `gateway.ingress.tls`.
+The chart fails rendering when Ingress is enabled without a host, HTTPS base
+URL, and either TLS or this explicit external-TLS declaration.
 
 ## State
 
@@ -124,9 +140,12 @@ the pin location:
    `verdaccio.image.tag` in `values.yaml` (keep in sync with the compose pins
    in `.env` / `gitea/UPSTREAM`; re-verify the `files/gitea-templates/`
    overlay against the new Gitea templates — they are version-coupled).
-3. **Our images**: CI pushes `:main` and digests; production values should pin
-   `devpi.image.digest`, `policySync.image.digest`, `bootstrap.image.digest`,
-   `verdaccio.pluginAssets.image.digest`.
+3. **Our images**: CI pushes mutable tags (for example `:main`) and immutable
+   digests. `values-local.yaml` intentionally uses `:local` with
+   `pullPolicy: Never` for colima/k3s development. Production release values
+   must pin `devpi.image.digest`, `policySync.image.digest`,
+   `bootstrap.image.digest`, and `verdaccio.pluginAssets.image.digest`; the
+   digest takes precedence over the tag in the rendered image reference.
 4. Apply + verify:
 
 ```sh

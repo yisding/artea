@@ -7,7 +7,7 @@ file and two plugins loaded through Verdaccio's stable plugin API.
 | Piece | Purpose |
 |-------|---------|
 | `config.yaml.template` | Verdaccio config template: `/npm/` url_prefix, npmjs uplink, package rules, plugin wiring |
-| `plugins/verdaccio-auth-gitea/` | auth plugin — validates `user:PAT` against Gitea, maps orgs to groups (paginated), 30s positive cache |
+| `plugins/verdaccio-auth-gitea/` | auth plugin — validates `user:PAT` against Gitea, rejects users outside the configured namespace org, maps that org/team membership to groups (paginated), 30s positive cache |
 | `plugins/verdaccio-filter-artea/` | metadata filter + tarball middleware — enforces `/policy/npm-rules.yaml` (blocked names/scopes/semver ranges) plus `/policy/upstream-policy.yaml` (minimum upstream age), mtime hot-reload, fail-closed |
 | `smoke/` | dev-only: boots verdaccio 6 in-process with `config.yaml.template` + built plugins and asserts the auth/deny contract; **not mounted** into the container |
 
@@ -76,8 +76,11 @@ world-readable (default). If you bind-mount storage instead of using a named vol
 
 Every request must carry HTTP Basic `user:PAT` (the documented `.npmrc` uses
 `_auth=<base64 user:PAT>` + `always-auth=true`). The auth plugin validates against
-Gitea per request with a 30s positive cache, so PAT revocation takes effect comfortably
-within a minute (e2e S12). There is no local user database and `npm adduser` fails by design.
+Gitea per request, rejects valid Gitea users outside the configured namespace
+org (`ARTEA_NAMESPACE`, default `artea`), and
+uses a 30s positive cache. The gateway has its own 30s positive auth cache, so
+the conservative npm pull-through revocation guarantee is still within 60s (e2e
+S12). There is no local user database and `npm adduser` fails by design.
 
 ## Policy enforcement recap
 

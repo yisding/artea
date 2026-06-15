@@ -18,6 +18,9 @@
 global:
   baseUrl: http://localhost:8080
 
+secrets:
+  allowDevPlaceholders: true
+
 gateway:
   replicas: 1
   resources:
@@ -26,6 +29,7 @@ gateway:
 devpi:
   image:
     tag: local
+    requireDigest: false
     pullPolicy: Never
   persistence:
     size: 2Gi
@@ -35,19 +39,23 @@ devpi:
 policySync:
   image:
     tag: local
+    requireDigest: false
     pullPolicy: Never
   resources:
     requests: {cpu: 25m, memory: 64Mi}
 
 bootstrap:
+  emitCredentials: true
   image:
     tag: local
+    requireDigest: false
     pullPolicy: Never
 
 verdaccio:
   pluginAssets:
     image:
       tag: local
+      requireDigest: false
       pullPolicy: Never
   persistence:
     size: 2Gi

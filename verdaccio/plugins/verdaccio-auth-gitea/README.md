@@ -10,18 +10,24 @@ Gitea the single identity source for the whole stack (requirement R1).
   accepts Basic `user:PAT` on its API.
 - The response `login` must match the supplied username (case-insensitive); a valid
   PAT presented under someone else's username is rejected.
-- On success, `GET /api/v1/user/orgs` maps Gitea organization names to Verdaccio
-  groups. The returned group list always starts with the username: Verdaccio's auth
-  chain treats an empty groups array as a *failed* authentication, so the list must
-  never be empty. Org lookup failures are non-fatal: the user authenticates with the
-  groups gathered so far (at minimum the username group), with a warning logged.
-  Orgs are fetched in pages of 50, following `page=` until a short page; pagination
-  is capped at 20 pages (1000 orgs, logged if hit) so a misbehaving backend cannot
+- On success, `GET /api/v1/user/orgs` maps membership in the configured namespace
+  org (`private_namespace`, `$ARTEA_NAMESPACE`, then default `artea`) to a
+  Verdaccio group of the same name, and `GET /api/v1/user/teams` maps only teams
+  in that org as `<namespace>/<team>` groups. Other orgs are ignored. The
+  returned group list always starts with the username, but only after namespace
+  membership is proven; valid Gitea users outside the org are rejected. Org
+  lookup failures reject authentication, while team lookup failures are
+  non-fatal after the org check passes. Verdaccio's auth chain treats an empty
+  groups array as a *failed* authentication, so accepted users include at least
+  the username and namespace group. Membership endpoints are fetched in pages of
+  50, following `page=` until a short page; pagination is capped at 20 pages
+  (1000 entries per endpoint, logged if hit) so a misbehaving backend cannot
   stall authentication.
-- Positive results are cached in memory for 30 seconds, keyed by
+- Positive results are cached in memory for the configured TTL, keyed by
   `user + sha256(password)` — the PAT itself is never stored. Rejections are not
-  cached. Net effect: a revoked PAT stops working comfortably within one minute
-  (ARCHITECTURE.md auth model; e2e scenario S12).
+  cached. Artea's Verdaccio config sets this to 30 seconds; paired with the
+  gateway's 30s positive auth cache, the conservative revocation guarantee is
+  still within 60 seconds (ARCHITECTURE.md auth model; e2e scenario S12).
 - If Gitea is unreachable or errors, the callback receives a 503 — the plugin fails
   closed, never open.
 - `adduser`/`changePassword` are deliberately not implemented: accounts exist only in
@@ -35,7 +41,8 @@ Gitea the single identity source for the whole stack (requirement R1).
 auth:
   auth-gitea:
     gitea_url: http://gitea:3000   # falls back to $GITEA_URL, then http://gitea:3000
-    cache_ttl_ms: 30000            # optional, default 30000
+    private_namespace: artea       # falls back to $ARTEA_NAMESPACE, then artea
+    cache_ttl_ms: 30000            # keep aligned with the gateway auth_request cache
 ```
 
 ## Develop

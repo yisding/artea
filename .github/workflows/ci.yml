@@ -75,13 +75,54 @@ jobs:
       - name: chart copied-file drift check
         run: bash ./scripts/check-chart-copies.sh
       - name: helm lint + template
-        # uses the runner-provided helm; the chart lands in a parallel PR, so
-        # skip quietly until deploy/helm/artea exists
+        # uses the runner-provided helm
         run: |
-          if [ ! -d deploy/helm/artea ]; then
-            echo "deploy/helm/artea not present yet; skipping helm checks"
-            exit 0
-          fi
           helm dependency update deploy/helm/artea
-          helm lint deploy/helm/artea
-          helm template artea deploy/helm/artea --namespace artea > /dev/null
+          helm lint deploy/helm/artea --values deploy/helm/artea/values-local.yaml
+          helm template artea deploy/helm/artea \
+            --namespace artea --values deploy/helm/artea/values-local.yaml > /dev/null
+          if helm template artea deploy/helm/artea --namespace artea > /tmp/artea-default-template.out 2>&1; then
+            echo "default values unexpectedly rendered without release image digests" >&2
+            exit 1
+          fi
+          grep -q 'requires .digest' /tmp/artea-default-template.out
+          if helm template artea deploy/helm/artea \
+            --namespace artea --values deploy/helm/artea/values-local.yaml \
+            --set devpi.image.digest=not-a-digest > /tmp/artea-bad-digest.out 2>&1; then
+            echo "malformed image digest unexpectedly rendered" >&2
+            exit 1
+          fi
+          grep -q 'invalid .digest' /tmp/artea-bad-digest.out
+          prod_flags=(
+            --namespace artea
+            --set secrets.adminPassword=prod-admin-password
+            --set secrets.dev1Password=prod-dev1-password
+            --set secrets.devpiRootPassword=prod-devpi-password
+            --set secrets.webhookSecret=prod-webhook-secret
+            --set devpi.image.digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+            --set policySync.image.digest=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+            --set bootstrap.image.digest=sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+            --set verdaccio.pluginAssets.image.digest=sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+          )
+          if helm template artea deploy/helm/artea "${prod_flags[@]}" \
+            --set bootstrap.emitCredentials=true > /tmp/artea-emit-creds.out 2>&1; then
+            echo "production credential emission unexpectedly rendered" >&2
+            exit 1
+          fi
+          grep -q 'bootstrap.emitCredentials=true is only allowed' /tmp/artea-emit-creds.out
+          if helm template artea deploy/helm/artea \
+            --namespace artea --values deploy/helm/artea/values-local.yaml \
+            --set secrets.adminPassword= > /tmp/artea-empty-secret.out 2>&1; then
+            echo "empty secret unexpectedly rendered" >&2
+            exit 1
+          fi
+          grep -q 'secrets.adminPassword must not be empty' /tmp/artea-empty-secret.out
+          if helm template artea deploy/helm/artea \
+            --namespace artea --values deploy/helm/artea/values-local.yaml \
+            --set global.baseUrl=https://registry.example.com \
+            --set gateway.ingress.enabled=true \
+            --set gateway.ingress.host=registry.example.com > /tmp/artea-ingress-no-tls.out 2>&1; then
+            echo "ingress without TLS/externalTLS unexpectedly rendered" >&2
+            exit 1
+          fi
+          grep -q 'gateway.ingress.tls or gateway.ingress.externalTLS=true' /tmp/artea-ingress-no-tls.out

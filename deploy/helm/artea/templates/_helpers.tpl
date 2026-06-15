@@ -38,8 +38,21 @@ app.kubernetes.io/component: {{ .component }}
 app.kubernetes.io/instance: {{ .ctx.Release.Name }}
 {{- end -}}
 
+{{/* Fail fast on a missing or malformed image digest; pass the image map. Single
+home for the digest contract, shared by artea.image (which emits the ref) and
+templates/validations.yaml (which pre-validates every owned image). */}}
+{{- define "artea.validateImageDigest" -}}
+{{- if and .requireDigest (not .digest) -}}
+{{- fail (printf "image %s requires .digest; set a sha256 digest or explicitly disable requireDigest for local/dev installs" .repository) -}}
+{{- end -}}
+{{- if and .digest (not (regexMatch "^sha256:[a-f0-9]{64}$" .digest)) -}}
+{{- fail (printf "image %s has invalid .digest %q; expected sha256:<64 lowercase hex chars>" .repository .digest) -}}
+{{- end -}}
+{{- end -}}
+
 {{/* Image reference with digest pin taking precedence over tag; pass the image map */}}
 {{- define "artea.image" -}}
+{{- include "artea.validateImageDigest" . -}}
 {{- if .digest -}}
 {{ printf "%s@%s" .repository .digest }}
 {{- else -}}

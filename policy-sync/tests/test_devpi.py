@@ -43,6 +43,20 @@ def test_apply_patches_when_devpi_differs(cfg, mock_devpi):
     assert mock_devpi.config["constraints"] == CONSTRAINTS
 
 
+def test_apply_rejects_wrong_index_type(cfg, mock_devpi):
+    mock_devpi.config["type"] = "mirror"
+    with pytest.raises(DevpiError, match="expected 'constrained'"):
+        apply_constraints(cfg, CONSTRAINTS, "P0D")
+    assert mock_devpi.patches == []
+
+
+def test_apply_rejects_wrong_index_base(cfg, mock_devpi):
+    mock_devpi.config["bases"] = ["root/other"]
+    with pytest.raises(DevpiError, match="expected root/pypi"):
+        apply_constraints(cfg, CONSTRAINTS, "P0D")
+    assert mock_devpi.patches == []
+
+
 def test_apply_patches_when_min_upstream_age_differs(cfg, mock_devpi):
     mock_devpi.config["constraints"] = ["urllib3<2", "requests ==2.31.0"]
     mock_devpi.config["min_upstream_age"] = "P0D"

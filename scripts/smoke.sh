@@ -58,8 +58,11 @@ check "pypi simple for unpublished name falls through to public mirror" 200 \
 # devpi's public mirror file route.
 links=$(curl -s -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/six/" \
   | grep -c "href=\"${GATEWAY_URL}/root/pypi/" || true)
-check "pypi simple page links route via gateway file path" yes "$([ "${links}" -gt 0 ] && echo yes || echo no)"
-check "public pypi file path w/o auth is denied" 401 "$(code "${GATEWAY_URL}/root/pypi/")"
+check "devpi simple page links route via gateway /root/" yes "$([ "${links}" -gt 0 ] && echo yes || echo no)"
+check "raw devpi simple route is hidden" 404 \
+  "$(code -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/root/pypi/+simple/six/")"
+check "devpi file path w/o auth is denied" 401 \
+  "$(code "${GATEWAY_URL}/root/pypi/+f/probe/file.whl")"
 
 # 4. gitea package API direct paths (npm scope registry / pypi upload target)
 check "gitea pypi simple 404s for unpublished name (auth'd)" 404 \

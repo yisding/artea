@@ -36,8 +36,8 @@ The gateway's pypi 404-fallback targets the **constrained** index, not the raw m
 
 | What | URL on devpi (`http://devpi:3141`) |
 |------|------------------------------------|
-| Simple index for a project (PEP 503) | `/root/constrained/+simple/{name}/` (trailing slash; `{name}` PEP 503-normalized — pip normalizes before requesting) |
-| Full project list | `/root/constrained/+simple/` (avoid: forces a full pypi.org project-list sync) |
+| Gateway-internal simple index target for a project (PEP 503) | `/root/constrained/+simple/{name}/` (trailing slash; `{name}` PEP 503-normalized — pip normalizes before requesting) |
+| Gateway-internal full project list | `/root/constrained/+simple/` (avoid: forces a full pypi.org project-list sync) |
 | Release files | `/root/pypi/+f/{hash}/{filename}#sha256=...` — note **`root/pypi`**, not `root/constrained`: cached mirror files live on the base index even when discovered via the constrained one |
 | Health/status | `/+status` (also used by the image's `HEALTHCHECK`) |
 
@@ -46,11 +46,18 @@ Because the server runs with `--outside-url http://localhost:8080` **and
 the gateway origin, verified live: `http://localhost:8080/root/pypi/+f/...`.
 (Without `--absolute-urls` devpi emits relative hrefs like `../../../pypi/+f/...`,
 which break behind the gateway's `/pypi/simple/` → `/root/constrained/+simple/`
-path translation — do not remove that flag.) The gateway routes the
-**entire `/root/` prefix** to devpi (after its auth_request guard). The Artea
-devpi policy plugin filters the constrained simple index and guards direct
-`root/pypi` file URLs so they cannot bypass `min_upstream_age`. Gitea-stored
-files use `/api/packages/...` paths and route to Gitea instead.
+path translation — do not remove that flag.) The gateway proxies
+client-facing `/pypi/simple/...` requests to devpi's constrained simple pages
+after the Gitea-first private-name check, but raw `/root/*/+simple/...` routes
+are not client-visible. The only `/root/` paths exposed on the public origin are
+authenticated file/external-link routes: `/root/pypi/+f/...` and
+`/root/pypi/+e/...`; before proxying them, the gateway calls the internal
+`/+artea/file-allowed?path=...` endpoint exposed by this plugin (which derives
+the project from the mirror file at that path, not from the request), so
+stale direct file URLs for newly blocked versions return 403 without nginx
+buffering and scanning large simple pages. The same plugin also guards direct
+`root/pypi` file URLs so they cannot bypass `min_upstream_age`. Gitea-stored files use
+`/api/packages/...` paths and route to Gitea instead.
 
 Two more gateway notes, both verified against the real server:
 
@@ -60,10 +67,14 @@ Two more gateway notes, both verified against the real server:
   devpi-shaped absolute URL on the gateway origin. A client following it skips the
   Gitea-first precedence check for that request, so the gateway's fallback proxy
   should append the slash itself rather than relay the redirect.
-- The only paths clients legitimately reach on devpi-shaped URLs are
-  `/root/constrained/+simple/...` and the file routes `/root/pypi/+f/...` (and
-  `/root/pypi/+e/...`, devpi's external-link route). The gateway sends those to
-  devpi; direct file URL policy is enforced inside the Artea devpi plugin.
+- **Hardening:** the only paths clients legitimately reach on devpi are
+  `/pypi/simple/...` on the gateway and the generated file routes
+  `/root/pypi/+f/...` (and `/root/pypi/+e/...`, devpi's external-link route).
+  The gateway rechecks those file routes against the plugin's internal
+  file-policy endpoint before proxying. Other `/root/...` paths are denied at the gateway to keep
+  anyone from browsing the unfiltered `root/pypi/+simple/` mirror, bypassing
+  constraints, or bypassing the Gitea-first private-name check. Direct file URL
+  age policy is also enforced inside the Artea devpi plugin.
 
 First-boot note: the container reports healthy as soon as `/+status` responds, which
 can be a second or two before `root/constrained` exists on the very first boot; a

@@ -2,7 +2,7 @@
   "name": "verdaccio-auth-gitea",
   "version": "0.1.0",
   "private": true,
-  "description": "Verdaccio auth plugin: validates user:PAT via HTTP Basic against Gitea and maps org membership to Verdaccio groups",
+  "description": "Verdaccio auth plugin: validates user:PAT via HTTP Basic against Gitea and maps namespace org/team membership to Verdaccio groups",
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

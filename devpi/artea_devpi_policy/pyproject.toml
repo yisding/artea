@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "artea-devpi-policy"
-version = "0.1.0"
+version = "0.1.2"
 description = "Artea devpi constrained-index policy plugin"
 requires-python = ">=3.12"
 dependencies = ["devpi-server>=6.10.0"]

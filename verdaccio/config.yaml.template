@@ -25,6 +25,7 @@ auth:
   # so there is no local user database and `npm adduser` fails
   auth-gitea:
     gitea_url: http://gitea:3000
+    private_namespace: __ARTEA_NAMESPACE__
 
 filters:
   # loads /verdaccio/plugins/verdaccio-filter-artea; /policy is the shared
