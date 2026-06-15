@@ -51,7 +51,7 @@ gateway:
   replicas: 2
   image:
     repository: nginx
-    tag: "1.29.4"
+    tag: "1.30.2"
     pullPolicy: IfNotPresent
   service:
     type: ClusterIP
