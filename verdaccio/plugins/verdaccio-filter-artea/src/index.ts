@@ -1,13 +1,6 @@
 import * as semver from 'semver';
-import type {
-  IBasicAuth,
-  IPluginMiddleware,
-  IPluginStorageFilter,
-  IStorageManager,
-  Logger,
-  Package,
-  PluginOptions,
-} from '@verdaccio/types';
+import type { pluginUtils } from '@verdaccio/core';
+import type { Logger, Manifest } from '@verdaccio/types';
 import { type PolicyLoader, SEMVER_OPTS, createPolicyLoader, isNameBlocked, isVersionBlocked } from './policy';
 
 export interface FilterArteaConfig {
@@ -73,7 +66,7 @@ export function parseTarballPath(rawPath: string): TarballRef | null {
   return { name, version };
 }
 
-function publishTimeMs(metadata: Package, version: string): number | null {
+function publishTimeMs(metadata: Manifest, version: string): number | null {
   const raw = (metadata.time as Record<string, unknown> | undefined)?.[version];
   if (typeof raw !== 'string') {
     return null;
@@ -93,7 +86,7 @@ function isTooYoung(publishedAtMs: number | null, minAgeMs: number, nowMs = Date
 }
 
 /** Drops dist-tags that point at removed versions and re-points `latest`. */
-function repairDistTags(pkg: Package, removed: Set<string>): void {
+function repairDistTags(pkg: Manifest, removed: Set<string>): void {
   const tags = pkg['dist-tags'];
   if (!tags) {
     return;
@@ -119,7 +112,7 @@ function repairDistTags(pkg: Package, removed: Set<string>): void {
  * PolicyLoader code path.
  */
 export default class FilterArtea
-  implements IPluginStorageFilter<FilterArteaConfig>, IPluginMiddleware<FilterArteaConfig>
+  implements Pick<pluginUtils.ManifestFilter<FilterArteaConfig>, 'filter_metadata'>
 {
   public version?: string;
   private readonly logger: Logger;
@@ -127,7 +120,7 @@ export default class FilterArtea
   private readonly npmRegistryUrl: string;
   private readonly publishTimes = new Map<string, Map<string, number>>();
 
-  public constructor(config: FilterArteaConfig, options: PluginOptions<FilterArteaConfig>) {
+  public constructor(config: FilterArteaConfig, options: pluginUtils.PluginOptions) {
     this.logger = options.logger;
     this.policyLoader = createPolicyLoader(config, this.logger);
     this.npmRegistryUrl = (config.npm_registry_url ?? 'https://registry.npmjs.org').replace(/\/+$/, '');
@@ -138,7 +131,7 @@ export default class FilterArtea
     this.policyLoader.stop();
   }
 
-  public async filter_metadata(metadata: Package): Promise<Package> {
+  public async filter_metadata(metadata: Manifest): Promise<Manifest> {
     const state = this.policyLoader.current();
     const name = metadata.name;
     if (!state.ok) {
@@ -178,11 +171,7 @@ export default class FilterArtea
   }
 
   /** Middleware role: runs before verdaccio's npm endpoints and guards tarball GETs. */
-  public register_middlewares(
-    app: ExpressApp,
-    _auth: IBasicAuth<FilterArteaConfig>,
-    _storage: IStorageManager<FilterArteaConfig>,
-  ): void {
+  public register_middlewares(app: ExpressApp, _auth: pluginUtils.IBasicAuth, _storage: unknown): void {
     app.use((req, res, next) => {
       void this.guardTarball(req, res, next).catch((err) => {
         this.logger.warn({ msg: (err as Error).message }, 'filter-artea: tarball age check failed: @{msg}');
@@ -232,7 +221,7 @@ export default class FilterArtea
     next();
   }
 
-  private rememberPublishTimes(metadata: Package): void {
+  private rememberPublishTimes(metadata: Manifest): void {
     const times = metadata.time as Record<string, unknown> | undefined;
     if (!times) {
       return;
@@ -262,27 +251,27 @@ export default class FilterArtea
     return this.publishTimes.get(name)?.get(version) ?? null;
   }
 
-  private async fetchNpmPackument(name: string): Promise<Package> {
+  private async fetchNpmPackument(name: string): Promise<Manifest> {
     const encoded = encodeURIComponent(name);
     const url = `${this.npmRegistryUrl}/${encoded}`;
     const res = await fetch(url, { headers: { accept: 'application/json' } });
     if (!res.ok) {
       throw new Error(`npm metadata lookup for ${name} returned HTTP ${res.status}`);
     }
-    return (await res.json()) as Package;
+    return (await res.json()) as Manifest;
   }
 
   /** Blocked names keep their packument shell but lose every version, so installs fail cleanly. */
-  private blockAll(metadata: Package): Package {
+  private blockAll(metadata: Manifest): Manifest {
     const clone = structuredClone(metadata);
     clone.versions = {};
-    clone['dist-tags'] = {} as Package['dist-tags'];
+    clone['dist-tags'] = {} as Manifest['dist-tags'];
     if (clone.time) {
       const { created, modified } = clone.time as Record<string, string | undefined>;
       clone.time = {
         ...(created ? { created } : {}),
         ...(modified ? { modified } : {}),
-      } as Package['time'];
+      } as Manifest['time'];
     }
     return clone;
   }

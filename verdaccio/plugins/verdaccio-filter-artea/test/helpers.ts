@@ -1,4 +1,4 @@
-import type { Logger, Package } from '@verdaccio/types';
+import type { Logger, Manifest } from '@verdaccio/types';
 import { vi } from 'vitest';
 import type FilterArtea from '../src/index';
 
@@ -19,7 +19,7 @@ export function packument(
   versions: string[],
   latest = versions[versions.length - 1],
   publishTimes: Record<string, string> = {},
-): Package {
+): Manifest {
   const pkg: Record<string, unknown> = {
     name,
     'dist-tags': { latest },
@@ -30,7 +30,7 @@ export function packument(
     (pkg.versions as Record<string, unknown>)[v] = { name, version: v };
     (pkg.time as Record<string, string>)[v] = publishTimes[v] ?? '2020-01-01T12:00:00.000Z';
   }
-  return pkg as unknown as Package;
+  return pkg as unknown as Manifest;
 }
 
 export interface MiddlewareResult {
