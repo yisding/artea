@@ -25,9 +25,12 @@ updates:
       prefix: build
       include: scope
 
-  # pnpm workspace root covers both verdaccio plugin packages
+  # pnpm workspaces: the two plugin packages (plugins root) plus the dev-only
+  # smoke harness, which boots verdaccio in-process and is not a workspace member
   - package-ecosystem: npm
-    directory: "/verdaccio/plugins"
+    directories:
+      - "/verdaccio/plugins"
+      - "/verdaccio/smoke"
     schedule:
       interval: weekly
     commit-message:
