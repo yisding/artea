@@ -138,7 +138,7 @@ Pinned via build args (defaults in the `Dockerfile`, overridden from `.env` by
 compose so all pins live there):
 
 ```
-DEVPI_SERVER_VERSION=6.20.1
+DEVPI_SERVER_VERSION=6.20.2
 ```
 
 Compose wiring:
