@@ -86,7 +86,6 @@ managedNodeGroups:
 ```sh
 eksctl create cluster -f cluster.yaml          # ~15–20 min
 kubectl get nodes                              # 2 Ready
-kubectl get storageclass                       # gp2 (default) — provisioned by the EBS CSI driver
 ```
 
 The whole single-node stack (Gitea + postgres + valkey + Verdaccio + devpi +
@@ -95,12 +94,48 @@ The whole single-node stack (Gitea + postgres + valkey + Verdaccio + devpi +
 `kubernetes.io/role/elb=1`, which is what an internet-facing ALB needs for
 subnet auto-discovery in step 6.
 
-The default `gp2` StorageClass works as-is. EBS volumes are zonal (RWO,
-single-AZ); the default `WaitForFirstConsumer` binding creates each volume in
-the pod's AZ and keeps reschedules in that AZ, which is exactly right for the
-single-replica stateful pods. To prefer cheaper/faster gp3 volumes, create a
-gp3 default StorageClass and set `storageClass: gp3` on the chart's PVCs — see
-"Optional: gp3 StorageClass" at the end.
+### A default StorageClass (required on EKS ≥ 1.30)
+
+Don't skip this. Since **Kubernetes 1.30, EKS no longer marks any StorageClass
+as the cluster default** — newly created clusters still get a `gp2` class, but
+without the `is-default-class` annotation
+([AWS 1.30 release notes](https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions-extended.html#kubernetes-1-30)).
+The Artea chart and its Gitea/postgres/valkey/Verdaccio/devpi subcharts leave
+`storageClass` empty and rely on a cluster default, so with none set **every PVC
+stays `Pending` and the bootstrap Job never completes.**
+
+Create a `gp3` default class (cheaper and faster than `gp2`). Save as
+`gp3-storageclass.yaml`:
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.aws.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  type: gp3
+```
+
+```sh
+kubectl apply -f gp3-storageclass.yaml
+kubectl get storageclass                       # gp3 (default)
+```
+
+The chart's empty `storageClass: ""` now binds to `gp3`; no per-PVC overrides
+are needed. EBS volumes are zonal (RWO, single-AZ); `WaitForFirstConsumer`
+creates each volume in its pod's AZ and keeps reschedules there — exactly right
+for the single-replica stateful pods.
+
+(Alternatively, let the EBS CSI **add-on** create the default class for you by
+adding `configurationValues: '{"defaultStorageClass":{"enabled":true}}'` to its
+entry in `cluster.yaml` — requires driver ≥ v1.31.0, which the 1.31 add-on
+ships. The explicit manifest above is preferred here so the class name and
+parameters are pinned in your repo.)
 
 ## 2. Install the AWS Load Balancer Controller
 
@@ -381,34 +416,8 @@ usually the cause — confirm the Ingress (and thus the ALB) was removed first.
   exactly equal the public hostname. It drives Gitea's `ROOT_URL` and devpi's
   outside-url; a mismatch produces tarball/file URLs that don't resolve back
   through the gateway.
+- **PVCs stuck `Pending` with no events / no default class** → EKS ≥ 1.30 ships
+  no default StorageClass. `kubectl get sc` should list `gp3 (default)`; if not,
+  apply the class from step 1.
 - **Bootstrap / policy-sync issues** → same as
   [kubernetes.md → Troubleshooting](kubernetes.md#troubleshooting).
-
-## Optional: gp3 StorageClass
-
-`gp3` is cheaper and faster than the default `gp2`. Create a gp3 default class:
-
-```yaml
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: gp3
-  annotations:
-    storageclass.kubernetes.io/is-default-class: "true"
-provisioner: ebs.csi.aws.com
-volumeBindingMode: WaitForFirstConsumer
-allowVolumeExpansion: true
-parameters:
-  type: gp3
-```
-
-```sh
-# make gp2 non-default so there's exactly one default class
-kubectl annotate sc gp2 storageclass.kubernetes.io/is-default-class- --overwrite
-kubectl apply -f gp3-storageclass.yaml
-```
-
-Apply this **before** installing Artea (existing PVCs keep their original
-class). With a gp3 default the chart's empty `storageClass: ""` picks it up; or
-set `gitea.persistence.storageClass`, `devpi.persistence.storageClass` and
-`verdaccio.persistence.storageClass: gp3` explicitly.
