@@ -7,6 +7,11 @@ charts as dependencies, our own templates only for devpi, policy-sync, the
 gateway and the bootstrap Job. Chart-level details (fixed names, secrets
 layout, the Verdaccio plugin delivery): `deploy/helm/artea/README.md`.
 
+> **On AWS?** [aws-eks.md](aws-eks.md) is a turnkey EKS walkthrough built on
+> this chart — cluster creation, the EBS CSI driver, the AWS Load Balancer
+> Controller (ALB Ingress) and ACM/Route 53 TLS. It links back here for the
+> shared concepts (secrets, upgrades, state).
+
 ## Prerequisites
 
 - `helm` ≥ 3.14 and `kubectl`
