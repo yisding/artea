@@ -11,6 +11,8 @@
 #   BASE_URL          public gateway URL (beats the recorded GATEWAY_URL)
 #   CREDENTIALS_FILE  credentials path (default e2e/tmp/credentials.env)
 #   RUNTIME           compose (default) | k8s — docker compose vs kubectl
+#   E2E_SCENARIOS     optional comma/space list of prerequisite-aware scenario
+#                     ids to run (for example: S1,S2,S15)
 # `make k8s-e2e` (scripts/k8s-e2e.sh) wires all of this up for a cluster.
 #
 # Re-runnable: package versions are unique per run, fixed-version fixtures
@@ -88,6 +90,7 @@ S14_TOKEN_NAME="e2e-s14-${RUN_ID}"
 NPMRC="${WORK}/npmrc"
 NPM_CACHE="${WORK}/npm-cache"
 VENV="${ROOT}/e2e/tmp/venv"
+VENV_PYTHON_STAMP="${VENV}/.artea-e2e-python"
 
 # the seed file ends with an empty 'blocked:' mapping; appending would be
 # invalid YAML, so S5/S13 replace the whole file (each scenario reverts it)
@@ -104,6 +107,8 @@ CONSTRAINTS_DIRTY=0
 POLICY_FILE_REMOVED=0 # S15/compose: /policy/npm-rules.yaml deleted in the live volume
 POLICY_SYNC_SCALED=0  # S15/k8s: policy-sync scaled to 0 replicas
 DEVPI_WIPED=0         # S15: devpi cache wiped, constraints not yet re-synced
+E2E_SCENARIOS="${E2E_SCENARIOS:-}"
+ALL_SCENARIOS="S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14 S15 S16 S17"
 
 # ---- cleanup (idempotent, tolerates partial runs) ---------------------------------
 cleanup() {
@@ -158,10 +163,16 @@ ORIG_CONSTRAINTS=$(get_policy_file pypi-constraints.txt) || die "cannot read pyp
 write_npmrc "${NPMRC}" "${DEV1_TOKEN}"
 mkdir -p "${NPM_CACHE}"
 
-if [ ! -f "${VENV}/.artea-e2e-ready" ]; then
+CURRENT_PYTHON=$(python3 -c 'import os, sys; print(os.path.realpath(sys.executable))') \
+  || die "cannot resolve python3 path"
+if [ ! -x "${VENV}/bin/python" ] \
+  || [ ! -f "${VENV}/.artea-e2e-ready" ] \
+  || [ "$(cat "${VENV_PYTHON_STAMP}" 2>/dev/null || true)" != "${CURRENT_PYTHON}" ]; then
   log "creating python venv with build/twine (one-time, network)"
+  rm -rf "${VENV}"
   python3 -m venv "${VENV}" || die "venv creation failed"
   pip_env "${VENV}/bin/pip" install -q -U pip setuptools wheel build twine || die "venv tool install failed"
+  printf '%s\n' "${CURRENT_PYTHON}" > "${VENV_PYTHON_STAMP}"
   touch "${VENV}/.artea-e2e-ready"
 fi
 
@@ -179,6 +190,7 @@ npm_fresh() { # npm with a throwaway cache: defeats packument 304-staleness
 # ---- scenario harness ----------------------------------------------------------------
 RESULTS=""
 FAILED=0
+SELECTED_SCENARIOS=0
 
 scenario() { # <id> <description> <function>
   local id=$1 desc=$2 fn=$3 t0 t1 status
@@ -196,6 +208,35 @@ scenario() { # <id> <description> <function>
     sed 's/^/     | /' "$logf" | tail -25
   fi
   RESULTS="${RESULTS}${id} ${status} ${desc}"$'\n'
+}
+
+scenario_selected() { # <id>
+  local id=$1 requested
+  [ -z "${E2E_SCENARIOS}" ] && return 0
+  requested=" ${E2E_SCENARIOS//,/ } "
+  case "$requested" in
+    *" ${id} "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+run_scenario() { # <id> <description> <function>
+  local id=$1 desc=$2 fn=$3
+  if scenario_selected "$id"; then
+    SELECTED_SCENARIOS=$((SELECTED_SCENARIOS + 1))
+    scenario "$id" "$desc" "$fn"
+  fi
+}
+
+validate_scenario_selection() {
+  local token requested=" ${E2E_SCENARIOS//,/ } " valid=" ${ALL_SCENARIOS} "
+  [ -z "${E2E_SCENARIOS}" ] && return 0
+  for token in $requested; do
+    case "$valid" in
+      *" ${token} "*) ;;
+      *) die "unknown E2E_SCENARIOS id: ${token} (valid: ${ALL_SCENARIOS})" ;;
+    esac
+  done
 }
 
 # ---- S1: bootstrap state ----------------------------------------------------------------
@@ -793,27 +834,37 @@ s17_legacy_and_encoding() {
 }
 
 # ---- run ---------------------------------------------------------------------------------------
-scenario S1 "bootstrap state: stack healthy, org/repo/webhook/PATs present" s1_bootstrap
-scenario S2 "npm publish ${NPM_NAME}@${NPM_VERSION} -> Gitea" s2_npm_publish
-scenario S3 "npm install ${NPM_NAME} resolves from Gitea (gateway scope routing)" s3_npm_install_private
-scenario S4 "npm install left-pad via Verdaccio pull-through" s4_npm_install_public
-scenario S5 "policy push hides left-pad 1.3.0 from npm view" s5_npm_policy_block
-scenario S6 "twine upload ${PY_NAME} ${PY_VERSION} -> Gitea" s6_twine_upload
-scenario S7 "pip install ${PY_NAME} via the gateway index" s7_pip_install_private
-scenario S8 "pip install six via gateway -> devpi -> PyPI" s8_pip_install_public
-scenario S9 "private ${SHADOW_NAME} fully shadows the PyPI name" s9_precedence_shadowing
-scenario S10 "constraints push limits urllib3 to <2 via gateway" s10_pypi_policy_constraint
-scenario S11 "read:package PAT installs but gets 401 on publish" s11_token_scopes
-scenario S12 "revoked PAT stops installing within 60s" s12_revocation
-scenario S13 "blocked version's tarball GET -> 403; anonymous /npm/ -> 401" s13_tarball_enforcement
-scenario S14 "dev1 cannot push registry-policy@main; admin allowlist works" s14_branch_protection
-scenario S15 "fail-closed: missing npm policy / wiped devpi, then recovery" s15_fail_closed
-scenario S16 "non-canonical pypi spellings still resolve to the private package" s16_normalization
-scenario S17 "legacy scoped .npmrc still works; encoded private-scope paths route to Gitea" s17_legacy_and_encoding
+validate_scenario_selection
+
+run_scenario S1 "bootstrap state: stack healthy, org/repo/webhook/PATs present" s1_bootstrap
+run_scenario S2 "npm publish ${NPM_NAME}@${NPM_VERSION} -> Gitea" s2_npm_publish
+run_scenario S3 "npm install ${NPM_NAME} resolves from Gitea (gateway scope routing)" s3_npm_install_private
+run_scenario S4 "npm install left-pad via Verdaccio pull-through" s4_npm_install_public
+run_scenario S5 "policy push hides left-pad 1.3.0 from npm view" s5_npm_policy_block
+run_scenario S6 "twine upload ${PY_NAME} ${PY_VERSION} -> Gitea" s6_twine_upload
+run_scenario S7 "pip install ${PY_NAME} via the gateway index" s7_pip_install_private
+run_scenario S8 "pip install six via gateway -> devpi -> PyPI" s8_pip_install_public
+run_scenario S9 "private ${SHADOW_NAME} fully shadows the PyPI name" s9_precedence_shadowing
+run_scenario S10 "constraints push limits urllib3 to <2 via gateway" s10_pypi_policy_constraint
+run_scenario S11 "read:package PAT installs but gets 401 on publish" s11_token_scopes
+run_scenario S12 "revoked PAT stops installing within 60s" s12_revocation
+run_scenario S13 "blocked version's tarball GET -> 403; anonymous /npm/ -> 401" s13_tarball_enforcement
+run_scenario S14 "dev1 cannot push registry-policy@main; admin allowlist works" s14_branch_protection
+run_scenario S15 "fail-closed: missing npm policy / wiped devpi, then recovery" s15_fail_closed
+run_scenario S16 "non-canonical pypi spellings still resolve to the private package" s16_normalization
+run_scenario S17 "legacy scoped .npmrc still works; encoded private-scope paths route to Gitea" s17_legacy_and_encoding
+
+if [ "$SELECTED_SCENARIOS" -eq 0 ]; then
+  die "E2E_SCENARIOS selected no scenarios: ${E2E_SCENARIOS}"
+fi
 
 echo
 if [ "$FAILED" = 0 ]; then
-  log "all 17 scenarios passed"
+  if [ -z "${E2E_SCENARIOS}" ]; then
+    log "all 17 scenarios passed"
+  else
+    log "${SELECTED_SCENARIOS} selected scenario(s) passed: ${E2E_SCENARIOS}"
+  fi
 else
   log "FAILURES:"
   echo "${RESULTS}" | grep ' FAIL ' || true
