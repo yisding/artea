@@ -1,6 +1,8 @@
 # ADR-0006: Policy as code in a reviewed Gitea repo
 
-Status: accepted (v1)
+Status: accepted (v1); the three-file authoring format is superseded by the
+single unified `policy.toml` in ADR-0007 — governance, `svc-policy`, delivery,
+and propagation below are unchanged.
 
 ## Context
 
@@ -54,9 +56,15 @@ Owners — so no developer credential can bypass the PR path (e2e scenario S14).
 - The git history *is* the audit log of what was blocked, when, and by whom.
 - Policy survives cache wipes and restores trivially (it is in the Gitea
   backup).
-- Two enforcement dialects must stay semantically aligned by convention; e2e
-  scenarios S5 and S10 guard the version-policy wiring, while unit tests cover
-  the shared age-gate parsing and hot-path enforcement in Verdaccio and devpi.
+- Two enforcement dialects must stay semantically aligned **by convention**
+  — *superseded by ADR-0007's compile-time resolution*: with the unified
+  `policy.toml`, policy-sync's compiler is the single source of truth and
+  emits both per-engine dialects from one resolved model, so the alignment is
+  now mechanical rather than maintained by hand. (When `policy.toml` is absent,
+  the legacy fallback restores the by-convention coupling for existing
+  deployments.) e2e scenarios S5 and S10 (plus the unified variants S18–S21)
+  guard the version-policy wiring, while unit tests cover the shared age-gate
+  parsing and hot-path enforcement in Verdaccio and devpi.
 - policy-sync needs the `svc-policy` account, its PAT, and webhook plumbing —
   bootstrap steps (scenario S1); the admin allowlist on the protected branch
   also keeps the e2e suite's direct policy edits (as the configured admin)

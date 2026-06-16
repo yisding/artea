@@ -1,12 +1,53 @@
 import base64
 import json
+import re
 import threading
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+from policy_sync.adapters import _PEP440_SET_RE, _PYPI_NAME_RE
 from policy_sync.config import Config
+
+
+# A stdlib reimplementation of devpi's parse_constraints contract
+# (devpi/.../main.py:91-110). It does NOT need pkg_resources/packaging (which
+# ps314 lacks): it enforces exactly the failure modes devpi enforces over the
+# incoming constraints text — a repeated normalized project name, an unparseable
+# requirement line, or an invalid specifier/name. MockDevpi uses this so an
+# emitted artifact that devpi would 400 also 400s here, instead of being stored
+# verbatim (which let A1/A3-class bugs pass green).
+_DEVPI_REQ_RE = re.compile(r"^([^=!<>~;\s]+)\s*(.*)$")
+
+
+def parse_constraints_contract(constraints) -> None:
+    """Raise ValueError on anything devpi's parse_constraints would reject."""
+    if isinstance(constraints, str):
+        lines = [
+            item.strip()
+            for item in constraints.splitlines()
+            if item.strip() and not item.strip().startswith("#")
+        ]
+    else:
+        lines = list(constraints)
+    seen: set[str] = set()
+    for line in lines:
+        if line == "*":
+            continue
+        m = _DEVPI_REQ_RE.match(line)
+        if not m:
+            raise ValueError(f"cannot parse constraint {line!r}")
+        raw_name, spec = m.group(1), m.group(2).strip()
+        # devpi normalizes the project name the same way (PEP 503).
+        norm = re.sub(r"[-_.]+", "-", raw_name.strip()).lower()
+        if not _PYPI_NAME_RE.match(norm):
+            raise ValueError(f"invalid project name {raw_name!r} in {line!r}")
+        if spec and not _PEP440_SET_RE.match(spec):
+            raise ValueError(f"invalid specifier {spec!r} in {line!r}")
+        if norm in seen:
+            raise ValueError(f"Constraint for {norm!r} already exists.")
+        seen.add(norm)
 
 TEST_TOKEN = "test-pat-token"
 TEST_SECRET = "test-webhook-secret"
@@ -130,7 +171,15 @@ class MockDevpi:
                 if self.path != "/root/constrained":
                     self.send_error(404)
                     return
-                mock.config = json.loads(body)
+                new_config = json.loads(body)
+                # enforce devpi's parse_constraints contract: a PATCH whose
+                # constraints devpi would reject must 400 and NOT be stored.
+                try:
+                    parse_constraints_contract(new_config.get("constraints", []))
+                except ValueError:
+                    self.send_error(400)
+                    return
+                mock.config = new_config
                 self._json(200, {"type": "indexconfig", "result": dict(mock.config)})
 
             def log_message(self, *args):

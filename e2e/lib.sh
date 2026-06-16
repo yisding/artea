@@ -53,6 +53,25 @@ put_policy_file() { # <path in repo> <new content> <commit message>
   case "$API_CODE" in 2*) return 0 ;; *) echo "put_policy_file ${path} -> HTTP ${API_CODE}: ${API_BODY}"; return 1 ;; esac
 }
 
+delete_policy_file() { # <path in repo> <commit message> ; tolerates an absent file
+  # used by the unified scenarios to drop policy.toml and return the registry to
+  # legacy-3-file mode (when policy.toml is present it wins; deleting it re-arms
+  # the npm-rules.yaml/pypi-constraints.txt fallback the other scenarios rely on)
+  local path=$1 msg=$2 sha
+  admin_api GET "/repos/${POLICY_REPO}/contents/${path}"
+  case "$API_CODE" in
+    404) return 0 ;; # already gone
+    200) ;;
+    *) echo "delete_policy_file ${path}: GET -> HTTP ${API_CODE}"; return 1 ;;
+  esac
+  sha=$(echo "$API_BODY" | jq -r .sha)
+  [ -n "$sha" ] && [ "$sha" != null ] \
+    || { echo "delete_policy_file: no sha for ${path}"; return 1; }
+  admin_api DELETE "/repos/${POLICY_REPO}/contents/${path}" \
+    "{\"sha\":\"${sha}\",\"message\":$(printf '%s' "$msg" | jq -Rs .)}"
+  case "$API_CODE" in 2*) return 0 ;; *) echo "delete_policy_file ${path} -> HTTP ${API_CODE}: ${API_BODY}"; return 1 ;; esac
+}
+
 # ---- generic polling -------------------------------------------------------------
 wait_for() { # <timeout s> <interval s> <description> <command...>
   local timeout=$1 interval=$2 desc=$3 start now

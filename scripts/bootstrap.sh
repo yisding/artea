@@ -275,6 +275,10 @@ seed_file() { # <local path> <path in repo>
     "{\"content\":\"${b64}\",\"message\":\"chore: seed $2\"}"
   log "seeded $2"
 }
+# policy.toml is the canonical unified source for fresh installs; the three
+# legacy files are kept as a fallback for existing deployments (policy-sync
+# parses policy.toml first and falls back to the legacy files when it is absent).
+seed_file policy/policy.toml policy.toml
 seed_file policy/npm-rules.yaml npm-rules.yaml
 seed_file policy/upstream-policy.yaml upstream-policy.yaml
 seed_file policy/pypi-constraints.txt pypi-constraints.txt
@@ -399,8 +403,12 @@ if in_k8s; then
     | base64 -d 2>/dev/null || true)"
 fi
 policy_token_ok() {
+  # Filename-agnostic readiness probe: the token must be able to read the policy
+  # repo's contents. Do not assume any specific policy filename (the canonical
+  # source is policy.toml, but legacy deployments only have the three legacy
+  # files) — listing the repo contents succeeds whatever the policy layout is.
   curl -sf -o /dev/null -H "Authorization: token ${POLICY_SYNC_TOKEN:-invalid}" \
-    "${GITEA_URL}/api/v1/repos/${ORG}/${REPO}/raw/npm-rules.yaml" || return 1
+    "${GITEA_URL}/api/v1/repos/${ORG}/${REPO}/contents" || return 1
   curl -sf -H "Authorization: token ${POLICY_SYNC_TOKEN:-invalid}" \
       "${GITEA_URL}/api/v1/repos/${ORG}/${REPO}" 2>/dev/null \
     | python3 -c 'import json,sys; p=json.load(sys.stdin).get("permissions",{}); sys.exit(0 if p.get("pull") and not p.get("push") and not p.get("admin") else 1)' \

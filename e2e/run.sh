@@ -107,8 +107,9 @@ CONSTRAINTS_DIRTY=0
 POLICY_FILE_REMOVED=0 # S15/compose: /policy/npm-rules.yaml deleted in the live volume
 POLICY_SYNC_SCALED=0  # S15/k8s: policy-sync scaled to 0 replicas
 DEVPI_WIPED=0         # S15: devpi cache wiped, constraints not yet re-synced
+UNIFIED_DIRTY=0       # S18-S21: policy.toml authored; must be deleted to re-arm legacy mode
 E2E_SCENARIOS="${E2E_SCENARIOS:-}"
-ALL_SCENARIOS="S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14 S15 S16 S17"
+ALL_SCENARIOS="S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14 S15 S16 S17 S18 S19 S20 S21"
 
 # ---- cleanup (idempotent, tolerates partial runs) ---------------------------------
 cleanup() {
@@ -119,6 +120,11 @@ cleanup() {
   fi
   if [ "${CONSTRAINTS_DIRTY}" = 1 ]; then
     put_policy_file pypi-constraints.txt "${ORIG_CONSTRAINTS}" "test(e2e): revert pypi constraints (cleanup)" >/dev/null
+  fi
+  # the unified scenarios author policy.toml, which (when present) wins over the
+  # legacy files; deleting it re-arms legacy mode for any later scenario
+  if [ "${UNIFIED_DIRTY}" = 1 ]; then
+    delete_policy_file policy.toml "test(e2e): drop policy.toml, restore legacy mode (cleanup)" >/dev/null
   fi
   delete_pkg_version npm "${NPM_NAME_ENC}" "${NPM_VERSION}" >/dev/null
   delete_pkg_version npm "${NPM_NAME_ENC}" "${NPM_RO_VERSION}" >/dev/null
@@ -833,6 +839,217 @@ s17_legacy_and_encoding() {
   echo "anonymous /npm/${NPM_NAME_ENC} -> 401"
 }
 
+# ---- S18-S21: unified policy.toml (ADR-0007) --------------------------------------------------
+# LIVE VALIDATION PENDING: these scenarios are written + integrated but have NOT
+# been executed against a live stack here (no `make up`/`make bootstrap` available
+# in this environment). They follow the existing scenario/helper patterns and the
+# unified compile semantics in docs/policy-schema.md, but must be run once against
+# a real deployment before being trusted. Do not assume they pass.
+#
+# All four author policy.toml (which, when present, wins over the legacy files —
+# docs/policy-schema.md "Migration") and then DELETE it so the legacy-3-file mode
+# the other scenarios depend on (S5/S10/S13/S14) is restored. UNIFIED_DIRTY guards
+# the cleanup revert, mirroring NPM_RULES_DIRTY/CONSTRAINTS_DIRTY.
+
+# S18: unified npm block — S5 authored as policy.toml.
+# A single deny rule (ecosystem=npm, name=left-pad, versions=1.3.0) compiles to
+# the same npm-rules.yaml block the legacy S5 push produces.
+s18_unified_npm_block() {
+  local versions
+  UNIFIED_DIRTY=1
+  put_policy_file policy.toml "$(cat <<'TOML'
+# e2e fixture (S18) — unified policy.toml blocking left-pad 1.3.0; reverted by the suite.
+schema = 1
+
+[defaults]
+action = "allow"
+
+[[rules]]
+ecosystem = "npm"
+name = "left-pad"
+versions = "1.3.0"
+action = "deny"
+reason = "e2e fixture (S18 unified)"
+TOML
+)" "test(e2e): S18 block left-pad 1.3.0 via policy.toml" || return 1
+  wait_for 45 2 "left-pad 1.3.0 filtered from packument (unified)" left_pad_130_hidden || return 1
+  versions=$(npm_fresh view left-pad versions --json) || { echo "npm view failed"; return 1; }
+  echo "npm view left-pad versions: ${versions}"
+  echo "$versions" | jq -e 'length > 0' >/dev/null || { echo "empty versions list"; return 1; }
+  echo "$versions" | jq -e 'index("1.3.0") == null' >/dev/null \
+    || { echo "1.3.0 still present in npm view output"; return 1; }
+  # drop policy.toml -> back to legacy mode -> 1.3.0 visible again
+  delete_policy_file policy.toml "test(e2e): S18 drop policy.toml (restore legacy)" || return 1
+  wait_for 45 2 "left-pad 1.3.0 visible again after dropping policy.toml" left_pad_130_visible || return 1
+  UNIFIED_DIRTY=0
+}
+
+# S19: unified pypi constrain — S10 authored as policy.toml.
+# deny pypi urllib3 >=2 compiles to the constraint `urllib3<2` (allow-list of <2).
+s19_unified_pypi_constrain() {
+  local out line wheel code body blocked_file_path
+  body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/urllib3/") \
+    || { echo "pre-policy urllib3 simple fetch failed"; return 1; }
+  blocked_file_path=$(echo "$body" \
+    | grep -Eo 'href="[^"]*urllib3-2[^"]*\.(whl|tar\.gz|zip)[^"]*"' \
+    | head -1 \
+    | sed -E 's/^href="//; s/"$//; s#^https?://[^/]+##; s/#.*$//')
+  [ -n "$blocked_file_path" ] \
+    || { echo "could not find a urllib3 2.x file link before applying constraints"; return 1; }
+  UNIFIED_DIRTY=1
+  put_policy_file policy.toml "$(cat <<'TOML'
+# e2e fixture (S19) — unified policy.toml constraining urllib3 to <2; reverted by the suite.
+schema = 1
+
+[defaults]
+action = "allow"
+
+[[rules]]
+ecosystem = "pypi"
+name = "urllib3"
+versions = ">=2"
+action = "deny"
+reason = "e2e fixture (S19 unified): pin to 1.x"
+TOML
+)" "test(e2e): S19 constrain urllib3<2 via policy.toml" || return 1
+  wait_for 45 2 "urllib3 2.x filtered from simple index (unified)" urllib3_v2_hidden || return 1
+  for path in "/root/pypi/+simple/urllib3/" "/root/constrained/+simple/urllib3/"; do
+    code=$(http_code -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}${path}")
+    [ "$code" = 404 ] || { echo "direct devpi route ${path} got HTTP ${code}, expected 404"; return 1; }
+  done
+  echo "direct devpi simple routes are not reachable through the gateway"
+  code=$(http_code -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}${blocked_file_path}")
+  [ "$code" = 403 ] \
+    || { echo "blocked direct devpi file ${blocked_file_path} got HTTP ${code}, expected 403"; return 1; }
+  echo "direct devpi file URLs obey the unified-compiled PyPI constraints"
+  out=$(pip_e2e index versions urllib3 --index-url "${INDEX_URL}" 2>&1) \
+    || { echo "pip index versions failed: ${out}"; return 1; }
+  line=$(echo "$out" | grep '^Available versions:') || { echo "no versions line"; return 1; }
+  echo "$line"
+  grep -Eq '(:|, )2\.' <<<"$line" && { echo "a 2.x version is still visible"; return 1; }
+  # drop policy.toml -> back to legacy mode -> urllib3 2.x visible again
+  delete_policy_file policy.toml "test(e2e): S19 drop policy.toml (restore legacy)" || return 1
+  wait_for 45 2 "urllib3 2.x visible again after dropping policy.toml" urllib3_v2_visible || return 1
+  UNIFIED_DIRTY=0
+}
+
+# S20: allow-wins — a specific exact-version allow beats a broader whole-package
+# deny. deny left-pad (whole) + allow left-pad ==1.3.0 compiles to the semver
+# complement `<1.3.0 || >1.3.0`, so 1.3.0 stays VISIBLE while every other version
+# is blocked. (docs/policy-schema.md "Precedence and evaluation (allow-wins)".)
+left_pad_only_130_visible() { # 1.3.0 present AND at least one other version hidden
+  local body
+  body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/left-pad") || return 1
+  grep -q '"1.3.0":' <<<"$body" || return 1   # the carved-out version stays
+  ! grep -q '"1.2.0":' <<<"$body"             # a broader-deny version is gone
+}
+
+s20_unified_allow_wins() {
+  local body
+  UNIFIED_DIRTY=1
+  put_policy_file policy.toml "$(cat <<'TOML'
+# e2e fixture (S20) — unified policy.toml: allow-wins exact-version carve-out;
+# reverted by the suite. Whole-package deny of left-pad, but 1.3.0 is explicitly
+# allowed, so the compiler emits the complement `<1.3.0 || >1.3.0` and 1.3.0 stays.
+schema = 1
+
+[defaults]
+action = "allow"
+
+[[rules]]
+ecosystem = "npm"
+name = "left-pad"
+action = "deny"
+reason = "e2e fixture (S20): broad deny"
+
+[[rules]]
+ecosystem = "npm"
+name = "left-pad"
+versions = "1.3.0"
+action = "allow"
+reason = "e2e fixture (S20): vetted exact version"
+TOML
+)" "test(e2e): S20 allow 1.3.0 beats whole-package deny" || return 1
+  wait_for 45 2 "only left-pad 1.3.0 visible (allow-wins carve-out)" left_pad_only_130_visible || return 1
+  body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/left-pad") || { echo "packument fetch failed"; return 1; }
+  grep -q '"1.3.0":' <<<"$body" || { echo "1.3.0 (allowed) is missing"; return 1; }
+  grep -q '"1.2.0":' <<<"$body" && { echo "1.2.0 (denied) is still present"; return 1; }
+  echo "allow-wins: left-pad 1.3.0 visible, 1.2.0 blocked by the broader deny"
+  delete_policy_file policy.toml "test(e2e): S20 drop policy.toml (restore legacy)" || return 1
+  wait_for 45 2 "left-pad 1.2.0 visible again after dropping policy.toml" left_pad_130_visible || return 1
+  UNIFIED_DIRTY=0
+}
+
+# S21: a malformed policy.toml keeps last-known-good. policy-sync validates the
+# whole policy before applying; a structural error fails the sync, the previously
+# applied policy stays in effect, /healthz reports last_sync_ok:false, and public
+# fetch keeps working. (docs/policy-schema.md "Validation".)
+s21_unified_last_known_good() {
+  local state
+  UNIFIED_DIRTY=1
+  # 1. a VALID policy.toml that blocks left-pad 1.3.0; wait until applied
+  put_policy_file policy.toml "$(cat <<'TOML'
+# e2e fixture (S21) — valid baseline blocking left-pad 1.3.0; a malformed edit
+# below must NOT tear this down (last-known-good). Reverted by the suite.
+schema = 1
+
+[defaults]
+action = "allow"
+
+[[rules]]
+ecosystem = "npm"
+name = "left-pad"
+versions = "1.3.0"
+action = "deny"
+reason = "e2e fixture (S21): last-known-good baseline"
+TOML
+)" "test(e2e): S21 valid baseline (block left-pad 1.3.0)" || return 1
+  wait_for 45 2 "left-pad 1.3.0 blocked by the valid baseline" left_pad_130_hidden || return 1
+  echo "baseline applied: left-pad 1.3.0 hidden"
+
+  # 2. push a structurally BROKEN policy.toml (a rule with neither name nor
+  # namespace) — policy_model rejects it, the sync fails, nothing is re-applied
+  put_policy_file policy.toml "$(cat <<'TOML'
+# e2e fixture (S21) — deliberately malformed: a rule with neither name nor
+# namespace is a structural error; policy-sync must keep last-known-good.
+schema = 1
+
+[defaults]
+action = "allow"
+
+[[rules]]
+ecosystem = "npm"
+action = "deny"
+TOML
+)" "test(e2e): S21 malformed policy.toml (must keep last-known-good)" || return 1
+
+  # 3a. the previously-applied block STAYS in effect after the failed sync
+  sleep 10 # allow at least one poll/webhook sync attempt to fail
+  left_pad_130_hidden || { echo "block was lost after the malformed push — NOT last-known-good"; return 1; }
+  echo "last-known-good held: left-pad 1.3.0 still hidden after the malformed push"
+
+  # 3b. public fetch still works (the packument still resolves with versions;
+  # 1.3.0 stays filtered per 3a, but the rest of the package is served)
+  curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/left-pad" \
+    | jq -e '.versions | length > 0' >/dev/null \
+    || { echo "public fetch broke during the malformed-policy window"; return 1; }
+  echo "public fetch still works (left-pad packument still has versions)"
+
+  # 3c. /healthz reports the failed sync (best-effort; helper from S15)
+  state=$(policy_sync_state || true)
+  echo "policy-sync /healthz state (last_sync_ok last_sync_at): ${state:-<unavailable>}"
+  case "$state" in
+    False*) echo "/healthz confirms last_sync_ok:false" ;;
+    "") echo "note: /healthz unavailable in this runtime; skipping the last_sync_ok assertion" ;;
+    *) echo "warning: expected last_sync_ok:false after a malformed push, saw: ${state}" ;;
+  esac
+
+  # 4. drop policy.toml -> legacy mode -> left-pad fully visible again
+  delete_policy_file policy.toml "test(e2e): S21 drop policy.toml (restore legacy)" || return 1
+  wait_for 45 2 "left-pad 1.3.0 visible again after dropping policy.toml" left_pad_130_visible || return 1
+  UNIFIED_DIRTY=0
+}
+
 # ---- run ---------------------------------------------------------------------------------------
 validate_scenario_selection
 
@@ -853,6 +1070,10 @@ run_scenario S14 "dev1 cannot push registry-policy@main; admin allowlist works" 
 run_scenario S15 "fail-closed: missing npm policy / wiped devpi, then recovery" s15_fail_closed
 run_scenario S16 "non-canonical pypi spellings still resolve to the private package" s16_normalization
 run_scenario S17 "legacy scoped .npmrc still works; encoded private-scope paths route to Gitea" s17_legacy_and_encoding
+run_scenario S18 "unified policy.toml hides left-pad 1.3.0 (S5 in the new format)" s18_unified_npm_block
+run_scenario S19 "unified policy.toml constrains urllib3 to <2 (S10 in the new format)" s19_unified_pypi_constrain
+run_scenario S20 "unified allow-wins: exact-version allow beats a whole-package deny" s20_unified_allow_wins
+run_scenario S21 "malformed policy.toml keeps last-known-good; public fetch still works" s21_unified_last_known_good
 
 if [ "$SELECTED_SCENARIOS" -eq 0 ]; then
   die "E2E_SCENARIOS selected no scenarios: ${E2E_SCENARIOS}"
@@ -861,7 +1082,7 @@ fi
 echo
 if [ "$FAILED" = 0 ]; then
   if [ -z "${E2E_SCENARIOS}" ]; then
-    log "all 17 scenarios passed"
+    log "all 21 scenarios passed"
   else
     log "${SELECTED_SCENARIOS} selected scenario(s) passed: ${E2E_SCENARIOS}"
   fi
