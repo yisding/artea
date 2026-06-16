@@ -15,6 +15,10 @@ data:
   # in sync (Helm cannot read outside the chart root).
   pep503.js: |
 {{ .Files.Get "files/gateway/pep503.js" | indent 4 }}
+  # PEP 700 upload-time enrichment orchestrator (njs); verbatim copy of
+  # gateway/njs/pep700.js — keep in sync.
+  pep700.js: |
+{{ .Files.Get "files/gateway/pep700.js" | indent 4 }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -32,8 +36,8 @@ spec:
       labels:
         {{- include "artea.selectorLabels" (dict "ctx" $ "component" "gateway") | nindent 8 }}
       annotations:
-        # roll the pods when the rendered nginx config or njs helper changes
-        checksum/config: {{ printf "%s\n%s" (tpl (.Files.Get "files/gateway/nginx.conf") .) (.Files.Get "files/gateway/pep503.js") | sha256sum }}
+        # roll the pods when the rendered nginx config or either njs helper changes
+        checksum/config: {{ printf "%s\n%s\n%s" (tpl (.Files.Get "files/gateway/nginx.conf") .) (.Files.Get "files/gateway/pep503.js") (.Files.Get "files/gateway/pep700.js") | sha256sum }}
     spec:
       containers:
         - name: nginx
@@ -50,6 +54,10 @@ spec:
             - name: config
               mountPath: /etc/nginx/njs/pep503.js
               subPath: pep503.js
+              readOnly: true
+            - name: config
+              mountPath: /etc/nginx/njs/pep700.js
+              subPath: pep700.js
               readOnly: true
           livenessProbe:
             httpGet:

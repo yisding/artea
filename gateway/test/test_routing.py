@@ -95,10 +95,12 @@ class UpstreamHandler(http.server.BaseHTTPRequestHandler):
     def _reply(self, code, body, headers=()):
         data = body.encode()
         self.send_response(code)
+        header_keys = {k.lower() for k, _ in headers}
         for k, v in headers:
             self.send_header(k, v)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Content-Type", "text/plain")
+        if "content-type" not in header_keys:
+            self.send_header("Content-Type", "text/plain")
         self.end_headers()
         self.wfile.write(data)
 
@@ -171,6 +173,21 @@ class UpstreamHandler(http.server.BaseHTTPRequestHandler):
                 loc = "http://localhost:8080/root/constrained/+simple/target/"
                 self._reply(302, "", headers=(("Location", loc),))
                 return
+        if server.tag == "policy-sync":
+            # PEP 700 enrichment endpoint: echo the upstream+name so the routing
+            # test can assert WHICH branch (gitea vs devpi) the njs orchestrator
+            # chose, and that the v1+json content-type is relayed to the client.
+            if self.path.startswith("/pypi/simple-enrich"):
+                if "name=missing-private" in self.path:
+                    # private package vanished between probe and enrich (race):
+                    # policy-sync 404s the gitea branch -> gateway retries devpi.
+                    if "upstream=gitea" in self.path:
+                        self._reply(404, "no such private package")
+                        return
+                body = '{"meta":{"api-version":"1.1"},"name":"x","files":[],"versions":[]}'
+                self._reply(200, body,
+                            headers=(("Content-Type", "application/vnd.pypi.simple.v1+json"),))
+                return
         self._reply(200, f"{server.tag} {self.path}")
 
     do_POST = do_GET
@@ -191,7 +208,7 @@ class GatewayTest(unittest.TestCase):
         (tmp / "logs").mkdir()
         (tmp / "cache").mkdir()
 
-        cls.upstreams = {t: Upstream(t) for t in ("gitea", "verdaccio", "devpi")}
+        cls.upstreams = {t: Upstream(t) for t in ("gitea", "verdaccio", "devpi", "policy-sync")}
         for up in cls.upstreams.values():
             threading.Thread(target=up.serve_forever, daemon=True).start()
 
@@ -212,6 +229,7 @@ class GatewayTest(unittest.TestCase):
             "gitea:3000": "127.0.0.1:%d" % cls.upstreams["gitea"].server_port,
             "verdaccio:4873": "127.0.0.1:%d" % cls.upstreams["verdaccio"].server_port,
             "devpi:3141": "127.0.0.1:%d" % cls.upstreams["devpi"].server_port,
+            "policy-sync:8920": "127.0.0.1:%d" % cls.upstreams["policy-sync"].server_port,
             "/var/log/nginx": str(tmp / "logs"),
             "/var/cache/nginx": str(tmp / "cache"),
             "/var/run/nginx.pid": str(tmp / "nginx.pid"),
@@ -251,10 +269,12 @@ class GatewayTest(unittest.TestCase):
         cls.tmp.cleanup()
 
     @classmethod
-    def _raw(cls, method, path, auth=None):
+    def _raw(cls, method, path, auth=None, accept=None):
         """http.client keeps the path byte-exact (no normalization)."""
         conn = http.client.HTTPConnection("127.0.0.1", cls.port, timeout=5)
         headers = {"Authorization": auth} if auth else {}
+        if accept:
+            headers["Accept"] = accept
         conn.request(method, path, headers=headers)
         resp = conn.getresponse()
         body = resp.read().decode()
@@ -498,6 +518,62 @@ class GatewayTest(unittest.TestCase):
         # Gitea really was asked first, under the org pypi endpoint
         self.assertIn(f"/api/packages/{TEST_NAMESPACE}/pypi/simple/six/", self.seen("gitea"))
         self.assertIn("/root/constrained/+simple/six/", self.seen("devpi"))
+
+    # ---- PEP 700 JSON enrichment routing (Accept: ...v1+json) ----
+
+    JSON_ACCEPT = "application/vnd.pypi.simple.v1+json"
+
+    def test_pypi_json_private_enriched_via_gitea_branch(self):
+        # JSON-Accept + a private name: the njs orchestrator probes Gitea (200),
+        # then enriches via policy-sync upstream=gitea; the v1+json body is
+        # relayed with the right content-type, and devpi is never consulted.
+        status, body, headers = self._raw("GET", "/pypi/simple/private-pkg/",
+                                          auth=GOOD_AUTH, accept=self.JSON_ACCEPT)
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("Content-Type"), self.JSON_ACCEPT)
+        self.assertIn('"api-version":"1.1"', body)
+        enrich = [p for p in self.seen("policy-sync") if "upstream=gitea" in p and "private-pkg" in p]
+        self.assertTrue(enrich, "expected a policy-sync gitea-branch enrich call")
+        self.assertFalse([p for p in self.seen("devpi") if "private-pkg" in p])
+
+    def test_pypi_json_public_enriched_via_devpi_branch(self):
+        # JSON-Accept + a public-only name: Gitea probe 404s -> enrich devpi.
+        status, body, headers = self._raw("GET", "/pypi/simple/six/",
+                                          auth=GOOD_AUTH, accept=self.JSON_ACCEPT)
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("Content-Type"), self.JSON_ACCEPT)
+        self.assertIn('"api-version":"1.1"', body)
+        self.assertTrue([p for p in self.seen("policy-sync") if "upstream=devpi" in p and "name=six" in p])
+        # the Gitea-first probe really ran (precedence preserved on the JSON path)
+        self.assertIn(f"/api/packages/{TEST_NAMESPACE}/pypi/simple/six/", self.seen("gitea"))
+
+    def test_pypi_json_gitea_branch_enrich_404_falls_through_to_devpi(self):
+        # Race: Gitea probe 200 but the package vanished by enrich time; the
+        # gitea-branch enrich 404s and the orchestrator retries the devpi branch.
+        status, body, headers = self._raw("GET", "/pypi/simple/missing-private/",
+                                          auth=GOOD_AUTH, accept=self.JSON_ACCEPT)
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("Content-Type"), self.JSON_ACCEPT)
+        self.assertTrue([p for p in self.seen("policy-sync") if "upstream=devpi" in p and "missing-private" in p])
+
+    def test_pypi_non_json_accept_unchanged_gitea_first_fallthrough(self):
+        # Regression guard: WITHOUT the JSON Accept header the existing
+        # Gitea-first/404-fallback path is byte-identical and policy-sync is
+        # never touched.
+        before = len(self.upstreams["policy-sync"].requests)
+        status, body, _ = self._raw("GET", "/pypi/simple/six/", auth=GOOD_AUTH)
+        self.assertEqual(status, 200)
+        self.assertIn("six-1.0.0-py3-none-any.whl", body)  # the HTML page, not JSON
+        status, body, _ = self._raw("GET", "/pypi/simple/private-pkg/", auth=GOOD_AUTH)
+        self.assertEqual((status, body), (200, "gitea-simple private-pkg"))
+        self.assertEqual(len(self.upstreams["policy-sync"].requests), before,
+                         "non-JSON requests must never reach policy-sync")
+
+    def test_pypi_json_requires_auth(self):
+        # the JSON enrichment path is gated by the same auth_request guard
+        status, _, headers = self._raw("GET", "/pypi/simple/six/", accept=self.JSON_ACCEPT)
+        self.assertEqual(status, 401)
+        self.assertEqual(headers.get("WWW-Authenticate"), 'Basic realm="Artea"')
 
     def test_pypi_name_normalized_before_gitea_lookup(self):
         # S16: non-canonical spellings of a private name must still resolve to

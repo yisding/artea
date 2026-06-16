@@ -44,6 +44,20 @@ http {
     js_import pep503 from /etc/nginx/njs/pep503.js;
     js_set $pypi_project pep503.normalize;
 
+    # PEP 700 upload-time enrichment of the PyPI Simple API JSON surface. Only
+    # the JSON path (Accept: application/vnd.pypi.simple.v1+json) is diverted
+    # through this orchestrator; everything else keeps the byte-for-byte
+    # Gitea-first/devpi-fallback routing below. See gateway/njs/pep700.js.
+    js_import pep700 from /etc/nginx/njs/pep700.js;
+
+    # $pypi_wants_json = 1 when the client explicitly asked for the JSON Simple
+    # API (PEP 691/700). Bare `application/json` is deliberately NOT matched so
+    # browsers/curl never get diverted into enrichment.
+    map $http_accept $pypi_wants_json {
+        "~*application/vnd\.pypi\.simple\.(v1|latest)\+json" 1;
+        default 0;
+    }
+
     # $private_npm_uri = Gitea-side path for private npm scope traffic, derived from
     # $request_uri (raw request line, never decoded): the scoped path must reach
     # Gitea byte-for-byte — npm sends %2f/%2F in packument and publish URLs, and a
@@ -71,9 +85,10 @@ http {
         # happens per-request: the gateway starts (and `nginx -t` passes) even when
         # gitea/verdaccio/devpi are not up yet, and survives container re-creation.
         resolver 127.0.0.11 valid=30s ipv6=off;
-        set $gitea_upstream     gitea:3000;
-        set $verdaccio_upstream verdaccio:4873;
-        set $devpi_upstream     devpi:3141;
+        set $gitea_upstream       gitea:3000;
+        set $verdaccio_upstream   verdaccio:4873;
+        set $devpi_upstream       devpi:3141;
+        set $policy_sync_upstream policy-sync:8920;
 
         # npm publish / twine upload of large artifacts pass through here.
         client_max_body_size 512m;
@@ -207,8 +222,53 @@ http {
             error_page 403 = @registry_forbidden;
             error_page 500 = @registry_unavailable;
 
+            # JSON Simple API clients (pip --uploaded-prior-to, uv --exclude-newer,
+            # poetry min-release-age) get a PEP 700 v1.1 page with upload-time via
+            # the njs enrichment orchestrator. `last` re-dispatches to the internal
+            # /_pypi_json_enrich location; the non-JSON path below is unchanged.
+            if ($pypi_wants_json) { rewrite ^ /_pypi_json_enrich last; }
+
             rewrite ^ /api/packages/__ARTEA_NAMESPACE__/pypi/simple/$pypi_project/ break;
             proxy_pass http://$gitea_upstream;
+        }
+
+        # PEP 700 enrichment entrypoint (internal; reached only via the JSON
+        # diversion above, so auth has NOT yet run on this internal request —
+        # re-assert it here unconditionally before any upstream is touched).
+        location = /_pypi_json_enrich {
+            internal;
+            auth_request /_registry_auth;
+            error_page 401 = @registry_unauthorized;
+            error_page 403 = @registry_forbidden;
+            error_page 500 = @registry_unavailable;
+            js_content pep700.enrichRoute;
+        }
+
+        # Gitea-first PEP 503 probe for the JSON path: same private index the
+        # non-JSON path queries, body discarded (we only need the status; the
+        # HTML itself is re-fetched by policy-sync). Carries the client credential.
+        # A regular internal location (not @named): njs r.subrequest() targets a
+        # URI, it cannot dispatch to a named location.
+        location = /_gitea_simple_probe {
+            internal;
+            proxy_pass http://$gitea_upstream/api/packages/__ARTEA_NAMESPACE__/pypi/simple/$pypi_project/;
+            proxy_set_header Authorization $http_authorization;
+            proxy_pass_request_body off;
+        }
+
+        # Enrichment subrequest -> policy-sync, which fetches the base PEP 691
+        # list (devpi or Gitea) and returns a PEP 700 v1.1 document. Cached
+        # briefly per (upstream,name,credential): the credential is in the key so
+        # one user's private view never leaks to another (harmless for public).
+        location = /_enrich {
+            internal;
+            proxy_pass http://$policy_sync_upstream/pypi/simple-enrich?upstream=$arg_upstream&name=$arg_name;
+            proxy_set_header Authorization $http_authorization;
+            proxy_buffering on;
+            proxy_cache registry_auth;
+            proxy_cache_key "$arg_upstream|$arg_name|$http_authorization";
+            proxy_cache_valid 200 30s;
+            proxy_ignore_headers Cache-Control Expires Set-Cookie Vary;
         }
 
         # Fallback: ask devpi's constrained index with the SAME normalized name.

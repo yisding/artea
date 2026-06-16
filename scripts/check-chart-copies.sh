@@ -14,5 +14,6 @@ check_copy() {
 }
 
 check_copy gateway/njs/pep503.js deploy/helm/artea/files/gateway/pep503.js
+check_copy gateway/njs/pep700.js deploy/helm/artea/files/gateway/pep700.js
 check_copy gitea/custom/templates/home.tmpl.template deploy/helm/artea/files/gitea-templates/home.tmpl
 check_copy gitea/custom/templates/base/head_navbar.tmpl.template deploy/helm/artea/files/gitea-templates/base__head_navbar.tmpl

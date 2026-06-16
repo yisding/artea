@@ -13,10 +13,13 @@ import hmac
 import hashlib
 import json
 import logging
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
 
+from . import enrich
 from .config import Config
 from .store import PolicyStore
 from .sync import Syncer
@@ -28,6 +31,14 @@ LISTEN_PORT = 8920
 
 POLICY_ENDPOINT = "/policy/npm-rules.yaml"
 UPSTREAM_POLICY_ENDPOINT = "/policy/upstream-policy.yaml"
+# PEP 700 upload-time enrichment for the PyPI Simple API (the gateway njs
+# orchestrator calls this after it has decided Gitea-first vs devpi fallback).
+ENRICH_ENDPOINT = "/pypi/simple-enrich"
+
+# The name is already PEP 503-normalized by the gateway; reject anything that
+# is not (defense in depth — never interpolate an arbitrary string into an
+# upstream URL).
+_NORMALIZED_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9.-]*$")
 
 
 def etag_matches(if_none_match: str, etag: str) -> bool:
@@ -67,6 +78,14 @@ class PolicySyncHandler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
+    def _respond_raw(self, code: int, body: bytes, content_type: str) -> None:
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
     def do_GET(self) -> None:  # noqa: N802 (http.server API)
         if self.path == "/healthz":
             self._respond(200, {"status": "ok", **self.server.state.snapshot()})
@@ -74,8 +93,49 @@ class PolicySyncHandler(BaseHTTPRequestHandler):
             self._serve_policy(self.server.store, "npm")
         elif self.path == UPSTREAM_POLICY_ENDPOINT:
             self._serve_policy(self.server.upstream_store, "upstream")
+        elif urlsplit(self.path).path == ENRICH_ENDPOINT:
+            self._serve_enrichment()
         else:
             self._respond(404, {"error": "not found"})
+
+    def _serve_enrichment(self) -> None:
+        """GET /pypi/simple-enrich?upstream={devpi|gitea}&name=<normalized>.
+
+        Returns a PEP 700 v1.1 Simple API JSON document for the project, sourced
+        from the winning upstream the gateway already selected. The client's
+        Authorization header is forwarded to Gitea (never logged) so Gitea
+        re-enforces package read permissions on the private path.
+        """
+        query = parse_qs(urlsplit(self.path).query)
+        upstream = (query.get("upstream") or [""])[0]
+        name = (query.get("name") or [""])[0]
+        if upstream not in ("devpi", "gitea") or not _NORMALIZED_NAME_RE.match(name):
+            self._respond(400, {"error": "upstream must be devpi|gitea and name PEP 503-normalized"})
+            return
+
+        cfg = self.server.cfg
+        authorization = self.headers.get("Authorization") or ""
+        try:
+            if upstream == "gitea":
+                doc = enrich.enrich_gitea(name, cfg.gitea_url, cfg.namespace, authorization)
+                if doc is None:
+                    # No such private package -> drive the gateway fall-through
+                    # to the public mirror (preserves Gitea-first precedence).
+                    self._respond(404, {"error": "no such private package"})
+                    return
+            else:
+                doc = enrich.enrich_devpi(name, cfg.devpi_url, cfg.pypi_json_url)
+        except enrich.EnrichUnavailable as e:
+            log.warning("enrichment unavailable (upstream=%s name=%s): %s", upstream, name, e)
+            self._respond(502, {"error": "upstream metadata unavailable"})
+            return
+        except Exception:  # never crash the worker on a malformed upstream reply
+            log.exception("enrichment failed (upstream=%s name=%s)", upstream, name)
+            self._respond(502, {"error": "enrichment failed"})
+            return
+
+        body = json.dumps(doc).encode()
+        self._respond_raw(200, body, enrich.SIMPLE_JSON_ACCEPT)
 
     def do_HEAD(self) -> None:  # noqa: N802
         if self.path == POLICY_ENDPOINT:
@@ -148,6 +208,7 @@ class PolicySyncHTTPServer(ThreadingHTTPServer):
         state: SyncState,
         store: PolicyStore,
         upstream_store: PolicyStore,
+        cfg: Config | None = None,
     ):
         super().__init__(addr, PolicySyncHandler)
         self.webhook_secret = webhook_secret
@@ -155,6 +216,9 @@ class PolicySyncHTTPServer(ThreadingHTTPServer):
         self.state = state
         self.store = store
         self.upstream_store = upstream_store
+        # Enrichment endpoint reads cfg.gitea_url / cfg.devpi_url / cfg.namespace
+        # / cfg.pypi_json_url; optional so existing call sites/tests still work.
+        self.cfg = cfg
 
 
 def make_http_server(
@@ -165,8 +229,9 @@ def make_http_server(
     state: SyncState,
     store: PolicyStore,
     upstream_store: PolicyStore,
+    cfg: Config | None = None,
 ) -> PolicySyncHTTPServer:
-    return PolicySyncHTTPServer((host, port), webhook_secret, trigger_sync, state, store, upstream_store)
+    return PolicySyncHTTPServer((host, port), webhook_secret, trigger_sync, state, store, upstream_store, cfg)
 
 
 def run_sync_worker(syncer: Syncer, state: SyncState, wake: threading.Event, poll_interval: float, stop: threading.Event) -> None:
@@ -205,7 +270,7 @@ def main() -> None:
     )
     worker.start()
 
-    httpd = make_http_server("0.0.0.0", LISTEN_PORT, cfg.webhook_secret, wake.set, state, store, upstream_store)
+    httpd = make_http_server("0.0.0.0", LISTEN_PORT, cfg.webhook_secret, wake.set, state, store, upstream_store, cfg)
     log.info("policy-sync listening on :%d (gitea=%s devpi=%s poll=%.0fs file=%s)",
              LISTEN_PORT, cfg.gitea_url, cfg.devpi_url, cfg.poll_interval,
              cfg.policy_file_path or "<disabled: HTTP-only>")

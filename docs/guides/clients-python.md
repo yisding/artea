@@ -131,6 +131,34 @@ TWINE_PASSWORD=your-token \
 twine upload dist/*
 ```
 
+### Upload-time / release-age filtering
+
+The gateway serves the **PEP 700 JSON Simple API (`api-version` `1.1`)** with a
+per-file `upload-time` whenever a client sends
+`Accept: application/vnd.pypi.simple.v1+json` — for **both** public
+(devpi pull-through) and private (Gitea) packages. Time-based install filters
+therefore work through the Artea index:
+
+```sh
+pip install --uploaded-prior-to 2026-01-01T00:00:00Z six   # pip 25.1+
+uv pip install --exclude-newer 2026-01-01 six              # uv
+# poetry: package-time-filtering / min-release-age (Poetry 2.x) reads upload-time too
+```
+
+Notes:
+
+- This is *additive* to the server-side `upstream.min_age` gate in
+  `upstream-policy.yaml`: a public file that is still too new under that policy
+  is already absent from the index, so a client-side time filter composes with
+  it rather than overriding it.
+- Public files carry the exact `upload-time` PyPI reports (microsecond UTC).
+  Private (Gitea) files carry their **version's** upload time (Gitea records
+  upload time per version, so all files in a version share it) — coarser, but
+  never newer than the real upload, so a time-bound install can never pick a
+  file that was actually published after the cutoff.
+- A plain request (no special `Accept`) is unchanged: `pip install` still gets
+  the PEP 503 HTML / PEP 691 v1.0 page exactly as before.
+
 ### Name normalization
 
 Gitea normalizes package names per PEP 503 (`.` and `_` become `-`), so

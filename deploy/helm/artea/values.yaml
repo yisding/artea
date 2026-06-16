@@ -63,6 +63,8 @@ gateway:
     gitea: artea-gitea-http:3000
     verdaccio: artea-verdaccio:4873
     devpi: artea-devpi:3141
+    # PEP 700 upload-time enrichment of the PyPI Simple API JSON surface.
+    policySync: artea-policy-sync:8920
   resources: {}
   # Optional Ingress in front of the gateway: TLS + host routing ONLY — all
   # routing logic (auth_request, 404-fallback, normalization) stays in nginx
