@@ -143,16 +143,54 @@ def test_devpi_filename_miss_keeps_file_without_upload_time(stub):
     assert "upload-time" not in doc["files"][0]
 
 
-def test_devpi_pypi_json_unavailable_fails_closed(stub):
-    # devpi list ok, but PyPI JSON 500s and no cache exists -> EnrichUnavailable
-    # (never serve a downgraded list to a time-filtering client).
+def test_devpi_pypi_json_unavailable_serves_base_index_without_upload_time(stub):
+    # devpi list ok, but PyPI JSON 500s and no cache exists. The base index IS
+    # reachable, so we must NOT 502 a plain `pip/uv install <public pkg>`: serve
+    # the installable v1.1 list un-stamped. upload-time is spec-optional, and a
+    # time-filtering client that needs it simply won't match the un-stamped file.
     stub.route("/root/constrained/+simple/six/", lambda h: _reply(
         h, 200, _devpi_simple([{"filename": "six-1.0.0-py3-none-any.whl", "url": "http://x", "hashes": {}}]),
         "application/vnd.pypi.simple.v1+json"))
     stub.route("/six/json", lambda h: _reply(h, 500, "boom", "text/plain"))
 
+    doc = enrich.enrich_devpi("six", stub.url, stub.url)
+    assert doc["meta"]["api-version"] == "1.1"
+    assert len(doc["files"]) == 1
+    assert doc["files"][0]["filename"] == "six-1.0.0-py3-none-any.whl"
+    assert "upload-time" not in doc["files"][0]
+
+
+def test_devpi_base_list_unavailable_fails_closed(stub):
+    # The base index itself is unreachable and no cache exists -> EnrichUnavailable
+    # (a synthesized empty list would look like "no such package"). This is the
+    # only case that becomes a gateway 502; metadata outages do not.
+    stub.route("/six/json", lambda h: _reply(h, 200, _pypi_json({})))  # pypi up
+    # no /root/constrained route registered -> the stub 404s the base list
     with pytest.raises(enrich.EnrichUnavailable):
         enrich.enrich_devpi("six", stub.url, stub.url)
+
+
+def test_devpi_metadata_degraded_doc_is_not_cached(stub):
+    # A metadata-degraded list must not be pinned for the TTL: once PyPI JSON
+    # recovers, the very next request must produce the enriched (stamped) list.
+    state = {"pypi_ok": False}
+    stub.route("/root/constrained/+simple/six/", lambda h: _reply(
+        h, 200, _devpi_simple([{"filename": "six-1.0.0-py3-none-any.whl", "url": "http://x", "hashes": {}}]),
+        "application/vnd.pypi.simple.v1+json"))
+
+    def pypi(h):
+        if state["pypi_ok"]:
+            _reply(h, 200, _pypi_json({"1.0.0": [
+                {"filename": "six-1.0.0-py3-none-any.whl", "upload_time_iso_8601": "2023-06-15T10:23:45.123456Z"}]}))
+        else:
+            _reply(h, 500, "down", "text/plain")
+    stub.route("/six/json", pypi)
+
+    degraded = enrich.enrich_devpi("six", stub.url, stub.url)
+    assert "upload-time" not in degraded["files"][0]
+    state["pypi_ok"] = True
+    recovered = enrich.enrich_devpi("six", stub.url, stub.url)
+    assert recovered["files"][0]["upload-time"] == "2023-06-15T10:23:45.123456Z"
 
 
 def test_devpi_stale_cache_served_when_pypi_json_unavailable(stub):
@@ -189,7 +227,22 @@ def _gitea_html(entries):
     return "\n".join(body)
 
 
-def test_gitea_per_version_created_at_and_sha256(stub):
+def _gitea_files(entries):
+    """entries: list of (name, size, sha256) like the Gitea .../files endpoint."""
+    return json.dumps([
+        {"id": i, "name": name, "size": size, "sha256": sha}
+        for i, (name, size, sha) in enumerate(entries)
+    ])
+
+
+def test_gitea_per_version_created_at_size_and_sha256(stub):
+    # NOTE: register the longer "/files" prefix first — the stub matches by
+    # startswith, and the version endpoint is a prefix of the files endpoint.
+    stub.route("/api/v1/packages/artea/pypi/demo/0.0.1/files", lambda h: _reply(
+        h, 200, _gitea_files([
+            ("demo-0.0.1-py3-none-any.whl", 1234, "deadbeef"),
+            ("demo-0.0.1.tar.gz", 5678, "cafef00d"),
+        ])))
     stub.route("/api/packages/artea/pypi/simple/demo/", lambda h: _reply(
         h, 200, _gitea_html([
             ("demo-0.0.1-py3-none-any.whl", "0.0.1", "deadbeef"),
@@ -204,11 +257,19 @@ def test_gitea_per_version_created_at_and_sha256(stub):
     for f in doc["files"]:
         # second-precision created_at padded to canonical microsecond Z form
         assert f["upload-time"] == "2026-06-16T02:21:17.000000Z"
+        # PEP 700 v1.1: size is mandatory; sourced from Gitea's files endpoint
+        assert isinstance(f["size"], int)
+    sizes = {f["filename"]: f["size"] for f in doc["files"]}
+    assert sizes == {"demo-0.0.1-py3-none-any.whl": 1234, "demo-0.0.1.tar.gz": 5678}
     assert doc["files"][0]["hashes"] == {"sha256": "deadbeef"}
     assert doc["versions"] == ["0.0.1"]
-    # created_at fetched once per version, not once per file (cache dedupe)
-    version_calls = [r for r in stub.requests if "/api/v1/packages/artea/pypi/demo/0.0.1" in r["path"]]
+    # version metadata fetched once per version, not once per file (cache dedupe)
+    version_calls = [r for r in stub.requests
+                     if r["path"] == "/api/v1/packages/artea/pypi/demo/0.0.1"]
     assert len(version_calls) == 1
+    files_calls = [r for r in stub.requests
+                   if r["path"] == "/api/v1/packages/artea/pypi/demo/0.0.1/files"]
+    assert len(files_calls) == 1
 
 
 def test_gitea_404_returns_none(stub):
@@ -218,6 +279,8 @@ def test_gitea_404_returns_none(stub):
 
 
 def test_gitea_forwards_authorization_never_service_token(stub):
+    stub.route("/api/v1/packages/artea/pypi/demo/0.0.1/files", lambda h: _reply(
+        h, 200, _gitea_files([("demo-0.0.1.tar.gz", 42, "aa")])))
     stub.route("/api/packages/artea/pypi/simple/demo/", lambda h: _reply(
         h, 200, _gitea_html([("demo-0.0.1.tar.gz", "0.0.1", "aa")]), "text/html"))
     stub.route("/api/v1/packages/artea/pypi/demo/0.0.1", lambda h: _reply(
@@ -231,12 +294,14 @@ def test_gitea_forwards_authorization_never_service_token(stub):
 def test_gitea_missing_created_at_keeps_file_without_upload_time(stub):
     stub.route("/api/packages/artea/pypi/simple/demo/", lambda h: _reply(
         h, 200, _gitea_html([("demo-0.0.1.tar.gz", "0.0.1", "aa")]), "text/html"))
-    # version metadata endpoint 500s -> file kept, no upload-time
+    # both version-metadata endpoints 500 -> file kept, no upload-time, no size
+    stub.route("/api/v1/packages/artea/pypi/demo/0.0.1/files", lambda h: _reply(h, 500, "down", "text/plain"))
     stub.route("/api/v1/packages/artea/pypi/demo/0.0.1", lambda h: _reply(h, 500, "down", "text/plain"))
     doc = enrich.enrich_gitea("demo", stub.url, "artea", "Basic abc")
     assert doc["meta"]["api-version"] == "1.1"
     assert len(doc["files"]) == 1
     assert "upload-time" not in doc["files"][0]
+    assert "size" not in doc["files"][0]
 
 
 # ---- helpers --------------------------------------------------------------------

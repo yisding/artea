@@ -35,8 +35,22 @@ http {
     # Authorization header, 200s only, 30s TTL — keeps PAT revocation latency well
     # inside the 60s budget (ARCHITECTURE.md S12) while sparing Gitea one auth
     # round-trip per pip request. Lives in the ephemeral container layer.
+    # Sized for tiny auth-subrequest replies ONLY; the enrichment cache below has
+    # its own zone so large Simple-API JSON bodies never evict auth entries (that
+    # would inflate the S12 revocation latency the auth caching is sized for).
     proxy_cache_path /var/cache/nginx/registry_auth levels=1:2 keys_zone=registry_auth:1m
                      max_size=8m inactive=2m use_temp_path=off;
+
+    # Separate cache for PEP 700 enriched Simple-API JSON (the /_enrich subrequest
+    # below). Enriched documents for popular packages are tens-to-hundreds of KB
+    # (occasionally MB), so they get their own, larger store: co-locating them in
+    # the 8m auth zone would constantly evict auth entries (breaking the S12
+    # revocation budget) AND evict each other (making the enrich cache useless, so
+    # the Gitea-probe + policy-sync + pypi.org round-trips would be paid per
+    # request). inactive matches the 30s proxy_cache_valid so an unused entry is
+    # reaped promptly rather than holding space for an idle minute.
+    proxy_cache_path /var/cache/nginx/pypi_enrich levels=1:2 keys_zone=pypi_enrich:4m
+                     max_size=256m inactive=30s use_temp_path=off;
 
     # $pypi_project = PEP 503-normalized form of the $pypi_project_raw location
     # capture (lowercase, [-_.]+ runs collapsed to '-'), evaluated lazily per
@@ -265,7 +279,9 @@ http {
             proxy_pass http://$policy_sync_upstream/pypi/simple-enrich?upstream=$arg_upstream&name=$arg_name;
             proxy_set_header Authorization $http_authorization;
             proxy_buffering on;
-            proxy_cache registry_auth;
+            # Dedicated zone (NOT registry_auth): enriched bodies are large and
+            # must never evict the auth cache the S12 budget relies on.
+            proxy_cache pypi_enrich;
             proxy_cache_key "$arg_upstream|$arg_name|$http_authorization";
             proxy_cache_valid 200 30s;
             proxy_ignore_headers Cache-Control Expires Set-Cookie Vary;

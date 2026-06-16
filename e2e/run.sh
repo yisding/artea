@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Artea e2e scenario suite — codifies S1-S17 from docs/ARCHITECTURE.md (the
+# Artea e2e scenario suite — codifies S1-S18 from docs/ARCHITECTURE.md (the
 # definition of done for v1).
 # Requires a running stack (`make up`) and a completed bootstrap
 # (`make bootstrap`); uses real client tools: npm with an
@@ -81,6 +81,8 @@ PY_VERSION="0.0.${RUN_ID}"
 PY_RO_VERSION="0.0.${RUN_ID}.post1"
 SHADOW_NAME="tinynetrc" # real PyPI package, published privately as 0.0.1 in S9
 SHADOW_VERSION="0.0.1"
+# PEP 700 JSON Simple API media type (S18 upload-time enrichment)
+PYPI_JSON_ACCEPT="application/vnd.pypi.simple.v1+json"
 
 RO_TOKEN_NAME="e2e-ro-${RUN_ID}"
 NO_PACKAGE_TOKEN_NAME="e2e-no-package-${RUN_ID}"
@@ -108,7 +110,7 @@ POLICY_FILE_REMOVED=0 # S15/compose: /policy/npm-rules.yaml deleted in the live 
 POLICY_SYNC_SCALED=0  # S15/k8s: policy-sync scaled to 0 replicas
 DEVPI_WIPED=0         # S15: devpi cache wiped, constraints not yet re-synced
 E2E_SCENARIOS="${E2E_SCENARIOS:-}"
-ALL_SCENARIOS="S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14 S15 S16 S17"
+ALL_SCENARIOS="S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14 S15 S16 S17 S18"
 
 # ---- cleanup (idempotent, tolerates partial runs) ---------------------------------
 cleanup() {
@@ -833,6 +835,74 @@ s17_legacy_and_encoding() {
   echo "anonymous /npm/${NPM_NAME_ENC} -> 401"
 }
 
+# ---- S18: PEP 700 upload-time enrichment of the JSON Simple API --------------------------------
+# Proves the end-to-end mechanism the routing unit test only stubs: a real
+# Accept: application/vnd.pypi.simple.v1+json request through the gateway is
+# enriched to api-version 1.1 with per-file upload-time, for BOTH the public
+# (devpi pull-through) and private (Gitea) branches, and that a real
+# time-filtering client (pip --uploaded-prior-to) can install through it.
+pypi_json() { # <token> <name> -> v1+json Simple API body (enriched) or non-zero
+  curl -sf -H "Accept: ${PYPI_JSON_ACCEPT}" -u "dev1:$1" \
+    "${GATEWAY_URL}/pypi/simple/$2/"
+}
+
+s18_pep700_upload_time() {
+  local body report="${WORK}/s18-report.json" url stamped
+  # a. PUBLIC branch (six -> devpi pull-through). The Gitea-first probe 404s, so
+  #    enrichment joins devpi's constrained list with PyPI JSON upload-time.
+  body=$(pypi_json "${DEV1_TOKEN}" six) || { echo "public v1+json fetch failed"; return 1; }
+  jq -e '.meta["api-version"] == "1.1"' >/dev/null <<<"$body" \
+    || { echo "public index is not api-version 1.1"; echo "$body" | head -c 400; return 1; }
+  jq -e '[.files[] | select(.["upload-time"])] | length > 0' >/dev/null <<<"$body" \
+    || { echo "public index has no file with upload-time"; return 1; }
+  # every stamped file's upload-time must be canonical ISO-8601 UTC (Z suffix)
+  jq -e '[.files[] | select(.["upload-time"]) | select(.["upload-time"] | test("Z$") | not)] | length == 0' \
+    >/dev/null <<<"$body" || { echo "a public upload-time is not Z-suffixed UTC"; return 1; }
+  echo "public six: api-version 1.1 with $(jq '[.files[]|select(.["upload-time"])]|length' <<<"$body") upload-time-stamped files"
+
+  # b. PRIVATE branch (the S6/S7 fixture in Gitea). Gitea serves only PEP 503
+  #    HTML; the gateway must synthesize v1.1 JSON with per-version created_at.
+  body=$(pypi_json "${DEV1_TOKEN}" "${PY_NAME}") || { echo "private v1+json fetch failed"; return 1; }
+  jq -e '.meta["api-version"] == "1.1"' >/dev/null <<<"$body" \
+    || { echo "private index is not api-version 1.1"; echo "$body" | head -c 400; return 1; }
+  # the private file URLs must still be Gitea's (precedence preserved on JSON)
+  jq -e --arg ns "${ARTEA_NAMESPACE}" \
+    '[.files[] | select(.url | contains("/api/packages/" + $ns + "/pypi/files/"))] | length > 0' \
+    >/dev/null <<<"$body" || { echo "private index files are not Gitea-hosted"; return 1; }
+  stamped=$(jq '[.files[] | select(.["upload-time"])] | length' <<<"$body")
+  [ "${stamped}" -ge 1 ] \
+    || { echo "private index has no file with upload-time (Gitea created_at not surfaced)"; return 1; }
+  echo "private ${PY_NAME}: api-version 1.1, Gitea-hosted files, ${stamped} upload-time-stamped"
+
+  # c. non-JSON path is unchanged: a plain Accept must still get PEP 503 HTML,
+  #    not the enriched JSON (regression guard for the byte-for-byte path).
+  body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/six/") \
+    || { echo "non-JSON six fetch failed"; return 1; }
+  grep -q 'api-version' <<<"$body" && { echo "non-JSON path leaked JSON enrichment"; return 1; }
+  echo "non-JSON path still serves PEP 503 HTML (no enrichment)"
+
+  # d. functional: a real time-filtering client installs through the enriched
+  #    index. pip --uploaded-prior-to needs >= 24.1; skip gracefully if older
+  #    (the curl assertions above already prove upload-time is present).
+  if pip_e2e download --help 2>&1 | grep -q -- '--uploaded-prior-to'; then
+    rm -rf "${WORK}/s18-dl" && mkdir -p "${WORK}/s18-dl"
+    # a date far in the future accepts all existing releases; the point is that
+    # the index now PROVIDES upload-time so the flag no longer hard-errors.
+    pip_e2e download -q --index-url "${INDEX_URL}" --no-deps -d "${WORK}/s18-dl" \
+      --uploaded-prior-to 2999-01-01T00:00:00Z six \
+      || { echo "pip --uploaded-prior-to install of six failed against the enriched index"; return 1; }
+    echo "pip --uploaded-prior-to resolved six: $(ls "${WORK}/s18-dl" | head -1)"
+    # private package too: proves the Gitea-branch upload-time is consumable
+    rm -rf "${WORK}/s18-dl-priv" && mkdir -p "${WORK}/s18-dl-priv"
+    pip_e2e download -q --index-url "${INDEX_URL}" --no-deps -d "${WORK}/s18-dl-priv" \
+      --uploaded-prior-to 2999-01-01T00:00:00Z "${PY_NAME}==${PY_VERSION}" \
+      || { echo "pip --uploaded-prior-to install of the private package failed"; return 1; }
+    echo "pip --uploaded-prior-to resolved ${PY_NAME}: $(ls "${WORK}/s18-dl-priv" | head -1)"
+  else
+    echo "pip lacks --uploaded-prior-to (< 24.1); skipped the install leg (curl assertions cover metadata)"
+  fi
+}
+
 # ---- run ---------------------------------------------------------------------------------------
 validate_scenario_selection
 
@@ -853,6 +923,7 @@ run_scenario S14 "dev1 cannot push registry-policy@main; admin allowlist works" 
 run_scenario S15 "fail-closed: missing npm policy / wiped devpi, then recovery" s15_fail_closed
 run_scenario S16 "non-canonical pypi spellings still resolve to the private package" s16_normalization
 run_scenario S17 "legacy scoped .npmrc still works; encoded private-scope paths route to Gitea" s17_legacy_and_encoding
+run_scenario S18 "PEP 700 upload-time: v1+json enriched to api-version 1.1 (public+private)" s18_pep700_upload_time
 
 if [ "$SELECTED_SCENARIOS" -eq 0 ]; then
   die "E2E_SCENARIOS selected no scenarios: ${E2E_SCENARIOS}"

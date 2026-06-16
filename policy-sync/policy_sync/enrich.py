@@ -18,7 +18,12 @@ exposes through a documented stock API, and return a PEP 700 v1.1 document:
 
   * `meta.api-version` becomes "1.1";
   * each `files[]` entry gains `upload-time` (canonical UTC ISO-8601 with
-    microsecond precision and a `Z` suffix) and, when known, `size`;
+    microsecond precision and a `Z` suffix) and `size` — PEP 700 makes `size`
+    mandatory in 1.1, so it is sourced for BOTH paths (PyPI JSON for public;
+    Gitea's per-version package-files API for private). A file may still lack
+    `size`/`upload-time` if the upstream omits it for that exact filename;
+    pip/uv tolerate that, and a strict consumer simply skips the un-annotated
+    file (the safe direction);
   * a top-level `versions[]` array is added.
 
 Composition with the server-side age gate: the PUBLIC base list is taken from
@@ -26,6 +31,13 @@ devpi's `root/constrained/+simple/<name>/` (POST policy — the ConstrainedStage
 already dropped files newer than `min_upstream_age` and outside constraints), so
 enrichment only ever annotates files the gate already permits. It never
 re-introduces a filtered file.
+
+Availability vs. metadata: the base index list is what makes a package
+installable; `upload-time`/`size` are optional annotations. A reachable base
+list is therefore served even when the optional metadata source is momentarily
+down (un-annotated, not 502), so a metadata blip never breaks a plain install;
+only an unreachable base list (or a Gitea outage, handled in the gateway) is an
+error. See enrich_devpi/enrich_gitea for the precise fail-open/closed split.
 
 Stdlib only (urllib + json), matching the rest of policy-sync.
 """
@@ -258,6 +270,18 @@ def enrich_devpi(name: str, devpi_url: str, pypi_json_url: str) -> dict:
     authoritative source the age gate already consulted). Files with no metadata
     match keep no upload-time (it is spec-optional); a time-filtering client
     simply will not select them, which is the safe direction.
+
+    Availability vs. metadata are decoupled. The devpi constrained list is the
+    *index* (which files exist); the PyPI JSON is *optional metadata*
+    (upload-time/size). If the base list is unreachable and no stale enriched
+    document exists, we fail closed (EnrichUnavailable -> 502): a synthesized
+    empty list would look like "no such package". But if the base list is
+    reachable and only the PyPI JSON is down, we serve the base list as-is
+    (still a complete, installable v1.1 index) rather than 502 — upload-time is
+    spec-optional, and a time-filtering client that needs it simply will not
+    match the un-stamped files, the same safe direction the per-file-miss path
+    already relies on. We do NOT cache a metadata-degraded document, so the next
+    request retries PyPI JSON instead of pinning the degraded list for the TTL.
     """
     cache_key = ("devpi", name)
     base_url = f"{devpi_url.rstrip('/')}/root/constrained/+simple/{urllib.parse.quote(name)}/"
@@ -277,14 +301,21 @@ def enrich_devpi(name: str, devpi_url: str, pypi_json_url: str) -> dict:
     if not isinstance(base_files, list):
         base_files = []
 
+    metadata_degraded = False
     try:
         meta_by_filename = _fetch_pypi_file_meta(name, pypi_json_url)
     except EnrichUnavailable as e:
+        # The base index IS reachable; only the optional upload-time/size source
+        # is down. Prefer a stale enriched doc (keeps upload-time), else serve
+        # the base list un-stamped rather than turning a metadata blip into a
+        # total install outage for plain `pip/uv install <public pkg>`.
         stale = _enrich_cache.get_stale(cache_key, STALE_MAX_SECONDS)
         if stale is not None:
             log.warning("pypi metadata unavailable for %s (%s); serving stale enriched", name, e)
             return stale
-        raise
+        log.warning("pypi metadata unavailable for %s (%s); serving base index without upload-time", name, e)
+        meta_by_filename = {}
+        metadata_degraded = True
 
     files: list[dict] = []
     versions: list[str] = []
@@ -312,7 +343,10 @@ def enrich_devpi(name: str, devpi_url: str, pypi_json_url: str) -> dict:
         log.info("enrich_devpi %s: %d/%d files without a PyPI upload-time match", name, missing, len(files))
 
     doc = build_v1_1(base.get("name", name), files, versions)
-    _enrich_cache.put(cache_key, doc)
+    # Only cache a fully-enriched document; a metadata-degraded list must not be
+    # pinned for the whole TTL (next request retries PyPI JSON).
+    if not metadata_degraded:
+        _enrich_cache.put(cache_key, doc)
     return doc
 
 
@@ -372,28 +406,56 @@ def _version_from_gitea_url(url: str) -> str | None:
     return urllib.parse.unquote(m.group(1)) if m else None
 
 
-def _gitea_created_at(name: str, version: str, gitea_url: str, namespace: str, authorization: str) -> str | None:
-    """Per-version created_at from Gitea's package API (cached, immutable)."""
+def _gitea_version_meta(
+    name: str, version: str, gitea_url: str, namespace: str, authorization: str
+) -> tuple[str | None, dict[str, int]]:
+    """Per-version (created_at, {filename: size}) from Gitea's package API.
+
+    created_at is the version-level upload time (the per-file endpoint omits it);
+    size is mandatory in PEP 700 v1.1, and Gitea exposes it per file via the
+    `.../files` endpoint (each PackageFile has name/size/sha256). Both are
+    immutable once published, so the joined result is cached together for the
+    long CREATED_AT_TTL. A miss/outage on either call degrades only that field
+    (the file is still served, just without that optional/mandatory annotation).
+    """
     cache_key = (namespace, name, version)
     cached = _created_at_cache.get(cache_key)
     if cached is not None:
-        return cached or None  # cached "" sentinel means "looked up, none"
-    url = (
+        iso, sizes = cached  # cached ("", {}) sentinel means "looked up, none"
+        return (iso or None), sizes
+
+    base = (
         f"{gitea_url.rstrip('/')}/api/v1/packages/"
         f"{urllib.parse.quote(namespace)}/pypi/{urllib.parse.quote(name)}/{urllib.parse.quote(version)}"
     )
     headers = {"Accept": "application/json"}
     if authorization:
         headers["Authorization"] = authorization
+
+    iso: str | None = None
     try:
-        data = json.loads(_get(url, headers))
+        data = json.loads(_get(base, headers))
+        created_at = data.get("created_at") if isinstance(data, dict) else None
+        iso = normalize_to_iso_z(created_at) if isinstance(created_at, str) else None
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
-        log.warning("gitea version metadata unavailable for %s/%s %s: %s", namespace, name, version, e)
-        return None
-    created_at = data.get("created_at") if isinstance(data, dict) else None
-    iso = normalize_to_iso_z(created_at) if isinstance(created_at, str) else None
-    _created_at_cache.put(cache_key, iso or "")
-    return iso
+        log.warning("gitea version created_at unavailable for %s/%s %s: %s", namespace, name, version, e)
+
+    sizes: dict[str, int] = {}
+    try:
+        files_data = json.loads(_get(base + "/files", headers))
+        if isinstance(files_data, list):
+            for item in files_data:
+                if not isinstance(item, dict):
+                    continue
+                fn = item.get("name")
+                sz = item.get("size")
+                if isinstance(fn, str) and isinstance(sz, int) and sz >= 0:
+                    sizes[fn] = sz
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+        log.warning("gitea version files unavailable for %s/%s %s: %s", namespace, name, version, e)
+
+    _created_at_cache.put(cache_key, (iso or "", sizes))
+    return iso, sizes
 
 
 def enrich_gitea(name: str, gitea_url: str, namespace: str, authorization: str) -> dict | None:
@@ -403,7 +465,8 @@ def enrich_gitea(name: str, gitea_url: str, namespace: str, authorization: str) 
     scrape its simple page for (url, filename, sha256) and stamp each file with
     its version's created_at (per-version granularity: every file of a version
     shares the version upload time — coarser than per-file, but never in the
-    wrong direction for a time-bound client).
+    wrong direction for a time-bound client) and its per-file `size` from
+    Gitea's package-files API (PEP 700 v1.1 requires `size`).
 
     Returns None when Gitea 404s (no such private package), which the gateway
     turns into a public-devpi fall-through to preserve the precedence contract.
@@ -428,8 +491,9 @@ def enrich_gitea(name: str, gitea_url: str, namespace: str, authorization: str) 
     parser = _GiteaSimpleParser()
     parser.feed(html)
 
-    # Resolve created_at once per version (cache also dedupes across files).
-    created_at_by_version: dict[str, str | None] = {}
+    # Resolve created_at + per-file sizes once per version (cache also dedupes
+    # across files of the same version).
+    meta_by_version: dict[str, tuple[str | None, dict[str, int]]] = {}
     files: list[dict] = []
     versions: list[str] = []
     for link in parser.links:
@@ -438,14 +502,17 @@ def enrich_gitea(name: str, gitea_url: str, namespace: str, authorization: str) 
         if link.get("hashes"):
             out["hashes"] = link["hashes"]
         if version:
-            if version not in created_at_by_version:
-                created_at_by_version[version] = _gitea_created_at(
+            if version not in meta_by_version:
+                meta_by_version[version] = _gitea_version_meta(
                     name, version, gitea_url, namespace, authorization
                 )
                 versions.append(version)
-            iso = created_at_by_version[version]
+            iso, sizes = meta_by_version[version]
             if iso:
                 out["upload-time"] = iso
+            size = sizes.get(link["filename"])
+            if isinstance(size, int):
+                out["size"] = size
         files.append(out)
 
     doc = build_v1_1(name, files, versions)

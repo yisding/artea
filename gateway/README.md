@@ -114,14 +114,25 @@ path, leaving every other request byte-for-byte unchanged:
   source, which `error_page` cannot do.
 - `/_enrich` proxies to `policy-sync:8920/pypi/simple-enrich`, which fetches the
   base PEP 691 list (devpi's POST-policy constrained index, or Gitea's HTML),
-  joins it with `upload-time`/`size` (PyPI JSON for public, Gitea's per-version
-  `created_at` for private), bumps `meta.api-version` to `1.1`, adds top-level
-  `versions[]`, and returns v1.1 JSON. The reply is cached 30s keyed on
-  `upstream|name|Authorization` (credential in the key so a private view never
-  leaks across users).
-- Fail-closed: a Gitea probe 5xx or a policy-sync 5xx becomes a gateway 502 (a
-  Gitea outage must not silently fall through to public for a possibly-private
-  name); enrichment never downgrades a v1+json client to an un-enriched page.
+  joins it with `upload-time` and `size` (PyPI JSON for public; for private,
+  Gitea's per-version `created_at` plus per-file `size` from its package-files
+  API), bumps `meta.api-version` to `1.1`, adds top-level `versions[]`, and
+  returns v1.1 JSON. The reply is cached 30s keyed on `upstream|name|Authorization`
+  (credential in the key so a private view never leaks across users) in a
+  **dedicated `pypi_enrich` cache zone** — never the small `registry_auth`/
+  `artea_auth` zone, so large Simple-API bodies cannot evict auth entries and
+  inflate the S12 revocation latency that auth caching is sized for.
+- Availability vs. metadata are decoupled. The base index list is what makes a
+  package installable; `upload-time`/`size` are optional metadata. A gateway
+  **502** is reserved for the cases that actually break installs: a Gitea probe
+  5xx (a Gitea outage must not silently fall through to public for a
+  possibly-private name) or an unreachable **base index**. If the base list is
+  reachable but the upstream upload-time source (pypi.org JSON) is momentarily
+  down and nothing is cached, policy-sync serves the base v1.1 list *without*
+  upload-time rather than 502 — a plain `pip/uv install <public pkg>` keeps
+  working through a pypi.org blip, and a time-filtering client just won't match
+  the un-stamped files (the same safe direction as a per-file metadata miss).
+  Such a metadata-degraded document is not cached, so the next request retries.
 - Composition: the public base list is devpi's `root/constrained` page, already
   filtered by `pypi-constraints.txt` and `upstream-policy.yaml`, so enrichment
   only annotates files the age gate already permits.
@@ -196,7 +207,11 @@ documented:
 
 - Cached entries (header value + small auth response metadata) live on disk
   inside the container's ephemeral layer at `/var/cache/nginx/registry_auth` —
-  never on a volume. Restarting the container clears them.
+  never on a volume. Restarting the container clears them. The much larger
+  PEP 700 enriched Simple-API bodies use a separate `pypi_enrich` zone
+  (`/var/cache/nginx/pypi_enrich`), so they cannot evict these auth entries; the
+  30 s revocation budget above is computed against an auth cache that enrichment
+  never touches.
 - The cache key is the credential itself; nginx stores it md5-hashed in the file
   name but verbatim inside the cache file. Same blast radius as nginx access
   logs; acceptable for v1.
