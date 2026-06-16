@@ -166,6 +166,16 @@ ORIG_NPM_RULES=$(get_policy_file npm-rules.yaml) || die "cannot read npm-rules.y
 ORIG_UPSTREAM_POLICY=$(get_policy_file upstream-policy.yaml) || die "cannot read upstream-policy.yaml from the policy repo"
 ORIG_CONSTRAINTS=$(get_policy_file pypi-constraints.txt) || die "cannot read pypi-constraints.txt from the policy repo"
 
+# A fresh bootstrap seeds the canonical policy.toml, which (when present) wins
+# over the three legacy files and makes policy-sync return before reading them
+# (policy-sync/policy_sync/sync.py:_sync_unified). The legacy-3-file scenarios
+# (S5/S10/S13/S14) edit npm-rules.yaml / pypi-constraints.txt and would become
+# silent no-ops while policy.toml exists, so drop it here to establish the legacy
+# baseline. The unified scenarios (S18-S21) re-author it on demand and drop it
+# again, so "no policy.toml" is the suite's resting state either way.
+delete_policy_file policy.toml "test(e2e): drop seeded policy.toml, arm legacy baseline" \
+  || die "cannot drop policy.toml to establish the legacy baseline"
+
 write_npmrc "${NPMRC}" "${DEV1_TOKEN}"
 mkdir -p "${NPM_CACHE}"
 

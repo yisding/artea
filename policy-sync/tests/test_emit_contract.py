@@ -205,6 +205,13 @@ _PYPI_POLICIES = [
         '[defaults.ecosystems.pypi]\naction = "deny"\n'
         '[[rules]]\necosystem = "pypi"\nname = "good-pkg"\naction = "allow"\n'
     ),
+    # default-deny + an exact-version allow (no deny on the name): the emitted
+    # 'requests==1.2.3' above '*' must be a constraints text devpi accepts.
+    (
+        'schema = 1\n[defaults]\naction = "allow"\n'
+        '[defaults.ecosystems.pypi]\naction = "deny"\n'
+        '[[rules]]\necosystem = "pypi"\nname = "requests"\nversions = "==1.2.3"\naction = "allow"\n'
+    ),
 ]
 
 

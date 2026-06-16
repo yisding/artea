@@ -314,19 +314,43 @@ def _emit_pypi(eco: _EcosystemRules, adapter: Adapter, default_action: Action) -
             allow_passthrough.add(name)
 
     # exact-version allow: against a whole-package deny -> constrain to ==v (which
-    # un-blocks exactly v). Against a range deny -> range-vs-range, reject.
-    exact_passthrough: dict[str, set[str]] = {}
+    # un-blocks exactly v). Against a range deny -> range-vs-range, reject. Under
+    # default-deny an exact allow is the PRIMARY allow-list mechanism, so it must
+    # pass that version even with no deny on the name; under default-allow with no
+    # deny it is a no-op (the version is already allowed).
+    #
+    # devpi's constrained index accepts a single specifier per project and a
+    # disjunction of exact versions ("==a OR ==b") is not expressible as one PEP
+    # 440 specifier set, so reject more than one exact-version allow for a package
+    # rather than emit a duplicate project line devpi's parse_constraints rejects
+    # (which would compile clean but fail when applied to the index).
+    exact_passthrough: dict[str, str] = {}
     for name, versions in eco.exact_allows.items():
+        if name in eco.whole_allows:
+            # a whole-package allow already passes every version (including this
+            # one), so the exact allow is redundant. Under default-deny the name
+            # is already listed as a bare passthrough; emitting '==v' too would be
+            # a duplicate project line devpi rejects.
+            continue
         if name in ranges:
             raise PolicyError(
                 f"pypi: an allow against a version-range deny (range carving) "
                 f"is not supported yet (package '{name}')"
             )
-        if name in whole:
-            whole.pop(name)
-            exact_passthrough[name] = set(versions)
-        # exact allow against no deny -> no-op (default-deny still blocks unless a
-        # whole-package allow exists; exact allow alone does not pass it through)
+        emit_exact = name in whole or default_deny
+        whole.pop(name, None)
+        if not emit_exact:
+            continue  # default-allow + no deny -> already allowed, no-op
+        if len(versions) > 1:
+            joined = ", ".join(f"=={v}" for v in sorted(versions))
+            raise PolicyError(
+                f"pypi: package '{name}' has multiple exact-version allows "
+                f"({joined}); devpi's constrained index accepts only one "
+                f"specifier per project and a disjunction of exact versions is "
+                f"not a valid PEP 440 specifier set. Allow a single exact "
+                f"version, or allow the whole package."
+            )
+        (exact_passthrough[name],) = versions
 
     emitted: list[str] = []
     # range denies -> devpi reads a constraint as an ALLOW set, so emit the
@@ -364,10 +388,10 @@ def _emit_pypi(eco: _EcosystemRules, adapter: Adapter, default_action: Action) -
     for name in sorted(whole):
         if not default_deny:
             emitted.append(f"{name}==0")
-    # exact-version allow against a whole-package deny -> constrain to ==v.
+    # exact-version allow -> constrain to ==v (the only version that passes,
+    # whether carving out of a whole-package deny or whitelisting under default-deny).
     for name in sorted(exact_passthrough):
-        for v in sorted(exact_passthrough[name]):
-            emitted.append(f"{name}=={v}")
+        emitted.append(f"{name}=={exact_passthrough[name]}")
     # whole-package allow under default-deny -> list the bare name above '*'.
     for name in sorted(allow_passthrough):
         emitted.append(name)

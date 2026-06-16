@@ -210,6 +210,56 @@ def test_pypi_exact_allow_against_whole_deny_emits_eqeq():
     assert _effective_lines(arts.pypi_constraints) == ["p==1.2.3"]
 
 
+def test_pypi_default_deny_exact_allow_whitelists_version():
+    # under default-deny an exact allow is the primary allow-list mechanism: it
+    # must pass that version even with NO deny on the name (else devpi's '*'
+    # constrain_all blocks the version the policy explicitly allowed).
+    arts = compile_toml(
+        'schema = 1\n[defaults]\naction = "allow"\n'
+        '[defaults.ecosystems.pypi]\naction = "deny"\n'
+        '[[rules]]\necosystem = "pypi"\nname = "requests"\nversions = "==1.2.3"\naction = "allow"\n'
+    )
+    assert _effective_lines(arts.pypi_constraints) == ["requests==1.2.3", "*"]
+
+
+def test_pypi_default_allow_exact_allow_no_deny_is_noop():
+    # under default-allow with no deny the version is already allowed; an exact
+    # allow must NOT emit a constraint (which would turn into an allow-LIST that
+    # blocks every other version of the package).
+    arts = compile_toml(
+        'schema = 1\n'
+        '[[rules]]\necosystem = "pypi"\nname = "requests"\nversions = "==1.2.3"\naction = "allow"\n'
+    )
+    assert arts.pypi_constraints == ""
+
+
+def test_pypi_whole_allow_subsumes_exact_allow_no_duplicate():
+    # a whole-package allow already passes every version, so a redundant exact
+    # allow on the same package must NOT also emit '==v' (which would be a
+    # duplicate project line devpi rejects).
+    arts = compile_toml(
+        'schema = 1\n[defaults]\naction = "allow"\n'
+        '[defaults.ecosystems.pypi]\naction = "deny"\n'
+        '[[rules]]\necosystem = "pypi"\nname = "p"\naction = "allow"\n'
+        '[[rules]]\necosystem = "pypi"\nname = "p"\nversions = "==1.0.0"\naction = "allow"\n'
+    )
+    assert _effective_lines(arts.pypi_constraints) == ["p", "*"]
+
+
+def test_pypi_multiple_exact_allows_rejected():
+    # devpi's constrained index rejects a repeated project name and a disjunction
+    # of exact versions ("==a OR ==b") is not a single PEP 440 specifier set, so
+    # reject at compile time rather than emit an index-rejected constraints file.
+    for defaults in ("", '[defaults.ecosystems.pypi]\naction = "deny"\n'):
+        with pytest.raises(PolicyError, match="multiple exact-version allows"):
+            compile_toml(
+                'schema = 1\n' + defaults +
+                '[[rules]]\necosystem = "pypi"\nname = "p"\naction = "deny"\n'
+                '[[rules]]\necosystem = "pypi"\nname = "p"\nversions = "==1.0.0"\naction = "allow"\n'
+                '[[rules]]\necosystem = "pypi"\nname = "p"\nversions = "==2.0.0"\naction = "allow"\n'
+            )
+
+
 def test_pypi_empty_policy_emits_empty_text():
     arts = compile_toml("schema = 1\n")
     assert arts.pypi_constraints == ""
