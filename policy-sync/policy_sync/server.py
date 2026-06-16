@@ -66,8 +66,9 @@ class SyncState:
 
 
 class PolicySyncHandler(BaseHTTPRequestHandler):
-    # set via make_http_server on the server instance
-    server: "PolicySyncHTTPServer"
+    # Narrow the inherited `server` attribute to our subclass so cfg/state/store
+    # resolve. (Narrowing an inherited mutable attribute is intentional here.)
+    server: "PolicySyncHTTPServer"  # pyright: ignore[reportIncompatibleVariableOverride]
 
     def _respond(self, code: int, payload: dict) -> None:
         body = json.dumps(payload).encode()
@@ -114,6 +115,12 @@ class PolicySyncHandler(BaseHTTPRequestHandler):
             return
 
         cfg = self.server.cfg
+        if cfg is None:
+            # Enrichment needs gitea_url/devpi_url/namespace/pypi_json_url; if the
+            # server was constructed without a Config (e.g. a minimal test), this
+            # endpoint is simply unavailable rather than crashing the worker.
+            self._respond(503, {"error": "enrichment not configured"})
+            return
         authorization = self.headers.get("Authorization") or ""
         try:
             if upstream == "gitea":
@@ -193,8 +200,8 @@ class PolicySyncHandler(BaseHTTPRequestHandler):
         self.server.trigger_sync()
         self._respond(202, {"status": "sync scheduled"})
 
-    def log_message(self, fmt: str, *args) -> None:
-        log.debug("%s %s", self.client_address[0], fmt % args)
+    def log_message(self, format: str, *args) -> None:  # noqa: A002 (match BaseHTTPRequestHandler signature)
+        log.debug("%s %s", self.client_address[0], format % args)
 
 
 class PolicySyncHTTPServer(ThreadingHTTPServer):

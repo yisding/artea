@@ -24,7 +24,7 @@ class _Stub:
         stub = self
 
         class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *a):
+            def log_message(self, format, *a):  # match BaseHTTPRequestHandler
                 pass
 
             def do_GET(self):  # noqa: N802

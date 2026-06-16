@@ -89,7 +89,7 @@ class Upstream(http.server.ThreadingHTTPServer):
 class UpstreamHandler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"  # gateway proxies with HTTP/1.1
 
-    def log_message(self, *args):
+    def log_message(self, format, *args):  # match BaseHTTPRequestHandler
         pass
 
     def _reply(self, code, body, headers=()):

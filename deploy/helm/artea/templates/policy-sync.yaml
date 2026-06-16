@@ -39,6 +39,10 @@ spec:
               value: {{ include "artea.devpiUrl" . | quote }}
             - name: ARTEA_NAMESPACE
               value: {{ include "artea.privateNamespace" . | quote }}
+            # PEP 700 enrichment: PyPI JSON source for public upload-time/size.
+            # Keep in sync with the devpi constrained index's pypi_json_url.
+            - name: PYPI_JSON_URL
+              value: {{ .Values.policySync.pypiJsonUrl | quote }}
             - name: POLICY_SYNC_POLL_SECONDS
               value: {{ .Values.policySync.pollSeconds | quote }}
             - name: POLICY_SYNC_TOKEN

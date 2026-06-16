@@ -50,7 +50,7 @@ class MockGitea:
                 self.end_headers()
                 self.wfile.write(body)
 
-            def log_message(self, *args):
+            def log_message(self, format, *args):  # match BaseHTTPRequestHandler
                 pass
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -133,7 +133,7 @@ class MockDevpi:
                 mock.config = json.loads(body)
                 self._json(200, {"type": "indexconfig", "result": dict(mock.config)})
 
-            def log_message(self, *args):
+            def log_message(self, format, *args):  # match BaseHTTPRequestHandler
                 pass
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)

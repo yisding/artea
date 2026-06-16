@@ -154,9 +154,13 @@ Notes:
 - Public files carry the exact `upload-time` PyPI reports (microsecond UTC),
   plus the PyPI-reported `size`. Private (Gitea) files carry their **version's**
   upload time (Gitea records upload time per version, so all files in a version
-  share it) — coarser, but never newer than the real upload, so a time-bound
-  install can never pick a file that was actually published after the cutoff —
-  and the per-file `size` from Gitea's package-files API.
+  share it) plus the per-file `size` from Gitea's package-files API. This is
+  coarser than per-file: for a version published atomically (a normal
+  `twine`/`uv` upload) it equals the real upload time, but a file *added to an
+  existing version later* inherits that version's earlier timestamp, so a
+  `--uploaded-prior-to` cutoff could select it even if its own upload was after
+  the cutoff. Rare given the publish model, but not an absolute guarantee; for a
+  hard per-file age bound, lean on the server-side `upstream.min_age` gate too.
 - Availability over metadata: `upload-time` is spec-optional, so a transient
   upstream-metadata blip never breaks a plain install. If the base index list is
   reachable but the upstream upload-time source is momentarily down (and no

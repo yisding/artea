@@ -110,6 +110,11 @@ policySync:
     pullPolicy: IfNotPresent
   # Slow-poll fallback interval (seconds) behind the push webhook.
   pollSeconds: 300
+  # PyPI JSON API base used to source PEP 700 upload-time + size for PUBLIC
+  # (devpi pull-through) packages in the enriched Simple API. Keep this in sync
+  # with the devpi constrained index's pypi_json_url so the server-side age gate
+  # and the surfaced upload-time come from the same source.
+  pypiJsonUrl: "https://pypi.org/pypi"
   resources: {}
 
 # ---- bootstrap Job (post-install/post-upgrade hook) ---------------------------

@@ -82,11 +82,20 @@ class EnrichUnavailable(EnrichError):
 
 
 class _TTLCache:
-    """Tiny thread-safe time-keyed cache (dict + wall clock)."""
+    """Tiny thread-safe time-keyed cache (dict + wall clock).
 
-    def __init__(self, ttl: float, now=time.time):
+    Bounded: `put` opportunistically sweeps entries older than `max_age` (the
+    longest window any reader cares about — the TTL for plain caches, or the
+    stale-serve window for caches also read via `get_stale`) and, if still over
+    `max_entries`, evicts the oldest by insertion time. This keeps a long-lived
+    mirror from growing one entry per package name forever.
+    """
+
+    def __init__(self, ttl: float, now=time.time, max_entries: int = 4096, max_age: float | None = None):
         self._ttl = ttl
         self._now = now
+        self._max_entries = max_entries
+        self._max_age = ttl if max_age is None else max_age
         self._lock = threading.Lock()
         self._data: dict = {}
 
@@ -113,10 +122,22 @@ class _TTLCache:
 
     def put(self, key, value):
         with self._lock:
-            self._data[key] = (self._now(), value)
+            now = self._now()
+            self._data[key] = (now, value)
+            if len(self._data) > self._max_entries:
+                # Drop entries past the longest retention window first ...
+                for k in [k for k, (ts, _v) in list(self._data.items()) if now - ts >= self._max_age]:
+                    del self._data[k]
+                # ... then, if still over capacity, evict oldest by insertion time.
+                overflow = len(self._data) - self._max_entries
+                if overflow > 0:
+                    for k, _entry in sorted(self._data.items(), key=lambda kv: kv[1][0])[:overflow]:
+                        del self._data[k]
 
 
-_enrich_cache = _TTLCache(ENRICH_TTL_SECONDS)
+# get_stale serves an enriched doc up to STALE_MAX_SECONDS old, so eviction must
+# retain entries for that window (max_age), not merely the short TTL.
+_enrich_cache = _TTLCache(ENRICH_TTL_SECONDS, max_age=STALE_MAX_SECONDS)
 _created_at_cache = _TTLCache(CREATED_AT_TTL_SECONDS)
 
 
@@ -188,7 +209,8 @@ def version_from_filename(filename: str, name: str) -> str | None:
 
 
 def _loose_eq(a: str, b: str) -> bool:
-    norm = lambda s: re.sub(r"[-_.]+", "-", s).lower()
+    def norm(s: str) -> str:
+        return re.sub(r"[-_.]+", "-", s).lower()
     return norm(a) == norm(b)
 
 
@@ -464,14 +486,22 @@ def enrich_gitea(name: str, gitea_url: str, namespace: str, authorization: str) 
     Gitea only serves PEP 503 HTML and ignores the JSON Accept header, so we
     scrape its simple page for (url, filename, sha256) and stamp each file with
     its version's created_at (per-version granularity: every file of a version
-    shares the version upload time — coarser than per-file, but never in the
-    wrong direction for a time-bound client) and its per-file `size` from
-    Gitea's package-files API (PEP 700 v1.1 requires `size`).
+    shares the version upload time). For the normal case — a version published
+    atomically (twine/uv upload) — this equals the real upload time. The one
+    edge case is a file ADDED to an existing version later: it inherits that
+    version's earlier created_at, so a `--uploaded-prior-to` client could select
+    it even if its own upload was after the cutoff. Rare given Artea's publish
+    model, but it is not an absolute guarantee. Each file also carries its
+    per-file `size` from Gitea's package-files API (PEP 700 v1.1 requires `size`).
 
     Returns None when Gitea 404s (no such private package), which the gateway
     turns into a public-devpi fall-through to preserve the precedence contract.
+
+    Not document-cached: the expensive per-version created_at+size fan-out is
+    already memoized in _created_at_cache, so a re-scrape is cheap; an enriched
+    private doc has no safe stale-serve path (unlike public), so caching the
+    whole document would only add eviction bookkeeping for no win.
     """
-    cache_key = ("gitea", name)
     base_url = (
         f"{gitea_url.rstrip('/')}/api/packages/"
         f"{urllib.parse.quote(namespace)}/pypi/simple/{urllib.parse.quote(name)}/"
@@ -515,6 +545,4 @@ def enrich_gitea(name: str, gitea_url: str, namespace: str, authorization: str) 
                 out["size"] = size
         files.append(out)
 
-    doc = build_v1_1(name, files, versions)
-    _enrich_cache.put(cache_key, doc)
-    return doc
+    return build_v1_1(name, files, versions)
