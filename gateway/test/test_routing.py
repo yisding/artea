@@ -28,6 +28,15 @@ TEST_NAMESPACE = "acme"
 
 GOOD_PAT = "good-pat"
 
+# Far larger than nginx's default one-page subrequest_output_buffer_size (4k/8k).
+# The njs orchestrator buffers every subrequest response whole, so a realistic
+# enriched document (or a private simple page with many files) must not overflow
+# that buffer — which would make nginx abort with "too big subrequest response"
+# and reset the client. A popular project with many releases easily produces a
+# multi-hundred-KB-to-MB Simple-API document, so exercise a full 1 MB body here
+# (the kind-e2e hits this with real packages: six ~14KB, urllib3 ~46KB).
+BIG_BODY_PAD = "x" * (1024 * 1024)
+
 
 def basic_auth(user, token):
     encoded = base64.b64encode(f"{user}:{token}".encode()).decode()
@@ -140,6 +149,12 @@ class UpstreamHandler(http.server.BaseHTTPRequestHandler):
             if self.path.startswith(f"/api/packages/{TEST_NAMESPACE}/pypi/simple/private-pkg"):
                 self._reply(200, "gitea-simple private-pkg")
                 return
+            # A private package whose PEP 503 page is large: the JSON probe
+            # buffers it whole in njs, so it exercises the probe's subrequest
+            # buffer (a too-small buffer would reset the connection here).
+            if self.path.startswith(f"/api/packages/{TEST_NAMESPACE}/pypi/simple/big-private"):
+                self._reply(200, "gitea-simple big-private " + BIG_BODY_PAD)
+                return
             if self.path.startswith(f"/api/packages/{TEST_NAMESPACE}/pypi/simple/"):
                 if auth not in (GOOD_AUTH, GOOD_TOKEN_AUTH):
                     self._reply(401, "unauthorized")
@@ -184,7 +199,12 @@ class UpstreamHandler(http.server.BaseHTTPRequestHandler):
                     if "upstream=gitea" in self.path:
                         self._reply(404, "no such private package")
                         return
-                body = '{"meta":{"api-version":"1.1"},"name":"x","files":[],"versions":[]}'
+                # A realistic enriched document is tens-to-hundreds of KB; return
+                # one well past nginx's default subrequest buffer so a too-small
+                # buffer regresses here (the v1+json relay overflows and resets the
+                # client) rather than only in the kind-e2e.
+                body = ('{"meta":{"api-version":"1.1"},"name":"x","files":[],'
+                        '"versions":[],"_pad":"' + BIG_BODY_PAD + '"}')
                 self._reply(200, body,
                             headers=(("Content-Type", "application/vnd.pypi.simple.v1+json"),))
                 return
@@ -555,6 +575,24 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(headers.get("Content-Type"), self.JSON_ACCEPT)
         self.assertTrue([p for p in self.seen("policy-sync") if "upstream=devpi" in p and "missing-private" in p])
+
+    def test_pypi_json_large_documents_not_truncated_by_subrequest_buffer(self):
+        # Regression (kind-e2e S8/S10/S15): the njs orchestrator relays the
+        # enriched body via an in-memory subrequest, and the Gitea-branch probe
+        # buffers the full PEP 503 page the same way. A real enriched document /
+        # private page is far larger than nginx's default 4k/8k page; without a
+        # raised subrequest_output_buffer_size nginx aborts with "too big
+        # subrequest response" and resets the connection (pip sees
+        # RemoteDisconnected). Both branches must serve the large body intact.
+        for name, marker in (("six", "upstream=devpi"), ("big-private", "upstream=gitea")):
+            status, body, headers = self._raw("GET", f"/pypi/simple/{name}/",
+                                              auth=GOOD_AUTH, accept=self.JSON_ACCEPT)
+            self.assertEqual(status, 200, name)
+            self.assertEqual(headers.get("Content-Type"), self.JSON_ACCEPT, name)
+            self.assertIn('"api-version":"1.1"', body, name)
+            self.assertGreater(len(body), 1024 * 1024, name)  # full 1 MB body relayed
+            self.assertTrue([p for p in self.seen("policy-sync")
+                             if marker in p and name in p], name)
 
     def test_pypi_non_json_accept_unchanged_gitea_first_fallthrough(self):
         # Regression guard: WITHOUT the JSON Accept header the existing
