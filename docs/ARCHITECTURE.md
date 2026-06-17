@@ -52,7 +52,7 @@ One public entrypoint (the gateway). Everything else is internal.
 | devpi container/port | `devpi`, 3141 (our `devpi/Dockerfile`: python-slim + devpi-server + Artea devpi policy plugin) |
 | policy-sync container/port | `policy-sync`, 8920 (our `policy-sync/` Python service) |
 | Private namespace org | `ARTEA_NAMESPACE` (default `artea`; Gitea organization and npm scope `@${ARTEA_NAMESPACE}`) |
-| Policy repo | Gitea repo `${ARTEA_NAMESPACE}/registry-policy` containing `npm-rules.yaml`, `upstream-policy.yaml`, `pypi-constraints.txt` |
+| Policy repo | Gitea repo `${ARTEA_NAMESPACE}/registry-policy`; canonical authoring file `policy.toml` (ADR-0007), compiled by policy-sync into the per-engine artifacts `npm-rules.yaml`, `upstream-policy.yaml`, `pypi-constraints.txt` (also accepted directly as a legacy fallback when `policy.toml` is absent) |
 | Shared policy volume | named volume `policy-data`, mounted at `/policy` in verdaccio and policy-sync |
 | Bootstrap admin | `ARTEA_ADMIN_USER` (default `${ARTEA_NAMESPACE}-admin` when unset), password from `.env` (`ARTEA_ADMIN_PASSWORD`) |
 | Env file | `.env` at repo root (`.env.example` committed); all version pins, secrets, and namespace settings live here |
@@ -199,7 +199,17 @@ devpi redirect that would skip the precedence check.
 
 ## Policy model (R3)
 
-Policy-as-code in the Gitea repo `${ARTEA_NAMESPACE}/registry-policy`:
+Policy-as-code in the Gitea repo `${ARTEA_NAMESPACE}/registry-policy`. The
+**canonical authoring file is a single `policy.toml`** (ADR-0007): one
+cross-ecosystem schema covering npm and PyPI, edited via PR, with an
+ALLOW-WINS precedence resolved at compile time. Operators write `policy.toml`;
+the per-format artifacts below are **outputs of the compiler**, not hand-edited
+inputs (the migration generator `python -m policy_sync.migrate` converts an
+existing legacy policy into `policy.toml`). The unified schema and validation
+rules live in `docs/policy-schema.md`.
+
+`policy-sync` is a **compiler**: it parses `policy.toml`, resolves precedence,
+and emits the artifacts the unchanged engines consume —
 
 - `npm-rules.yaml` — blocked npm package names, scopes, and semver ranges.
   Consumed by our Verdaccio **filter plugin**, which re-reads the file from
@@ -212,13 +222,20 @@ Policy-as-code in the Gitea repo `${ARTEA_NAMESPACE}/registry-policy`:
   (pip-constraints-like; supports `name<2`, `name ==1.2.3`, and `*`
   default-deny). Applied by policy-sync to the `root/constrained` index.
 
+These three files are also the **legacy fallback inputs**: when `policy.toml` is
+absent from the repo, policy-sync reads the hand-written three-file format
+directly (existing deployments keep working). A parse/compile error in
+`policy.toml` fails the whole sync and keeps the last-known-good enforcement
+state — it never falls back to the legacy files to mask a broken unified policy.
+
 `policy-sync` receives a Gitea push webhook (plus a startup sync and a slow poll as
-fallback), fetches the three files via Gitea's raw-content API using a dedicated
+fallback), fetches the policy via Gitea's raw-content API using a dedicated
 low-privilege service account PAT (`svc-policy`, read-only on the policy repo),
-writes `npm-rules.yaml`, `upstream-policy.yaml`, and `pypi-constraints.txt` into
-the shared `/policy` volume when present, serves the npm and upstream policies
-over HTTP for Kubernetes, and pushes the PyPI constraints plus
-`min_upstream_age` into devpi.
+writes the compiled `npm-rules.yaml`, `upstream-policy.yaml`, and
+`pypi-constraints.txt` into the shared `/policy` volume, serves the npm and
+upstream policies over HTTP for Kubernetes, and pushes the PyPI constraints plus
+`min_upstream_age` into devpi. Unchanged inputs compile byte-stably, so a no-op
+push does not bump the artifacts' mtime/ETag.
 
 **Enforcement depth (npm):** the filter plugin filters packuments (metadata) AND the
 same package registers a Verdaccio middleware that rejects tarball downloads
@@ -328,7 +345,12 @@ shape. R7 extends to deployment artifacts: **reuse official upstream charts**.
 - **New format recipe**: (1) private publish = enable Gitea's existing endpoint for
   that format under the org namespace; (2) pull-through = gateway 404-fallback to a
   mature per-format cache where one exists, else native pull-through in Gitea (v2);
-  (3) a policy file section + policy-sync adapter. Artifacts always live in Gitea.
+  (3) a **policy adapter** in policy-sync's compiler — register an adapter for the
+  new ecosystem (version-range dialect + emit target) so the same `policy.toml`
+  authoring file gains `ecosystem = "<format>"` rules and the compiler emits that
+  format's enforcement artifact (ADR-0007 §Extensibility). Authoring and the
+  reviewed-PR workflow stay unchanged; only the compiler grows a target.
+  Artifacts always live in Gitea.
 - **v2**: native pull-through + policy inside Gitea's package routers (fork patches or
   upstreamed), retiring Verdaccio/devpi one format at a time. The gateway contract
   (one URL, same auth) never changes for clients.
@@ -343,7 +365,7 @@ shape. R7 extends to deployment artifacts: **reuse official upstream charts**.
 |-----|-----------|--------------|
 | R1 | Gitea OIDC (Okta) + plugins/auth_request validate everything against Gitea | S11, S12 (+ docs) |
 | R2 | npm gateway scope routing → Gitea (scope match, never a fallback); pypi gateway 404-fallback (200 = never consult public) | S2–S4, S6–S9, S17 |
-| R3 | Verdaccio filter plugin + tarball middleware + Artea devpi policy plugin, fail-closed | S5, S10, S13, S15 |
+| R3 | Unified `policy.toml` compiled by policy-sync → Verdaccio filter plugin + tarball middleware + Artea devpi policy plugin, fail-closed | S5, S10, S13, S15, S18–S21 |
 | R4 | Stock protocols: npm/pnpm/yarn vs Verdaccio+Gitea; pip/uv/twine vs gateway+Gitea | S2–S10 |
 | R5 | Gitea PATs (non-expiring today) | S11 |
 | R6 | One PAT publishes (Gitea) and pulls (everywhere) | S2/S3, S6/S7, S11 |
@@ -355,13 +377,13 @@ S1 bootstrap: stack up; admin, configured namespace org, PAT, policy repo seeded
 S2 `npm publish` `@${ARTEA_NAMESPACE}/hello-${ARTEA_NAMESPACE}` with PAT → 201 in Gitea.
 S3 `npm install @${ARTEA_NAMESPACE}/hello-${ARTEA_NAMESPACE}` resolves from Gitea via gateway scope routing.
 S4 `npm install left-pad` resolves via Verdaccio pull-through from npmjs.
-S5 block a `left-pad` version in `npm-rules.yaml`, push, verify it disappears from `npm view left-pad versions`.
+S5 block a `left-pad` version (legacy `npm-rules.yaml`, or equivalently a `deny` rule in the unified `policy.toml` — see S18), push, verify it disappears from `npm view left-pad versions`.
 S6 `twine upload` a locally built `${ARTEA_NAMESPACE}-hello` wheel → Gitea (artifact stored in Gitea).
 S7 `pip install ${ARTEA_NAMESPACE}-hello` via the gateway index.
 S8 `pip install six` via gateway → devpi → PyPI pull-through.
 S9 precedence: privately publish a name that also exists on PyPI; `pip index versions`
    through the gateway must show ONLY the private versions (proves shadowing).
-S10 add `urllib3<2` to constraints, push, verify pip resolves only <2 through the gateway.
+S10 constrain `urllib3<2` (legacy `pypi-constraints.txt`, or equivalently a `deny versions=">=2"` rule in the unified `policy.toml` — see S19), push, verify pip resolves only <2 through the gateway.
 S11 same-token: all scenarios above run with one PAT; a `read:package` PAT
     with the required identity scopes can install but is rejected (Gitea answers
     401, not 403) on publish.
@@ -384,3 +406,16 @@ S17 npm routing compatibility: the legacy two-registry scoped `.npmrc` still
     `/api/packages/${ARTEA_NAMESPACE}/npm/`, bypassing the scope match — is the unchanged
     `location /` route), and `%40`/`%2f`-encoded private-scope paths under `/npm/`
     route to Gitea (gateway scope routing), never to Verdaccio.
+S18 unified npm block: author a `deny` rule for a `left-pad` version in the
+    unified `policy.toml`, push, verify it disappears (the `policy.toml` path of
+    S5); removing the unified file returns to legacy mode.
+S19 unified pypi constrain: author a `deny versions=">=2"` rule for `urllib3` in
+    `policy.toml` (compiles to `urllib3<2`), push, verify pip resolves only <2
+    (the `policy.toml` path of S10).
+S20 precedence: in one `policy.toml`, a whole-package `deny` plus a specific
+    `allow` for one exact version — the allowed version stays visible while the
+    rest of the package is blocked (ALLOW-WINS resolved at compile time).
+S21 malformed unified policy: pushing a structurally broken `policy.toml` fails
+    the sync and keeps the last-known-good enforcement in effect; public fetches
+    that were already allowed keep working, and `/healthz` reports
+    `last_sync_ok: false`.

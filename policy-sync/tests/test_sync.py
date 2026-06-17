@@ -152,7 +152,10 @@ def test_recovers_after_transient_failure(cfg, mock_gitea):
     mock_gitea.files["npm-rules.yaml"] = NPM
     mock_gitea.files["pypi-constraints.txt"] = PYPI
     mock_gitea.files["upstream-policy.yaml"] = UPSTREAM
-    mock_gitea.fail_remaining = 2  # first attempt fails both fetches
+    # first attempt fails on the unified policy.toml probe (a 5xx on the probe is
+    # retryable; only a 404 falls through to the legacy files), so one sleep then
+    # recovery on the next attempt.
+    mock_gitea.fail_remaining = 1
     syncer, sleeps = make_syncer(cfg)
 
     assert syncer.sync_with_retry(attempts=3) is True

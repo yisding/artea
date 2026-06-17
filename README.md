@@ -10,7 +10,9 @@ an open-source alternative to Artifactory, built on [Gitea](https://about.gitea.
   Okta/OIDC SSO is supported for humans; manual Gitea accounts also work.
 - Private packages live in Gitea; public packages are pulled through caching proxies.
 - Private names always shadow public ones (dependency-confusion safe by construction).
-- Policy-as-code: block public packages/versions via a reviewed Gitea repo.
+- Policy-as-code: block public packages/versions by editing one unified
+  `policy.toml` in a reviewed Gitea repo (compiled per-ecosystem by policy-sync;
+  legacy three-file format still works as a fallback).
 - No forks: stock upstream images + config overlays + plugins, so upstream
   improvements keep flowing.
 
@@ -38,6 +40,11 @@ For production-style Kubernetes installs, use the Helm guide:
 Expose only the gateway and keep Gitea, Verdaccio, devpi and policy-sync
 internal. Replace all `.env` / Helm placeholder secrets before first use; the
 dev defaults are for local smoke tests only.
+
+Authoring policy: edit `policy.toml` in the `${ARTEA_NAMESPACE}/registry-policy`
+repo via PR (schema: [docs/policy-schema.md](docs/policy-schema.md); operating
+and migrating from the legacy format:
+[Operations → Policy authoring](docs/guides/operations.md#policy-authoring)).
 
 Client setup:
 [npm/pnpm/yarn](docs/guides/clients-npm.md),

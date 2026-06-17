@@ -1,0 +1,36 @@
+# Artea unified cross-ecosystem policy (canonical authoring file).
+#
+# Lives in the configured Gitea policy repo. Edit via PR; on push, policy-sync
+# parses this file, resolves precedence at compile time, and emits the
+# per-engine artifacts the unchanged engines consume (the npm filter's
+# block-list YAML and the devpi PEP 440 constraints text). See the schema at
+# docs/policy-schema.md and the rationale in docs/adr/0007-unified-policy-schema.md.
+#
+# This single file supersedes the three legacy per-format files
+# (npm-rules.yaml, pypi-constraints.txt, upstream-policy.yaml). Those still work
+# as a fallback for existing deployments when policy.toml is absent, but
+# policy.toml is the canonical source for fresh installs. To convert an existing
+# legacy policy, run `python -m policy_sync.migrate`.
+#
+# Quick reference (full schema: docs/policy-schema.md):
+#
+#   schema = 1                 # required; gates forward-compatible changes
+#
+#   [defaults]
+#   action = "allow"           # baseline: allow (block-list) | deny (allow-list)
+#
+#   [[rules]]                  # ordered array of tables; order is NOT significant
+#   ecosystem = "npm"          # required; must have a registered adapter
+#   name = "left-pad"          # full package name (or use `namespace` for a scope)
+#   versions = "1.3.0"         # optional; native dialect of the rule's ecosystem
+#   action = "deny"            # defaults to "deny"; "allow" is an explicit carve-out
+#   reason = "example"         # optional; free text for humans
+#
+# Default policy: allow everything (block nothing).
+schema = 1
+
+[defaults]
+action = "allow"
+
+[upstream]
+min_age = "P0D"
