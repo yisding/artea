@@ -113,59 +113,48 @@ jobs:
 
       - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
+      # Build + load (for kind) all four service images. The {name, context,
+      # dockerfile} triples below are the same list images.yml builds; the
+      # shared .github/actions/build-image step keeps provenance/cache identical
+      # across both workflows. verdaccio-assets is the one special case: its
+      # context is the *built* plugin workspace (built by the "build verdaccio
+      # plugins" step above), NOT the repo root — the image only COPYies the
+      # already-built /plugins/verdaccio-<name> dirs verdaccio's loader needs.
       - name: build devpi image
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        uses: ./.github/actions/build-image
         with:
+          name: devpi
           context: devpi
-          file: devpi/Dockerfile
-          load: true
-          tags: ${{ env.IMAGE_PREFIX }}/artea-devpi:${{ env.IMAGE_TAG }}
-          provenance: false
-          cache-from: |
-            type=gha,scope=artea-devpi
-            type=gha,scope=kind-e2e-devpi
-          cache-to: type=gha,mode=max,scope=kind-e2e-devpi,ignore-error=true
+          dockerfile: devpi/Dockerfile
+          image-prefix: ${{ env.IMAGE_PREFIX }}
+          image-tag: ${{ env.IMAGE_TAG }}
 
       - name: build policy-sync image
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        uses: ./.github/actions/build-image
         with:
+          name: policy-sync
           context: policy-sync
-          file: policy-sync/Dockerfile
-          load: true
-          tags: ${{ env.IMAGE_PREFIX }}/artea-policy-sync:${{ env.IMAGE_TAG }}
-          provenance: false
-          cache-from: |
-            type=gha,scope=artea-policy-sync
-            type=gha,scope=kind-e2e-policy-sync
-          cache-to: type=gha,mode=max,scope=kind-e2e-policy-sync,ignore-error=true
+          dockerfile: policy-sync/Dockerfile
+          image-prefix: ${{ env.IMAGE_PREFIX }}
+          image-tag: ${{ env.IMAGE_TAG }}
 
       - name: build bootstrap image
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        uses: ./.github/actions/build-image
         with:
+          name: bootstrap
           context: .
-          file: scripts/Dockerfile.bootstrap
-          load: true
-          tags: ${{ env.IMAGE_PREFIX }}/artea-bootstrap:${{ env.IMAGE_TAG }}
-          provenance: false
-          cache-from: |
-            type=gha,scope=artea-bootstrap
-            type=gha,scope=kind-e2e-bootstrap
-          cache-to: type=gha,mode=max,scope=kind-e2e-bootstrap,ignore-error=true
+          dockerfile: scripts/Dockerfile.bootstrap
+          image-prefix: ${{ env.IMAGE_PREFIX }}
+          image-tag: ${{ env.IMAGE_TAG }}
 
       - name: build verdaccio assets image
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        uses: ./.github/actions/build-image
         with:
-          # context = the built plugin workspace, NOT the repo root: the image
-          # must carry /plugins/verdaccio-<name> for verdaccio's loader.
+          name: verdaccio-assets
           context: verdaccio/plugins
-          file: deploy/docker/verdaccio-assets/Dockerfile
-          load: true
-          tags: ${{ env.IMAGE_PREFIX }}/artea-verdaccio-assets:${{ env.IMAGE_TAG }}
-          provenance: false
-          cache-from: |
-            type=gha,scope=artea-verdaccio-assets
-            type=gha,scope=kind-e2e-verdaccio-assets
-          cache-to: type=gha,mode=max,scope=kind-e2e-verdaccio-assets,ignore-error=true
+          dockerfile: deploy/docker/verdaccio-assets/Dockerfile
+          image-prefix: ${{ env.IMAGE_PREFIX }}
+          image-tag: ${{ env.IMAGE_TAG }}
 
       - name: create kind cluster
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
