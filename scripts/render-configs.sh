@@ -23,8 +23,19 @@ render() {
   sed "s|__ARTEA_NAMESPACE__|${ARTEA_NAMESPACE}|g" "$src" > "$dst"
 }
 
-render gateway/nginx.conf.template .generated/gateway/nginx.conf
-render verdaccio/config.yaml.template .generated/verdaccio/config.yaml
+# The gateway nginx.conf is single-sourced as a Helm template (no separate
+# compose copy); render its compose variant through Helm so it can never drift
+# from the Kubernetes copy. See scripts/render-nginx.sh.
+mkdir -p .generated/gateway
+./scripts/render-nginx.sh compose "${ARTEA_NAMESPACE}" > .generated/gateway/nginx.conf
+
+# Verdaccio config is single-sourced as a Helm template as well; render its
+# compose variant through Helm (configMode=compose) so it can't drift from k8s.
+mkdir -p .generated/verdaccio
+./scripts/render-chart-file.sh templates/verdaccio-config.yaml config.yaml \
+  --set verdaccio.configMode=compose --set global.privateNamespace="${ARTEA_NAMESPACE}" \
+  > .generated/verdaccio/config.yaml
+
 render gitea/app.ini.template .generated/gitea/app.ini
 render gitea/custom/templates/base/head_navbar.tmpl.template .generated/gitea/templates/base/head_navbar.tmpl
 render gitea/custom/templates/home.tmpl.template .generated/gitea/templates/home.tmpl

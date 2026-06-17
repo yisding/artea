@@ -1,0 +1,14 @@
+# Verdaccio config, single-sourced from files/verdaccio/config.yaml (the same
+# file the compose stack renders via scripts/render-configs.sh). The Verdaccio
+# subchart mounts this ConfigMap instead of its own because values.yaml sets
+# verdaccio.existingConfigMap to this name; tpl resolves the upstreamMode-style
+# switch + the private-namespace include against the umbrella context.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "artea.fullname" "verdaccio-config" }}
+  labels:
+    {{- include "artea.labels" (dict "ctx" $ "component" "verdaccio") | nindent 4 }}
+data:
+  config.yaml: |
+{{ tpl (.Files.Get "files/verdaccio/config.yaml") . | indent 4 }}

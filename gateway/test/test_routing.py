@@ -1,14 +1,17 @@
 # Copyright 2026 The Artea Authors. All rights reserved.
 #
-# Functional test for gateway/nginx.conf.template: runs a real nginx (must be on PATH)
+# Functional test for the gateway nginx.conf: runs a real nginx (must be on PATH)
 # on a loopback port against stdlib stub upstreams, then asserts the routing
-# contract from docs/ARCHITECTURE.md. Stdlib-only; works with unittest or pytest:
+# contract from docs/ARCHITECTURE.md. Works with unittest or pytest:
 #
 #   python3 gateway/test/test_routing.py
 #
-# The only edits made to the config under test are filesystem paths, the listen
-# port, and the three upstream host:port values (hostnames only resolve inside
-# docker compose). All routing/rewrite/auth logic is exercised unmodified.
+# The config is single-sourced as a Helm template (deploy/helm/artea/files/
+# gateway/nginx.conf); this test renders its compose variant via
+# scripts/render-nginx.sh, so helm + yq must also be on PATH. The only edits
+# made to the rendered config are filesystem paths, the listen port, and the
+# four upstream host:port values (hostnames only resolve inside docker compose).
+# All routing/rewrite/auth logic is exercised unmodified.
 
 import base64
 import http.client
@@ -22,8 +25,9 @@ import threading
 import time
 import unittest
 
-CONF = pathlib.Path(__file__).resolve().parent.parent / "nginx.conf.template"
-NJS_DIR = CONF.parent / "njs"
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+RENDER_NGINX = REPO_ROOT / "scripts" / "render-nginx.sh"
+NJS_DIR = REPO_ROOT / "gateway" / "njs"
 TEST_NAMESPACE = "acme"
 
 GOOD_PAT = "good-pat"
@@ -223,8 +227,10 @@ class UpstreamHandler(http.server.BaseHTTPRequestHandler):
 class GatewayTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        if shutil.which("nginx") is None:
-            raise unittest.SkipTest("nginx binary not on PATH")
+        for tool in ("nginx", "helm", "yq"):
+            if shutil.which(tool) is None:
+                raise unittest.SkipTest(
+                    f"{tool} not on PATH (the gateway config renders via helm)")
         load_module = njs_load_directive()
         if load_module is None:
             raise unittest.SkipTest("host nginx lacks the njs module; use the "
@@ -239,8 +245,15 @@ class GatewayTest(unittest.TestCase):
             threading.Thread(target=up.serve_forever, daemon=True).start()
 
         cls.port = free_port()
-        conf = CONF.read_text()
-        conf = conf.replace("__ARTEA_NAMESPACE__", TEST_NAMESPACE)
+        # The nginx.conf is single-sourced as a Helm template; render the compose
+        # variant (resolver + per-request $..._upstream) for the test namespace.
+        render = subprocess.run(
+            [str(RENDER_NGINX), "compose", TEST_NAMESPACE],
+            capture_output=True, text=True,
+        )
+        if render.returncode != 0:
+            raise RuntimeError(f"render-nginx.sh failed:\n{render.stderr}")
+        conf = render.stdout
         # nginx's compiled-in temp dirs (client_body, proxy, ...) often live in
         # root-owned /var/cache/nginx; point them into the test tmpdir so the
         # suite runs as any user with any nginx build.

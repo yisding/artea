@@ -112,23 +112,28 @@ When `gateway.ingress.enabled=true`, chart validation requires
 either `gateway.ingress.tls` or `gateway.ingress.externalTLS=true` for setups
 where TLS terminates before the Ingress.
 
-## Files copied into the chart (keep in sync)
+## Files symlinked into the chart
 
-Helm cannot read outside the chart root, so three source files are duplicated
-under `files/` and must be kept in sync with their originals:
+Helm follows symbolic links when it reads chart files, so the files that must be
+byte-identical to a source elsewhere in the repo are **symlinks** under `files/`
+rather than hand-maintained copies — there is only one file, so drift is
+structurally impossible (no guard script needed):
 
-| Chart copy | Original |
-|------------|----------|
+| Chart symlink | Single source |
+|---------------|---------------|
 | `files/gateway/pep503.js` | `gateway/njs/pep503.js` |
+| `files/gateway/pep700.js` | `gateway/njs/pep700.js` |
 | `files/gitea-templates/home.tmpl` | `gitea/custom/templates/home.tmpl.template` |
 | `files/gitea-templates/base__head_navbar.tmpl` | `gitea/custom/templates/base/head_navbar.tmpl.template` |
 
-Run `make check-chart-copies` before committing changes to any of these files.
+`files/gateway/nginx.conf` is itself the SINGLE SOURCE for the gateway routing
+config: Helm renders it directly here, and the compose stack renders its variant
+through Helm (`scripts/render-nginx.sh`). The `gateway.upstreamMode` switch
+(`k8s` default vs `compose`) is the only target-specific part; there is no
+separate compose copy to keep in sync.
 
-`files/gateway/nginx.conf` is a Helm-templated *adaptation* of
-`gateway/nginx.conf` (upstream blocks + cluster DNS instead of Docker's
-resolver; see the header comment) — mirror any routing change made to the
-compose config.
+Install the chart from this directory (as the docs do); `helm package` would not
+bundle the targets of out-of-tree symlinks.
 
 ## Validation
 

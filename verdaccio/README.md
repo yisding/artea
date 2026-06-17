@@ -4,12 +4,17 @@ Runs the **stock `verdaccio/verdaccio:6` image** (exact tag pinned in `.env`, pe
 no-fork rule R7). Everything of ours is runtime configuration: one rendered config
 file and two plugins loaded through Verdaccio's stable plugin API.
 
+The config is single-sourced as a Helm template at
+`deploy/helm/artea/files/verdaccio/config.yaml` — Kubernetes mounts it via the
+`artea-verdaccio-config` ConfigMap, and `make render-configs` renders its compose
+variant (`configMode=compose`) into `.generated/verdaccio/config.yaml`.
+
 | Piece | Purpose |
 |-------|---------|
-| `config.yaml.template` | Verdaccio config template: `/npm/` url_prefix, npmjs uplink, package rules, plugin wiring |
+| `deploy/helm/artea/files/verdaccio/config.yaml` | Verdaccio config (single source): `/npm/` url_prefix, npmjs uplink, package rules, plugin wiring |
 | `plugins/verdaccio-auth-gitea/` | auth plugin — validates `user:PAT` against Gitea, rejects users outside the configured namespace org, maps that org/team membership to groups (paginated), 30s positive cache |
 | `plugins/verdaccio-filter-artea/` | metadata filter + tarball middleware — enforces `/policy/npm-rules.yaml` (blocked names/scopes/semver ranges) plus `/policy/upstream-policy.yaml` (minimum upstream age), mtime hot-reload, fail-closed |
-| `smoke/` | dev-only: boots verdaccio 6 in-process with `config.yaml.template` + built plugins and asserts the auth/deny contract; **not mounted** into the container |
+| `smoke/` | dev-only: boots verdaccio 6 in-process with the rendered compose config + built plugins and asserts the auth/deny contract; **not mounted** into the container |
 
 Design (see `docs/ARCHITECTURE.md`): Verdaccio is **read-only** — publish is denied
 for everyone in the generated config; publishes go to Gitea only. The configured

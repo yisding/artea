@@ -98,6 +98,23 @@ to check and is deleted.
 
 **Theme total: ~−850 lines + a whole guard apparatus gone.**
 
+**Status (landed):** the nginx single source (one Helm template with a
+`gateway.upstreamMode` switch; compose rendered through Helm via
+`scripts/render-nginx.sh`), the four byte-identical chart copies → symlinks with
+`check-chart-copies.sh` and its Makefile/CI/README hooks deleted, the Verdaccio
+config single source (`files/verdaccio/config.yaml` delivered through the
+subchart's `existingConfigMap`), and the Service/probe helpers all landed.
+**Deferred — the shared Gitea policy keys and the cross-system version pins.**
+Both because the Kubernetes side has no clean hook to consume one generated
+source: the Gitea subchart takes a *static* `values.yaml gitea.config` (no
+`existingConfigMap`-style runtime hook, and replacing the generated `app.ini`
+breaks the chart's DB/session/secret auto-wiring), and the compose version pins
+live in the `.env` that `docker compose` auto-loads directly across the
+Makefile, `bootstrap.sh`, `e2e/run.sh`, and `smoke.sh`. Single-sourcing either
+would mean committing a generated file plus a new CI regen-guard (trading one
+guard for another, against this theme's intent) or broad `--env-file` churn, so
+they remain documented duplications.
+
 ---
 
 ## Theme 3 — Single-source the cross-language fail-closed invariants

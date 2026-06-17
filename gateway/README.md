@@ -17,7 +17,9 @@ gateway:
     - ./gateway/njs:/etc/nginx/njs:ro
 ```
 
-`make render-configs` renders `gateway/nginx.conf.template` into
+The nginx.conf is single-sourced as a Helm template
+(`deploy/helm/artea/files/gateway/nginx.conf`); `make render-configs` renders its
+compose variant (via `scripts/render-nginx.sh`, which needs `helm` + `yq`) into
 `.generated/gateway/nginx.conf` using `ARTEA_NAMESPACE` from `.env`.
 
 The config relies on Docker's embedded DNS (`resolver 127.0.0.11`) and resolves
@@ -142,7 +144,7 @@ path, leaving every other request byte-for-byte unchanged:
 npm precedence is a **scope match, never a 404-fallback** — a fallback would
 reintroduce dependency confusion; the scope match keeps private-scope names structurally
 unable to reach Verdaccio or npmjs (an unpublished private name 404s, full
-stop). Mechanism, in `nginx.conf.template`:
+stop). Mechanism, in `deploy/helm/artea/files/gateway/nginx.conf`:
 
 - A regex location (`~* ^/npm/(?:-/package/)?(?:@|%40)__ARTEA_NAMESPACE__(?:%2f|/)`) peels private-scope traffic
   off the `/npm/` prefix route before Verdaccio: packument/publish/tarball/
@@ -174,7 +176,7 @@ and the legacy client-side scope routing (`@${ARTEA_NAMESPACE}:registry=` in
 hits `/api/packages/...` directly and never exercises this location (S17).
 Client contract, including the npm-publish credential-preflight caveat (one
 credential value on two nerf-dart lines): `docs/guides/clients-npm.md` and the
-CLIENT CAVEAT comment in `nginx.conf.template`.
+CLIENT CAVEAT comment in `deploy/helm/artea/files/gateway/nginx.conf`.
 
 ## Buffering / streaming choices
 
@@ -297,7 +299,8 @@ config `load_module`s it; nginx.org Linux packages provide
 
 ```sh
 # functional routing test (boots nginx + stub upstreams on loopback, ~1 s).
-# Substitutes container paths/ports and the njs module path automatically;
+# Renders the single-source config via helm (needs helm + yq on PATH), then
+# substitutes container paths/ports and the njs module path automatically;
 # skips with a pointer here when the host nginx lacks njs.
 python3 gateway/test/test_routing.py
 ```

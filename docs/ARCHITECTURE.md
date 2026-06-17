@@ -94,8 +94,8 @@ The same `_auth` value appears on two nerf-dart lines: the host-rooted
 (`/api/packages/${ARTEA_NAMESPACE}/npm/...` — npm's nerf-dart prefix matching walks up to the
 host root); the `//localhost:8080/npm/:` line exists only because `npm publish`
 runs a local credential preflight against the registry's *exact* nerf-dart and
-never walks up (verified npm 11; see the CLIENT CAVEAT in `gateway/nginx.conf.template`
-and `docs/guides/clients-npm.md`).
+never walks up (verified npm 11; see the CLIENT CAVEAT in
+`deploy/helm/artea/files/gateway/nginx.conf` and `docs/guides/clients-npm.md`).
 
 - `@${ARTEA_NAMESPACE}/*` → routed to Gitea **by the gateway**: a regex location peels
   `/npm/@${ARTEA_NAMESPACE}/...` and the dist-tag API

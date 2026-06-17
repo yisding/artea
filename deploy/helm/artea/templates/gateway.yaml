@@ -11,12 +11,13 @@ metadata:
 data:
   nginx.conf: |
 {{ tpl (.Files.Get "files/gateway/nginx.conf") . | indent 4 }}
-  # PEP 503 normalization (njs); verbatim copy of gateway/njs/pep503.js — keep
-  # in sync (Helm cannot read outside the chart root).
+  # PEP 503 normalization (njs). files/gateway/pep503.js is a symlink to the
+  # single source gateway/njs/pep503.js (Helm follows it), so there is no copy
+  # to keep in sync.
   pep503.js: |
 {{ .Files.Get "files/gateway/pep503.js" | indent 4 }}
-  # PEP 700 upload-time enrichment orchestrator (njs); verbatim copy of
-  # gateway/njs/pep700.js — keep in sync.
+  # PEP 700 upload-time enrichment orchestrator (njs); files/gateway/pep700.js
+  # is a symlink to the single source gateway/njs/pep700.js.
   pep700.js: |
 {{ .Files.Get "files/gateway/pep700.js" | indent 4 }}
 ---
