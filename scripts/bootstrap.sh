@@ -275,13 +275,9 @@ seed_file() { # <local path> <path in repo>
     "{\"content\":\"${b64}\",\"message\":\"chore: seed $2\"}"
   log "seeded $2"
 }
-# policy.toml is the canonical unified source for fresh installs; the three
-# legacy files are kept as a fallback for existing deployments (policy-sync
-# parses policy.toml first and falls back to the legacy files when it is absent).
+# policy.toml is the canonical authoring source; policy-sync compiles it into
+# the per-engine artifacts on every push.
 seed_file policy/policy.toml policy.toml
-seed_file policy/npm-rules.yaml npm-rules.yaml
-seed_file policy/upstream-policy.yaml upstream-policy.yaml
-seed_file policy/pypi-constraints.txt pypi-constraints.txt
 
 # ---- push webhook -> policy-sync ------------------------------------------------
 HOOK_URL="${POLICY_SYNC_HOOK_URL}"

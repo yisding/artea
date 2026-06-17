@@ -331,14 +331,5 @@ requires **no schema change** and **no change to other engines**:
 
 This slots a "policy adapter" step into the architecture's existing new-format
 recipe (`docs/ARCHITECTURE.md`, "Scale-out design").
-
-## Migration
-
-During the transition, `policy-sync` reads the unified `policy.toml` if present
-and otherwise falls back to the three legacy files (`npm-rules.yaml`,
-`pypi-constraints.txt`, `upstream-policy.yaml`), so existing deployments keep
-working until they adopt the new file. When `policy.toml` is present it wins and
-the legacy files are ignored. Governance is unchanged: `policy.toml` is a
-reviewed file in the same protected repo.
 </content>
 </invoke>

@@ -7,7 +7,7 @@ UTIL_IMAGE ?= alpine:3.22
 BACKUP_DIR := backups
 
 .PHONY: help render-configs check-chart-copies secrets plugins up down logs bootstrap smoke e2e clean destroy backup restore \
-	k8s-deploy k8s-e2e k8s-down policy-migrate
+	k8s-deploy k8s-e2e k8s-down
 
 # kubernetes flow (chart by deploy/helm/artea; see docs/ARCHITECTURE.md)
 HELM_RELEASE ?= artea
@@ -48,11 +48,8 @@ bootstrap: .env render-configs ## idempotent S1: admin, org, policy repo + webho
 smoke: ## gateway-level smoke checks (requires up + bootstrap)
 	./scripts/smoke.sh
 
-e2e: smoke ## scenario suite S1-S17 (requires up + bootstrap)
+e2e: smoke ## end-to-end scenario suite (requires up + bootstrap)
 	./e2e/run.sh
-
-policy-migrate: ## print an equivalent policy.toml from the legacy policy/ files (review before committing)
-	cd policy-sync && python3 -m policy_sync.migrate ../policy/
 
 k8s-deploy: ## helm install/upgrade the chart (bootstrap runs as a chart hook Job)
 	helm dependency build $(HELM_CHART)

@@ -147,8 +147,8 @@ uv pip install --exclude-newer 2026-01-01 six              # uv
 
 Notes:
 
-- This is *additive* to the server-side `upstream.min_age` gate in
-  `upstream-policy.yaml`: a public file that is still too new under that policy
+- This is *additive* to the server-side `upstream.min_age` gate compiled from
+  `policy.toml`: a public file that is still too new under that policy
   is already absent from the index, so a client-side time filter composes with
   it rather than overriding it.
 - Public files carry the exact `upload-time` PyPI reports (microsecond UTC),
@@ -186,6 +186,6 @@ using any spelling; the index entry is the normalized one.
 | `401`/`403` on `twine upload` | Token is `read:package` only, missing the supporting scopes, or user lacks write permission in the configured namespace org |
 | `404` for a private package | Not published yet, or name-normalization mismatch — check `http://localhost:8080/pypi/simple/<normalized-name>/` |
 | pip resolves a *public* version of a private name | Should never happen — check for stray `extra-index-url` config on the client; if absent, report it (gateway precedence bug) |
-| A public package/version refuses to install | Blocked by `pypi-constraints.txt` or still too new under `upstream-policy.yaml` — intentional |
+| A public package/version refuses to install | Blocked by a `deny` rule in `policy.toml` or still too new under `upstream.min_age` — intentional |
 
 See also [operations.md](operations.md).

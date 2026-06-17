@@ -136,9 +136,11 @@ pairs that pin the npm validator without needing node at CI time.
   complement, which is unit-tested against the real filter `compilePolicy`.
 - Adding an ecosystem becomes a bounded, repeatable task (adapter + emitter), not
   a new bespoke policy dialect.
-- Migration is non-breaking: policy-sync prefers `policy.toml` and falls back to
-  the three legacy files when it is absent; when `policy.toml` is present it wins.
-  Governance, the policy repo, branch protection, and propagation are untouched.
+- Migration is non-breaking: during the transition policy-sync preferred
+  `policy.toml` and fell back to the three legacy files when it was absent.
+  (The transitional fallback has since been removed — `policy.toml` is now the
+  sole authoring input.) Governance, the policy repo, branch protection, and
+  propagation are untouched.
 - New e2e coverage: the existing S5 (npm version block) and S10 (PyPI constrain)
   must pass authored as unified rules; add a scenario for the specific-`allow`
   override beating a broader `deny`, and one for validation rejecting a malformed
