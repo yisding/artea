@@ -1,3 +1,8 @@
+# check=skip=SecretsUsedInArgOrEnv
+# ^ false positive: TOKEN_SINK below is a sink-MODE selector ("k8s-secret" |
+# "env-file"), not a secret value — the rule only matches its name. The minted
+# svc-policy PAT is created at runtime and written to a k8s Secret, never baked
+# into an image layer; no real secret is ever set via ARG/ENV here.
 # Artea bootstrap image (ghcr.io/yisding/artea-bootstrap): runs
 # scripts/bootstrap.sh as a Helm hook Job with TOKEN_SINK=k8s-secret.
 # Build from the REPO ROOT — the script seeds policy/policy.toml:
