@@ -63,6 +63,8 @@ gateway:
     gitea: artea-gitea-http:3000
     verdaccio: artea-verdaccio:4873
     devpi: artea-devpi:3141
+    # PEP 700 upload-time enrichment of the PyPI Simple API JSON surface.
+    policySync: artea-policy-sync:8920
   resources: {}
   # Optional Ingress in front of the gateway: TLS + host routing ONLY — all
   # routing logic (auth_request, 404-fallback, normalization) stays in nginx
@@ -108,6 +110,11 @@ policySync:
     pullPolicy: IfNotPresent
   # Slow-poll fallback interval (seconds) behind the push webhook.
   pollSeconds: 300
+  # PyPI JSON API base used to source PEP 700 upload-time + size for PUBLIC
+  # (devpi pull-through) packages in the enriched Simple API. Keep this in sync
+  # with the devpi constrained index's pypi_json_url so the server-side age gate
+  # and the surfaced upload-time come from the same source.
+  pypiJsonUrl: "https://pypi.org/pypi"
   resources: {}
 
 # ---- bootstrap Job (post-install/post-upgrade hook) ---------------------------

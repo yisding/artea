@@ -24,6 +24,10 @@ class Config:
     devpi_url: str
     devpi_root_password: str
     poll_interval: float
+    # PyPI Simple-API enrichment (PEP 700) reads these; defaults keep existing
+    # Config(...) construction sites (tests) working without changes.
+    namespace: str = "artea"
+    pypi_json_url: str = "https://pypi.org/pypi"
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Config":
@@ -64,4 +68,8 @@ class Config:
             devpi_url=env.get("DEVPI_URL", "http://devpi:3141").rstrip("/"),
             devpi_root_password=env["DEVPI_ROOT_PASSWORD"],
             poll_interval=poll_interval,
+            namespace=namespace,
+            # PyPI JSON API base for PEP 700 upload-time enrichment of public
+            # (devpi pull-through) packages; same source the devpi age gate uses.
+            pypi_json_url=env.get("PYPI_JSON_URL", "https://pypi.org/pypi").rstrip("/"),
         )

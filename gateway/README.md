@@ -91,6 +91,52 @@ via `error_page 404 = @public_pypi`:
   active, the devpi policy plugin rejects unknown direct public file URLs unless
   devpi can associate them with a project and verify the upload time.
 
+## PEP 700 upload-time enrichment (JSON Simple API only)
+
+Neither stock upstream emits PEP 700 `upload-time` in its JSON Simple API
+(devpi tops out at `api-version` `1.0`; Gitea ignores the JSON `Accept` header
+and serves only PEP 503 HTML), so clients that filter by upload time
+(`pip --uploaded-prior-to`, `uv --exclude-newer`, Poetry release-age) fail
+against the raw upstreams. The gateway closes this gap **only** for the JSON
+path, leaving every other request byte-for-byte unchanged:
+
+- A `map $http_accept $pypi_wants_json` matches
+  `application/vnd.pypi.simple.(v1|latest)+json` (bare `application/json` is
+  deliberately *not* matched). When it is 1, the `/pypi/simple/{name}/` location
+  does `rewrite ^ /_pypi_json_enrich last` **before** its normal Gitea rewrite;
+  non-JSON traffic skips the `if` entirely and follows the precedence path above.
+- `/_pypi_json_enrich` re-asserts `auth_request` then runs `pep700.enrichRoute`
+  (njs, `gateway/njs/pep700.js`). The orchestrator probes Gitea first
+  (`/_gitea_simple_probe`, body discarded, client credential forwarded): a
+  **200** routes to `policy-sync` with `upstream=gitea` (private wins; devpi is
+  never consulted), a **404** routes with `upstream=devpi`. njs is required here
+  because the precedence decision must re-route a Gitea *200* to a different body
+  source, which `error_page` cannot do.
+- `/_enrich` proxies to `policy-sync:8920/pypi/simple-enrich`, which fetches the
+  base PEP 691 list (devpi's POST-policy constrained index, or Gitea's HTML),
+  joins it with `upload-time` and `size` (PyPI JSON for public; for private,
+  Gitea's per-version `created_at` plus per-file `size` from its package-files
+  API), bumps `meta.api-version` to `1.1`, adds top-level `versions[]`, and
+  returns v1.1 JSON. The reply is cached 30s keyed on `upstream|name|Authorization`
+  (credential in the key so a private view never leaks across users) in a
+  **dedicated `pypi_enrich` cache zone** — never the small `registry_auth`/
+  `artea_auth` zone, so large Simple-API bodies cannot evict auth entries and
+  inflate the S12 revocation latency that auth caching is sized for.
+- Availability vs. metadata are decoupled. The base index list is what makes a
+  package installable; `upload-time`/`size` are optional metadata. A gateway
+  **502** is reserved for the cases that actually break installs: a Gitea probe
+  5xx (a Gitea outage must not silently fall through to public for a
+  possibly-private name) or an unreachable **base index**. If the base list is
+  reachable but the upstream upload-time source (pypi.org JSON) is momentarily
+  down and nothing is cached, policy-sync serves the base v1.1 list *without*
+  upload-time rather than 502 — a plain `pip/uv install <public pkg>` keeps
+  working through a pypi.org blip, and a time-filtering client just won't match
+  the un-stamped files (the same safe direction as a per-file metadata miss).
+  Such a metadata-degraded document is not cached, so the next request retries.
+- Composition: the public base list is devpi's `root/constrained` page, already
+  filtered by `pypi-constraints.txt` and `upstream-policy.yaml`, so enrichment
+  only annotates files the age gate already permits.
+
 ## npm scope routing (gateway-enforced)
 
 npm precedence is a **scope match, never a 404-fallback** — a fallback would
@@ -161,7 +207,11 @@ documented:
 
 - Cached entries (header value + small auth response metadata) live on disk
   inside the container's ephemeral layer at `/var/cache/nginx/registry_auth` —
-  never on a volume. Restarting the container clears them.
+  never on a volume. Restarting the container clears them. The much larger
+  PEP 700 enriched Simple-API bodies use a separate `pypi_enrich` zone
+  (`/var/cache/nginx/pypi_enrich`), so they cannot evict these auth entries; the
+  30 s revocation budget above is computed against an auth cache that enrichment
+  never touches.
 - The cache key is the credential itself; nginx stores it md5-hashed in the file
   name but verbatim inside the cache file. Same blast radius as nginx access
   logs; acceptable for v1.

@@ -131,6 +131,47 @@ TWINE_PASSWORD=your-token \
 twine upload dist/*
 ```
 
+### Upload-time / release-age filtering
+
+The gateway serves the **PEP 700 JSON Simple API (`api-version` `1.1`)** with a
+per-file `upload-time` whenever a client sends
+`Accept: application/vnd.pypi.simple.v1+json` — for **both** public
+(devpi pull-through) and private (Gitea) packages. Time-based install filters
+therefore work through the Artea index:
+
+```sh
+pip install --uploaded-prior-to 2026-01-01T00:00:00Z six   # pip 25.1+
+uv pip install --exclude-newer 2026-01-01 six              # uv
+# poetry: package-time-filtering / min-release-age (Poetry 2.x) reads upload-time too
+```
+
+Notes:
+
+- This is *additive* to the server-side `upstream.min_age` gate in
+  `upstream-policy.yaml`: a public file that is still too new under that policy
+  is already absent from the index, so a client-side time filter composes with
+  it rather than overriding it.
+- Public files carry the exact `upload-time` PyPI reports (microsecond UTC),
+  plus the PyPI-reported `size`. Private (Gitea) files carry their **version's**
+  upload time (Gitea records upload time per version, so all files in a version
+  share it) plus the per-file `size` from Gitea's package-files API. This is
+  coarser than per-file: for a version published atomically (a normal
+  `twine`/`uv` upload) it equals the real upload time, but a file *added to an
+  existing version later* inherits that version's earlier timestamp, so a
+  `--uploaded-prior-to` cutoff could select it even if its own upload was after
+  the cutoff. Rare given the publish model, but not an absolute guarantee; for a
+  hard per-file age bound, lean on the server-side `upstream.min_age` gate too.
+- Availability over metadata: `upload-time` is spec-optional, so a transient
+  upstream-metadata blip never breaks a plain install. If the base index list is
+  reachable but the upstream upload-time source is momentarily down (and no
+  recent enriched copy is cached), the gateway serves the still-installable v1.1
+  list *without* the time stamps rather than failing the request. A time-filter
+  client simply won't match the un-stamped files (the safe direction); a plain
+  `pip/uv install` is unaffected. Only an unreachable **base index** returns an
+  error.
+- A plain request (no special `Accept`) is unchanged: `pip install` still gets
+  the PEP 503 HTML / PEP 691 v1.0 page exactly as before.
+
 ### Name normalization
 
 Gitea normalizes package names per PEP 503 (`.` and `_` become `-`), so
