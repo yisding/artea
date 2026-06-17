@@ -132,6 +132,12 @@ class PolicySyncHandler(BaseHTTPRequestHandler):
                     return
             else:
                 doc = enrich.enrich_devpi(name, cfg.devpi_url, cfg.pypi_json_url)
+        except enrich.EnrichNotFound:
+            # The public mirror has no such project — a real 404 ("no
+            # candidates"), not a transient 502. Mirrors the uncached HTML
+            # fallback's 404 so JSON pip/uv stop here instead of retrying.
+            self._respond(404, {"error": "no such project"})
+            return
         except enrich.EnrichUnavailable as e:
             log.warning("enrichment unavailable (upstream=%s name=%s): %s", upstream, name, e)
             self._respond(502, {"error": "upstream metadata unavailable"})

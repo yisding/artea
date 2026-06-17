@@ -81,6 +81,15 @@ class EnrichUnavailable(EnrichError):
     """Timestamp metadata could not be obtained and no usable cache exists."""
 
 
+class EnrichNotFound(EnrichError):
+    """The upstream mirror has no such project — a real 404, not an outage.
+
+    Kept distinct from EnrichUnavailable so the server returns 404 ("no
+    candidates") rather than 502 ("transient"): the uncached HTML fallback
+    returns 404 here, and JSON pip/uv must read 404 the same way.
+    """
+
+
 class _TTLCache:
     """Tiny thread-safe time-keyed cache (dict + wall clock).
 
@@ -310,7 +319,21 @@ def enrich_devpi(name: str, devpi_url: str, pypi_json_url: str) -> dict:
     try:
         raw = _get(base_url, {"Accept": SIMPLE_JSON_ACCEPT})
         base = json.loads(raw)
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            # Absent from the public mirror too — the constrained index 404s
+            # exactly as the HTML fallback does. This is a real "no such
+            # project", not an outage: do NOT serve stale and do NOT 502, so the
+            # client gets 404 ("no candidates") instead of treating a missing
+            # package as a transient index failure and retrying.
+            raise EnrichNotFound(f"devpi simple {base_url}: 404") from e
+        # Other HTTP errors (5xx, etc.): try last-good, else fail closed.
+        stale = _enrich_cache.get_stale(cache_key, STALE_MAX_SECONDS)
+        if stale is not None:
+            log.warning("devpi simple base unavailable for %s (HTTP %s); serving stale enriched", name, e.code)
+            return stale
+        raise EnrichUnavailable(f"devpi simple {base_url}: HTTP {e.code}") from e
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
         # Base list unreachable/garbled: try last-good, else fail closed. We do
         # NOT synthesize an empty list (that would look like "no such package").
         stale = _enrich_cache.get_stale(cache_key, STALE_MAX_SECONDS)
@@ -390,14 +413,28 @@ class _GiteaSimpleParser(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if tag != "a":
             return
-        href = dict(attrs).get("href")
+        attrd = dict(attrs)
+        href = attrd.get("href")
         if not href:
             return
         url, _, fragment = href.partition("#")
         hashes: dict[str, str] = {}
         if fragment.startswith("sha256="):
             hashes["sha256"] = fragment[len("sha256="):]
-        self._pending = {"url": url, "hashes": hashes}
+        link: dict = {"url": url, "hashes": hashes}
+        # Preserve the PEP 503 link attributes Gitea emits on the anchor so the
+        # JSON path keeps the same install-time filters the HTML path gives pip:
+        # data-requires-python gates incompatible interpreters; data-yanked
+        # (PEP 592) withdraws a release. Dropping requires-python would let a
+        # JSON-capable installer select a wheel its Python cannot run.
+        requires_python = attrd.get("data-requires-python")
+        if requires_python:
+            link["requires-python"] = requires_python
+        if "data-yanked" in attrd:
+            yanked = attrd.get("data-yanked")
+            # Empty/no value -> True; a value -> the reason string.
+            link["yanked"] = yanked if yanked else True
+        self._pending = link
         self._text = []
 
     def handle_data(self, data):
@@ -531,6 +568,10 @@ def enrich_gitea(name: str, gitea_url: str, namespace: str, authorization: str) 
         out: dict = {"filename": link["filename"], "url": link["url"]}
         if link.get("hashes"):
             out["hashes"] = link["hashes"]
+        if link.get("requires-python"):
+            out["requires-python"] = link["requires-python"]
+        if "yanked" in link:
+            out["yanked"] = link["yanked"]
         if version:
             if version not in meta_by_version:
                 meta_by_version[version] = _gitea_version_meta(

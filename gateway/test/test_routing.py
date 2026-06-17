@@ -199,6 +199,12 @@ class UpstreamHandler(http.server.BaseHTTPRequestHandler):
                     if "upstream=gitea" in self.path:
                         self._reply(404, "no such private package")
                         return
+                if "name=absent-everywhere" in self.path:
+                    # absent from Gitea AND the public mirror: enrich_devpi raises
+                    # EnrichNotFound -> policy-sync 404s -> the gateway must surface
+                    # a real 404 (no candidates), not a 502.
+                    self._reply(404, "no such project")
+                    return
                 # A realistic enriched document is tens-to-hundreds of KB; return
                 # one well past nginx's default subrequest buffer so a too-small
                 # buffer regresses here (the v1+json relay overflows and resets the
@@ -593,6 +599,17 @@ class GatewayTest(unittest.TestCase):
             self.assertGreater(len(body), 1024 * 1024, name)  # full 1 MB body relayed
             self.assertTrue([p for p in self.seen("policy-sync")
                              if marker in p and name in p], name)
+
+    def test_pypi_json_devpi_branch_404_propagates_as_404(self):
+        # A name absent from both Gitea and the public mirror: the Gitea probe
+        # 404s, the devpi-branch enrich 404s, and the gateway must surface a real
+        # 404 ("no candidates") — not mask it as a 502 that JSON pip/uv would
+        # retry as a transient index failure. Matches the uncached HTML path.
+        status, _, _ = self._raw("GET", "/pypi/simple/absent-everywhere/",
+                                 auth=GOOD_AUTH, accept=self.JSON_ACCEPT)
+        self.assertEqual(status, 404)
+        self.assertTrue([p for p in self.seen("policy-sync")
+                         if "upstream=devpi" in p and "absent-everywhere" in p])
 
     def test_pypi_non_json_accept_unchanged_gitea_first_fallthrough(self):
         # Regression guard: WITHOUT the JSON Accept header the existing

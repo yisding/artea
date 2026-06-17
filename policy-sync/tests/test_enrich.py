@@ -161,12 +161,25 @@ def test_devpi_pypi_json_unavailable_serves_base_index_without_upload_time(stub)
 
 
 def test_devpi_base_list_unavailable_fails_closed(stub):
-    # The base index itself is unreachable and no cache exists -> EnrichUnavailable
+    # The base index is down (5xx) and no cache exists -> EnrichUnavailable
     # (a synthesized empty list would look like "no such package"). This is the
-    # only case that becomes a gateway 502; metadata outages do not.
+    # kind of failure that becomes a gateway 502; metadata outages do not.
+    # A genuine 404 is a DIFFERENT case (no such project -> EnrichNotFound below).
     stub.route("/six/json", lambda h: _reply(h, 200, _pypi_json({})))  # pypi up
-    # no /root/constrained route registered -> the stub 404s the base list
+    stub.route("/root/constrained/+simple/six/", lambda h: _reply(h, 503, "down", "text/plain"))
     with pytest.raises(enrich.EnrichUnavailable):
+        enrich.enrich_devpi("six", stub.url, stub.url)
+
+
+def test_devpi_base_list_404_is_not_found_not_unavailable(stub):
+    # Absent from the public mirror too: the constrained index 404s exactly as
+    # the HTML fallback does. That is a real "no such project" -> EnrichNotFound
+    # (the server turns it into 404 "no candidates"), NOT EnrichUnavailable
+    # (which would 502 and make JSON pip/uv retry a missing package). A 404 must
+    # never serve stale, so even a warm cache does not mask it.
+    stub.route("/six/json", lambda h: _reply(h, 200, _pypi_json({})))  # pypi up
+    stub.route("/root/constrained/+simple/six/", lambda h: _reply(h, 404, "nope", "text/plain"))
+    with pytest.raises(enrich.EnrichNotFound):
         enrich.enrich_devpi("six", stub.url, stub.url)
 
 
@@ -270,6 +283,33 @@ def test_gitea_per_version_created_at_size_and_sha256(stub):
     files_calls = [r for r in stub.requests
                    if r["path"] == "/api/v1/packages/artea/pypi/demo/0.0.1/files"]
     assert len(files_calls) == 1
+
+
+def test_gitea_carries_requires_python_and_yanked_from_anchor(stub):
+    # Gitea emits data-requires-python (and PEP 592 data-yanked) on its PEP 503
+    # anchors; the JSON path must preserve them so a JSON-capable installer keeps
+    # the same interpreter/yank filters the byte-for-byte HTML path gives pip.
+    # The attribute value arrives HTML-escaped (Go html/template), so the parser
+    # must surface the unescaped ">=3.8".
+    html = (
+        "<!DOCTYPE html><html><body>"
+        '<a href="/api/packages/artea/pypi/files/demo/0.0.1/demo-0.0.1.tar.gz#sha256=aa"'
+        ' data-requires-python="&gt;=3.8" data-yanked="security">demo-0.0.1.tar.gz</a>'
+        '<a href="/api/packages/artea/pypi/files/demo/0.0.2/demo-0.0.2.tar.gz#sha256=bb">'
+        "demo-0.0.2.tar.gz</a>"
+        "</body></html>"
+    )
+    stub.route("/api/packages/artea/pypi/simple/demo/", lambda h: _reply(h, 200, html, "text/html"))
+    # version metadata is irrelevant here; let it 500 (file still carries attrs)
+    stub.route("/api/v1/packages/artea/pypi/demo/", lambda h: _reply(h, 500, "x", "text/plain"))
+
+    doc = enrich.enrich_gitea("demo", stub.url, "artea", "Basic abc")
+    by_name = {f["filename"]: f for f in doc["files"]}
+    assert by_name["demo-0.0.1.tar.gz"]["requires-python"] == ">=3.8"
+    assert by_name["demo-0.0.1.tar.gz"]["yanked"] == "security"
+    # a file without the attributes must not gain them
+    assert "requires-python" not in by_name["demo-0.0.2.tar.gz"]
+    assert "yanked" not in by_name["demo-0.0.2.tar.gz"]
 
 
 def test_gitea_404_returns_none(stub):

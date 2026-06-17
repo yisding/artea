@@ -37,6 +37,15 @@ function relay(r, reply) {
         r.return(reply.status, responseBody(reply));
         return;
     }
+    // A real "no such project" (the public mirror 404s) must reach the client as
+    // 404 — JSON pip/uv read that as "no candidates", not a transient failure.
+    // On the Gitea branch a 404 means "fall through to devpi" and is handled in
+    // enrichRoute before relay() runs, so this only fires for the devpi branch's
+    // genuine misses (absent from both Gitea and the public mirror).
+    if (reply.status === 404) {
+        r.return(404);
+        return;
+    }
     // 5xx from policy-sync (unreachable, upstream metadata down) -> 502.
     r.return(502);
 }
