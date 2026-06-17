@@ -65,33 +65,10 @@ spec:
               containerPort: 8920
           # /healthz answers 200 even while syncs fail (fail-closed consumers
           # tolerate that); it only proves the HTTP surface is up.
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: http
-            periodSeconds: 10
-          readinessProbe:
-            httpGet:
-              path: /healthz
-              port: http
-            periodSeconds: 10
+          {{- include "artea.httpProbes" (dict "path" "/healthz") | nindent 10 }}
           {{- with .Values.policySync.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
 ---
-apiVersion: v1
-kind: Service
-metadata:
-  name: {{ include "artea.fullname" "policy-sync" }}
-  labels:
-    {{- include "artea.labels" (dict "ctx" $ "component" "policy-sync") | nindent 4 }}
-spec:
-  type: ClusterIP
-  ports:
-    - name: http
-      port: 8920
-      targetPort: http
-      protocol: TCP
-  selector:
-    {{- include "artea.selectorLabels" (dict "ctx" $ "component" "policy-sync") | nindent 4 }}
+{{ include "artea.service" (dict "ctx" $ "component" "policy-sync" "port" 8920) }}

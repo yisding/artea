@@ -60,6 +60,40 @@ templates/validations.yaml (which pre-validates every owned image). */}}
 {{- end -}}
 {{- end -}}
 
+{{/* ClusterIP Service exposing the named "http" port; pass
+(dict "ctx" $ "component" "<c>" "port" <p> "type" "<optional, default ClusterIP>") */}}
+{{- define "artea.service" -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "artea.fullname" .component }}
+  labels:
+    {{- include "artea.labels" (dict "ctx" .ctx "component" .component) | nindent 4 }}
+spec:
+  type: {{ .type | default "ClusterIP" }}
+  ports:
+    - name: http
+      port: {{ .port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "artea.selectorLabels" (dict "ctx" .ctx "component" .component) | nindent 4 }}
+{{- end -}}
+
+{{/* liveness+readiness HTTP probes (10s) on the named "http" port; pass (dict "path" "<path>") */}}
+{{- define "artea.httpProbes" -}}
+livenessProbe:
+  httpGet:
+    path: {{ .path }}
+    port: http
+  periodSeconds: 10
+readinessProbe:
+  httpGet:
+    path: {{ .path }}
+    port: http
+  periodSeconds: 10
+{{- end -}}
+
 {{/* Cluster-internal URLs of the fixed Services (the cross-component contract) */}}
 {{- define "artea.giteaUrl" -}}
 http://artea-gitea-http:3000

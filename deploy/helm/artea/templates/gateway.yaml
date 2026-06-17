@@ -59,16 +59,7 @@ spec:
               mountPath: /etc/nginx/njs/pep700.js
               subPath: pep700.js
               readOnly: true
-          livenessProbe:
-            httpGet:
-              path: /-/artea-gateway/health
-              port: http
-            periodSeconds: 10
-          readinessProbe:
-            httpGet:
-              path: /-/artea-gateway/health
-              port: http
-            periodSeconds: 10
+          {{- include "artea.httpProbes" (dict "path" "/-/artea-gateway/health") | nindent 10 }}
           {{- with .Values.gateway.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -78,18 +69,4 @@ spec:
           configMap:
             name: {{ include "artea.fullname" "gateway-config" }}
 ---
-apiVersion: v1
-kind: Service
-metadata:
-  name: {{ include "artea.fullname" "gateway" }}
-  labels:
-    {{- include "artea.labels" (dict "ctx" $ "component" "gateway") | nindent 4 }}
-spec:
-  type: {{ .Values.gateway.service.type }}
-  ports:
-    - name: http
-      port: {{ .Values.gateway.service.port }}
-      targetPort: http
-      protocol: TCP
-  selector:
-    {{- include "artea.selectorLabels" (dict "ctx" $ "component" "gateway") | nindent 4 }}
+{{ include "artea.service" (dict "ctx" $ "component" "gateway" "port" .Values.gateway.service.port "type" .Values.gateway.service.type) }}
