@@ -28,6 +28,10 @@ done
 # pollutes the rendered file on stdout.
 if [ -z "$(ls -A deploy/helm/artea/charts 2>/dev/null || true)" ]; then
   echo "render-chart-file: fetching Helm chart dependencies (first run)..." >&2
+  # gitea is an OCI dependency (resolved from Chart.lock directly), but verdaccio
+  # is an https repo that `helm dependency build` requires to be registered first
+  # — otherwise it fails "no repository definition for https://charts.verdaccio.org".
+  helm repo add verdaccio https://charts.verdaccio.org >/dev/null 2>&1 || true
   helm dependency build deploy/helm/artea >&2
 fi
 
