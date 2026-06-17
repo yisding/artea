@@ -155,6 +155,29 @@ in_k8s || ./gitea/scripts/gen-secrets.sh
 # ---- helpers -----------------------------------------------------------------
 gitea_cli() { docker compose exec -T -u git gitea gitea "$@"; } # env-file mode only
 
+# stdin JSON -> top-level <field> on stdout ('' when absent), the trivial
+# field-extractor pattern used throughout this script.
+json_get() { # <field>
+  python3 -c 'import json,sys; print(json.load(sys.stdin).get(sys.argv[1],""))' "$1"
+}
+
+# Poll <cmd...> until it succeeds; 0 on success, 1 once <timeout>s elapse.
+# Mirrors the script's existing seq-based waits: <timeout>/<interval> attempts,
+# sleeping <interval>s between them. Callers `die` on the non-zero return so the
+# die-on-timeout semantics stay at the call site.
+retry_until() { # <timeout s> <interval s> <desc> <cmd...>
+  local timeout=$1 interval=$2 desc=$3 tries i
+  shift 3
+  tries=$(( timeout / interval ))
+  [ "$tries" -lt 1 ] && tries=1
+  for i in $(seq 1 "${tries}"); do
+    "$@" && return 0
+    [ "$i" -eq "${tries}" ] && break
+    sleep "${interval}"
+  done
+  return 1
+}
+
 # all minted tokens get unique names; gitea refuses duplicate token names
 mint_token() { # <user> <comma-separated scopes>  -> raw token on stdout
   if in_k8s; then
@@ -197,7 +220,7 @@ admin_send() { # <method> <api path> <json body or ''> ; dies on non-2xx
 
 token_login() { # <token> -> login name of the token's user, '' if invalid
   curl -sf -H "Authorization: token $1" "${GITEA_URL}/api/v1/user" 2>/dev/null \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("login",""))' 2>/dev/null || true
+    | json_get login 2>/dev/null || true
 }
 
 team_id() { # <team name> -> id on stdout, '' if absent
@@ -211,20 +234,17 @@ resp_id() { # id field of the last admin_send response
 }
 
 # ---- wait for gitea ------------------------------------------------------------
-WAIT_TRIES=$(( GITEA_READY_TIMEOUT / 2 ))
+gitea_healthz() { curl -fsS -o /dev/null "${GITEA_URL}/api/healthz" 2>/dev/null; }
 log "waiting for gitea (via ${GITEA_URL}, up to ${GITEA_READY_TIMEOUT}s) ..."
-for i in $(seq 1 "${WAIT_TRIES}"); do
-  curl -fsS -o /dev/null "${GITEA_URL}/api/healthz" 2>/dev/null && break
-  [ "$i" -eq "${WAIT_TRIES}" ] && die "gitea not healthy after ${GITEA_READY_TIMEOUT}s — is the stack up? (make up / make k8s-deploy)"
-  sleep 2
-done
+retry_until "${GITEA_READY_TIMEOUT}" 2 "gitea healthy" gitea_healthz \
+  || die "gitea not healthy after ${GITEA_READY_TIMEOUT}s — is the stack up? (make up / make k8s-deploy)"
 log "gitea is healthy"
 
 # ---- admin user ----------------------------------------------------------------
 if in_k8s; then
   # the chart's gitea provisions the admin (gitea.admin values); verify only
   ADMIN_LOGIN=$(curl -sf -u "${ADMIN_USER}:${ARTEA_ADMIN_PASSWORD}" "${GITEA_URL}/api/v1/user" 2>/dev/null \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("login",""))' 2>/dev/null || true)
+    | json_get login 2>/dev/null || true)
   [ "${ADMIN_LOGIN}" = "${ADMIN_USER}" ] \
     || die "cannot authenticate as ${ADMIN_USER} — in k8s the chart must provision the admin user"
   log "admin ${ADMIN_USER} present (chart-provisioned)"
@@ -327,7 +347,7 @@ log "dev1 is not in Owners"
 
 # ---- branch protection on the policy repo (S14: policy changes go through PRs) --
 admin_send GET "/repos/${ORG}/${REPO}" ''
-DEFAULT_BRANCH=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["default_branch"])' "$RESP")
+DEFAULT_BRANCH=$(json_get default_branch < "$RESP")
 if [ "$(admin_code "/repos/${ORG}/${REPO}/branch_protections/${DEFAULT_BRANCH}")" = 200 ]; then
   log "branch protection on ${REPO}@${DEFAULT_BRANCH} already present"
 else
@@ -469,14 +489,9 @@ policy_synced() {
   fi
 }
 log "waiting for policy-sync to complete a sync ..."
-for i in $(seq 1 45); do
-  if policy_synced; then
-    log "policy-sync reports last_sync_ok=true"
-    break
-  fi
-  [ "$i" -eq 45 ] && die "policy-sync did not report a successful sync within 90s"
-  sleep 2
-done
+retry_until 90 2 "policy-sync last_sync_ok" policy_synced \
+  || die "policy-sync did not report a successful sync within 90s"
+log "policy-sync reports last_sync_ok=true"
 
 # ---- credentials for the e2e suite -------------------------------------------------
 emit_credentials() {

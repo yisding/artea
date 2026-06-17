@@ -269,7 +269,7 @@ s1_bootstrap() {
   admin_api GET /user
   [ "$API_CODE" = 200 ] || { echo "admin token rejected (HTTP ${API_CODE})"; return 1; }
   login=$(echo "$API_BODY" | jq -r .login)
-  [ "$login" = "${ARTEA_ADMIN_USER}" ] || { echo "admin token belongs to ${login}"; return 1; }
+  assert_eq "${ARTEA_ADMIN_USER}" "$login" "admin token belongs to ${login}" || return 1
   admin_api GET "/orgs/${ARTEA_NAMESPACE}"
   [ "$API_CODE" = 200 ] || { echo "org ${ARTEA_NAMESPACE} missing"; return 1; }
   [ "$(echo "$API_BODY" | jq -r .visibility)" = private ] || { echo "org ${ARTEA_NAMESPACE} is not private"; return 1; }
@@ -281,7 +281,7 @@ s1_bootstrap() {
     'any(.[]; .config.url == $hook and .active)' >/dev/null \
     || { echo "policy webhook not wired (expected ${POLICY_SYNC_URL}/hooks/policy)"; return 1; }
   login=$(curl -sf -H "Authorization: token ${DEV1_TOKEN}" "${GATEWAY_URL}/api/v1/user" | jq -r .login)
-  [ "$login" = dev1 ] || { echo "dev1 PAT rejected"; return 1; }
+  assert_eq dev1 "$login" "dev1 PAT rejected" || return 1
   echo "org, policy repo, webhook, admin+dev1 PATs all present"
 }
 
@@ -301,15 +301,12 @@ s3_npm_install_private() {
   echo '{"name":"e2e-consumer-s3","version":"1.0.0"}' > "$proj/package.json"
   (cd "$proj" && npm_e2e install "${NPM_NAME}@${NPM_VERSION}") || { echo "npm install failed"; return 1; }
   version=$(jq -r .version "$proj/node_modules/${NPM_NAME}/package.json")
-  [ "$version" = "${NPM_VERSION}" ] || { echo "installed version ${version}, expected ${NPM_VERSION}"; return 1; }
+  assert_eq "${NPM_VERSION}" "$version" "installed version mismatch" || return 1
   resolved=$(jq -r ".packages[\"node_modules/${NPM_NAME}\"].resolved" "$proj/package-lock.json")
   echo "resolved: ${resolved}"
   # even under gateway scope routing (packument fetched via /npm/) the tarball
   # URL is Gitea-built from ROOT_URL, so it stays on /api/packages/<namespace>/npm/
-  case "$resolved" in
-    */api/packages/"${ARTEA_NAMESPACE}"/npm/*) ;;
-    *) echo "tarball did not come from Gitea (gateway scope routing)"; return 1 ;;
-  esac
+  assert_origin gitea-npm "$resolved" "tarball did not come from Gitea (gateway scope routing)" || return 1
 }
 
 # ---- S4: npm install left-pad via Verdaccio pull-through ----------------------------------
@@ -321,21 +318,18 @@ s4_npm_install_public() {
   [ -f "$proj/node_modules/left-pad/package.json" ] || { echo "left-pad not in node_modules"; return 1; }
   resolved=$(jq -r '.packages["node_modules/left-pad"].resolved' "$proj/package-lock.json")
   echo "resolved: ${resolved}"
-  case "$resolved" in
-    "${GATEWAY_URL}/npm/"*) ;;
-    *) echo "tarball did not come through the gateway /npm/ (verdaccio) path"; return 1 ;;
-  esac
+  assert_origin gateway "$resolved" "tarball did not come through the gateway /npm/ (verdaccio) path" || return 1
 }
 
 # ---- S5: block left-pad 1.3.0 via policy.toml push ----------------------------------------
 left_pad_130_hidden() {
   local body
-  body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/left-pad") || return 1
+  body=$(gw_get /npm/left-pad) || return 1
   ! grep -q '"1.3.0":' <<<"$body"
 }
 left_pad_130_visible() {
   local body
-  body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/left-pad") || return 1
+  body=$(gw_get /npm/left-pad) || return 1
   grep -q '"1.3.0":' <<<"$body"
 }
 
@@ -371,10 +365,7 @@ s7_pip_install_private() {
     --report "$report" "${PY_NAME}==${PY_VERSION}" || { echo "pip install failed"; return 1; }
   url=$(jq -r '.install[0].download_info.url' "$report")
   echo "downloaded from: ${url}"
-  case "$url" in
-    */api/packages/"${ARTEA_NAMESPACE}"/pypi/files/*) ;;
-    *) echo "wheel did not come from Gitea"; return 1 ;;
-  esac
+  assert_origin gitea-pypi "$url" "wheel did not come from Gitea" || return 1
 }
 
 # ---- S8: pip install six via gateway -> devpi -> PyPI ----------------------------------------
@@ -384,10 +375,8 @@ s8_pip_install_public() {
     --report "$report" six || { echo "pip install six failed"; return 1; }
   url=$(jq -r '.install[0].download_info.url' "$report")
   echo "downloaded from: ${url}"
-  case "$url" in
-    */root/pypi/*) ;; # public PyPI mirror path through the gateway
-    *) echo "six did not come through the devpi pull-through path"; return 1 ;;
-  esac
+  # public PyPI mirror path through the gateway
+  assert_origin devpi "$url" "six did not come through the devpi pull-through path" || return 1
 }
 
 # ---- S9: private name shadows the public one entirely ----------------------------------------
@@ -410,18 +399,18 @@ s9_precedence_shadowing() {
 # ---- S10: policy.toml constrains pypi urllib3 to <2 -------------------------------------------
 urllib3_v2_hidden() {
   local body
-  body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/urllib3/") || return 1
+  body=$(gw_get /pypi/simple/urllib3/) || return 1
   ! grep -q 'urllib3-2\.' <<<"$body"
 }
 urllib3_v2_visible() {
   local body
-  body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/urllib3/") || return 1
+  body=$(gw_get /pypi/simple/urllib3/) || return 1
   grep -q 'urllib3-2\.' <<<"$body"
 }
 
 s10_pypi_policy_constraint() {
-  local out line wheel code body blocked_file_path
-  body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/urllib3/") \
+  local out line wheel body blocked_file_path
+  body=$(gw_get /pypi/simple/urllib3/) \
     || { echo "pre-policy urllib3 simple fetch failed"; return 1; }
   blocked_file_path=$(echo "$body" \
     | grep -Eo 'href="[^"]*urllib3-2[^"]*\.(whl|tar\.gz|zip)[^"]*"' \
@@ -447,13 +436,10 @@ TOML
 )" "test(e2e): S10 constrain urllib3<2 via policy.toml" || return 1
   wait_for 45 2 "urllib3 2.x filtered from simple index" urllib3_v2_hidden || return 1
   for path in "/root/pypi/+simple/urllib3/" "/root/constrained/+simple/urllib3/"; do
-    code=$(http_code -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}${path}")
-    [ "$code" = 404 ] || { echo "direct devpi route ${path} got HTTP ${code}, expected 404"; return 1; }
+    assert_code 404 -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}${path}" || return 1
   done
   echo "direct devpi simple routes are not reachable through the gateway"
-  code=$(http_code -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}${blocked_file_path}")
-  [ "$code" = 403 ] \
-    || { echo "blocked direct devpi file ${blocked_file_path} got HTTP ${code}, expected 403"; return 1; }
+  assert_code 403 -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}${blocked_file_path}" || return 1
   echo "direct devpi file URLs obey current PyPI constraints"
   out=$(pip_e2e index versions urllib3 --index-url "${INDEX_URL}" 2>&1) \
     || { echo "pip index versions failed: ${out}"; return 1; }
@@ -477,7 +463,7 @@ TOML
 
 # ---- S11: one PAT everywhere; read:package can pull but not publish (401) ---------------------
 s11_token_scopes() {
-  local ro_token no_package_token out code proj="${WORK}/proj-s11"
+  local ro_token no_package_token out proj="${WORK}/proj-s11"
   # dev1's single write:package PAT already drove S2-S10 (publish+install, npm+pypi)
   ro_token=$(mint_dev1_token "${RO_TOKEN_NAME}" '["read:package","read:user","read:organization"]') \
     || { echo "minting read-only token failed"; return 1; }
@@ -490,8 +476,7 @@ s11_token_scopes() {
     npm install "${NPM_NAME}@${NPM_VERSION}") || { echo "read-only npm install failed"; return 1; }
   pip_e2e install -q --index-url "$(index_url "${ro_token}")" --force-reinstall --no-deps \
     "${PY_NAME}==${PY_VERSION}" || { echo "read-only pip install failed"; return 1; }
-  code=$(http_code -u "dev1:${ro_token}" "${GATEWAY_URL}/npm/left-pad")
-  [ "$code" = 200 ] || { echo "read-only verdaccio pull got HTTP ${code}"; return 1; }
+  assert_code 200 -u "dev1:${ro_token}" "${GATEWAY_URL}/npm/left-pad" || return 1
   echo "read-only token installs fine (npm private+public, pip private)"
 
   # npm publish with the read-only token must be rejected with 401 (not 403)
@@ -522,11 +507,11 @@ s11_token_scopes() {
     "${GATEWAY_URL}/pypi/simple/six/" \
     "${GATEWAY_URL}/api/packages/${ARTEA_NAMESPACE}/pypi/simple/${PY_NAME}/"
   do
-    code=$(http_code -u "dev1:${no_package_token}" "$url")
-    [ "$code" = 403 ] || { echo "no-package-scope token got HTTP ${code} for ${url}, expected 403"; return 1; }
+    assert_code 403 -u "dev1:${no_package_token}" "$url" || return 1
   done
-  code=$(http_code -u "dev1:${no_package_token}" "${GATEWAY_URL}/api/v1/packages/${ARTEA_NAMESPACE}/?type=pypi&limit=1")
-  [ "$code" = 403 ] || { echo "Gitea package-management probe with no package scope got HTTP ${code}, expected 403"; return 1; }
+  assert_code 403 -u "dev1:${no_package_token}" \
+    "${GATEWAY_URL}/api/v1/packages/${ARTEA_NAMESPACE}/?type=pypi&limit=1" \
+    || { echo "Gitea package-management probe with no package scope rejected"; return 1; }
   echo "token with read:user/read:organization but no package scope is rejected before package proxies"
 
   delete_dev1_token "${RO_TOKEN_NAME}"
@@ -574,23 +559,20 @@ tarball_130_blocked() { [ "$(http_code -u "dev1:${DEV1_TOKEN}" "${TARBALL_BLOCKE
 tarball_130_allowed() { [ "$(http_code -u "dev1:${DEV1_TOKEN}" "${TARBALL_BLOCKED}")" = 200 ]; }
 
 s13_tarball_enforcement() {
-  local code body
+  local body
   # anonymous /npm/: Verdaccio's service endpoints must challenge, not answer
   body=$(curl -s -o /dev/null -w '%{http_code} %header{www-authenticate}' "${GATEWAY_URL}/npm/-/ping")
-  [ "$body" = '401 Basic realm="Artea"' ] \
-    || { echo "anonymous /npm/-/ping: expected 401 + Basic challenge, got: ${body}"; return 1; }
-  code=$(http_code "${GATEWAY_URL}/npm/-/v1/search?text=left-pad")
-  [ "$code" = 401 ] || { echo "anonymous /npm/ search got HTTP ${code}, expected 401"; return 1; }
+  assert_eq '401 Basic realm="Artea"' "$body" "anonymous /npm/-/ping: expected 401 + Basic challenge" || return 1
+  assert_code 401 "${GATEWAY_URL}/npm/-/v1/search?text=left-pad" || return 1
   echo "anonymous /npm/-/ping and /npm/-/v1/search get 401 with Basic challenge"
 
   POLICY_DIRTY=1
   put_policy_file policy.toml "${POLICY_BLOCK_LEFTPAD_130}" "test(e2e): S13 block left-pad 1.3.0" || return 1
   wait_for 45 2 "blocked tarball rejected with 403" tarball_130_blocked || return 1
   body=$(curl -s -u "dev1:${DEV1_TOKEN}" "${TARBALL_BLOCKED}")
-  grep -q 'blocked by registry policy' <<<"$body" \
-    || { echo "403 body is not the policy middleware's JSON error: ${body}"; return 1; }
-  code=$(http_code -u "dev1:${DEV1_TOKEN}" "${TARBALL_ALLOWED}")
-  [ "$code" = 200 ] || { echo "unblocked 1.2.0 tarball got HTTP ${code}, expected 200"; return 1; }
+  assert_contains 'blocked by registry policy' "$body" \
+    "403 body is not the policy middleware's JSON error: ${body}" || return 1
+  assert_code 200 -u "dev1:${DEV1_TOKEN}" "${TARBALL_ALLOWED}" || return 1
   echo "blocked 1.3.0 tarball -> 403 (policy JSON); unblocked 1.2.0 tarball -> 200"
   put_policy_file policy.toml "${ORIG_POLICY}" "test(e2e): S13 revert policy" || return 1
   wait_for 45 2 "tarball served again after revert" tarball_130_allowed || return 1
@@ -599,7 +581,7 @@ s13_tarball_enforcement() {
 
 # ---- S14: branch protection on registry-policy@main (governance) ------------------------------
 s14_branch_protection() {
-  local token auth_header clone="${WORK}/s14-policy-clone" out code sha b64
+  local token auth_header clone="${WORK}/s14-policy-clone" out sha b64
   token=$(mint_dev1_token "${S14_TOKEN_NAME}" '["write:repository","read:user"]') \
     || { echo "minting dev1 repo-scoped token failed"; return 1; }
   auth_header=$(printf 'dev1:%s' "$token" | base64 | tr -d '\n')
@@ -622,10 +604,10 @@ s14_branch_protection() {
   admin_api GET "/repos/${POLICY_REPO}/contents/policy.toml"
   sha=$(echo "$API_BODY" | jq -r .sha)
   b64=$(printf '%s\n' '# e2e S14 contents-API probe' | json_b64)
-  code=$(http_code -X PUT -H "Authorization: token ${token}" -H 'Content-Type: application/json' \
+  assert_code 403 -X PUT -H "Authorization: token ${token}" -H 'Content-Type: application/json' \
     -d "{\"content\":\"${b64}\",\"sha\":\"${sha}\",\"message\":\"test(e2e): S14 contents probe\"}" \
-    "${GATEWAY_URL}/api/v1/repos/${POLICY_REPO}/contents/policy.toml")
-  [ "$code" = 403 ] || { echo "dev1 contents-API edit got HTTP ${code}, expected 403"; return 1; }
+    "${GATEWAY_URL}/api/v1/repos/${POLICY_REPO}/contents/policy.toml" \
+    || { echo "dev1 contents-API edit was not rejected with 403"; return 1; }
   [ "$(get_policy_file policy.toml)" = "${ORIG_POLICY}" ] \
     || { echo "policy.toml on main changed despite the rejections"; return 1; }
   echo "dev1 contents-API edit rejected with 403; main unchanged"
@@ -664,7 +646,7 @@ six_blocked() { # fresh '*'-seeded mirror exposes no six files through the gatew
 }
 six_served() {
   local body
-  body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/six/") || return 1
+  body=$(gw_get /pypi/simple/six/) || return 1
   grep -q 'six-1\.' <<<"$body"
 }
 # S13/S14 policy pushes leave webhook syncs (with 2/4/8s retries) in flight; one
@@ -767,10 +749,7 @@ s15_fail_closed() {
     --report "$report" six || { echo "pip install six failed after recovery"; return 1; }
   url=$(jq -r '.install[0].download_info.url' "$report")
   echo "post-recovery six downloaded from: ${url}"
-  case "$url" in
-    */root/pypi/*) ;;
-    *) echo "six did not come through the devpi pull-through path"; return 1 ;;
-  esac
+  assert_origin devpi "$url" "six did not come through the devpi pull-through path" || return 1
 }
 
 # ---- S16: PEP 503 normalization cannot dodge the private shadow --------------------------------
@@ -783,10 +762,10 @@ s16_normalization() {
     code=${body##*$'\n'}
     body=${body%$'\n'*}
     [ "$code" = 200 ] || { echo "GET /pypi/simple/${s} -> HTTP ${code}, expected 200"; return 1; }
-    grep -q "/api/packages/${ARTEA_NAMESPACE}/pypi/files/" <<<"$body" \
-      || { echo "/pypi/simple/${s}: no Gitea file URLs — not the private package"; return 1; }
-    grep -q '/root/' <<<"$body" \
-      && { echo "/pypi/simple/${s}: devpi mirror URLs leaked into the response"; return 1; }
+    assert_contains "/api/packages/${ARTEA_NAMESPACE}/pypi/files/" "$body" \
+      "/pypi/simple/${s}: no Gitea file URLs — not the private package" || return 1
+    assert_not_contains "/root/" "$body" \
+      "/pypi/simple/${s}: devpi mirror URLs leaked into the response" || return 1
     echo "/pypi/simple/${s} -> 200 with Gitea file URLs only"
   done
   # pip, fed a non-canonical spelling, must install the private wheel from Gitea
@@ -794,10 +773,7 @@ s16_normalization() {
     --report "$report" "${PY_NAME_UNDERSCORE}==${PY_VERSION}" || { echo "pip install ${PY_NAME_UNDERSCORE} failed"; return 1; }
   url=$(jq -r '.install[0].download_info.url' "$report")
   echo "pip downloaded from: ${url}"
-  case "$url" in
-    */api/packages/"${ARTEA_NAMESPACE}"/pypi/files/*) ;;
-    *) echo "wheel did not come from Gitea"; return 1 ;;
-  esac
+  assert_origin gitea-pypi "$url" "wheel did not come from Gitea" || return 1
 }
 
 # ---- S17: legacy scoped .npmrc still works; encoded private-scope paths route to Gitea ------
@@ -812,7 +788,7 @@ s17_legacy_and_encoding() {
   (cd "$proj" && npm_config_userconfig="${npmrc_legacy}" npm_config_cache="${WORK}/npm-cache-s17" \
     npm install "${NPM_NAME}@${NPM_VERSION}") || { echo "legacy-npmrc npm install failed"; return 1; }
   version=$(jq -r .version "$proj/node_modules/${NPM_NAME}/package.json")
-  [ "$version" = "${NPM_VERSION}" ] || { echo "legacy install got ${version}, expected ${NPM_VERSION}"; return 1; }
+  assert_eq "${NPM_VERSION}" "$version" "legacy install version mismatch" || return 1
   echo "legacy two-registry .npmrc installs ${NPM_NAME}@${NPM_VERSION}"
 
   # b. packuments under /npm/: encoded and literal private-scope spellings both reach Gitea
@@ -821,8 +797,8 @@ s17_legacy_and_encoding() {
     code=${body##*$'\n'}
     body=${body%$'\n'*}
     [ "$code" = 200 ] || { echo "GET /npm/${spelling} -> HTTP ${code}, expected 200"; return 1; }
-    grep -qF "\"${NPM_VERSION}\"" <<<"$body" \
-      || { echo "/npm/${spelling}: packument does not contain ${NPM_VERSION}"; return 1; }
+    assert_contains "\"${NPM_VERSION}\"" "$body" \
+      "/npm/${spelling}: packument does not contain ${NPM_VERSION}" || return 1
     echo "/npm/${spelling} -> 200, packument contains ${NPM_VERSION}"
   done
 
@@ -835,14 +811,13 @@ s17_legacy_and_encoding() {
   # d. boundary: <scope>-evil must NOT be captured by the configured scope route — it falls
   # through to Verdaccio, which misses on npmjs (404). 400 would mean the
   # gateway's encoded-path rejection fired; 401 would mean Gitea answered.
-  code=$(http_code -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/@${ARTEA_NAMESPACE}-evil%2fnope")
-  [ "$code" = 404 ] || { echo "/npm/@${ARTEA_NAMESPACE}-evil%2fnope -> HTTP ${code}, expected 404 (Verdaccio miss)"; return 1; }
+  assert_code 404 -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/@${ARTEA_NAMESPACE}-evil%2fnope" \
+    || { echo "expected 404 (Verdaccio miss), not the Gitea route"; return 1; }
   echo "/npm/@${ARTEA_NAMESPACE}-evil%2fnope -> 404 from the Verdaccio path, not the Gitea route"
 
   # e. the private-scope route is guarded before Gitea; unauthenticated callers
   # get the gateway Basic challenge.
-  code=$(http_code "${GATEWAY_URL}/npm/${NPM_NAME_ENC}")
-  [ "$code" = 401 ] || { echo "anonymous /npm/${NPM_NAME_ENC} -> HTTP ${code}, expected 401"; return 1; }
+  assert_code 401 "${GATEWAY_URL}/npm/${NPM_NAME_ENC}" || return 1
   echo "anonymous /npm/${NPM_NAME_ENC} -> 401"
 }
 
@@ -887,7 +862,7 @@ s20_pep700_upload_time() {
 
   # c. non-JSON path is unchanged: a plain Accept must still get PEP 503 HTML,
   #    not the enriched JSON (regression guard for the byte-for-byte path).
-  body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/six/") \
+  body=$(gw_get /pypi/simple/six/) \
     || { echo "non-JSON six fetch failed"; return 1; }
   grep -q 'api-version' <<<"$body" && { echo "non-JSON path leaked JSON enrichment"; return 1; }
   echo "non-JSON path still serves PEP 503 HTML (no enrichment)"
@@ -925,7 +900,7 @@ s20_pep700_upload_time() {
 # is blocked. (docs/policy-schema.md "Precedence and evaluation (allow-wins)".)
 left_pad_only_130_visible() { # 1.3.0 present AND at least one other version hidden
   local body
-  body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/left-pad") || return 1
+  body=$(gw_get /npm/left-pad) || return 1
   grep -q '"1.3.0":' <<<"$body" || return 1   # the carved-out version stays
   ! grep -q '"1.2.0":' <<<"$body"             # a broader-deny version is gone
 }
@@ -957,7 +932,7 @@ reason = "e2e fixture (S18): vetted exact version"
 TOML
 )" "test(e2e): S18 allow 1.3.0 beats whole-package deny" || return 1
   wait_for 45 2 "only left-pad 1.3.0 visible (allow-wins carve-out)" left_pad_only_130_visible || return 1
-  body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/left-pad") || { echo "packument fetch failed"; return 1; }
+  body=$(gw_get /npm/left-pad) || { echo "packument fetch failed"; return 1; }
   grep -q '"1.3.0":' <<<"$body" || { echo "1.3.0 (allowed) is missing"; return 1; }
   grep -q '"1.2.0":' <<<"$body" && { echo "1.2.0 (denied) is still present"; return 1; }
   echo "allow-wins: left-pad 1.3.0 visible, 1.2.0 blocked by the broader deny"
@@ -1016,7 +991,7 @@ TOML
 
   # 3b. public fetch still works (the packument still resolves with versions;
   # 1.3.0 stays filtered per 3a, but the rest of the package is served)
-  curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/left-pad" \
+  gw_get /npm/left-pad \
     | jq -e '.versions | length > 0' >/dev/null \
     || { echo "public fetch broke during the malformed-policy window"; return 1; }
   echo "public fetch still works (left-pad packument still has versions)"

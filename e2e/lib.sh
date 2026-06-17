@@ -16,6 +16,50 @@ http_code() { # <curl args...> -> status code on stdout
   curl -sS -o /dev/null -w '%{http_code}' "$@"
 }
 
+# ---- assertion helpers (fold the mechanical shapes run.sh spells by hand) --------
+# Each prints a diagnostic and returns 1 on mismatch; scenarios `... || return 1`.
+assert_eq() { # <expected> <actual> <message>
+  [ "$1" = "$2" ] || { echo "${3}: expected '${1}', got '${2}'"; return 1; }
+}
+
+assert_code() { # <expected-code> <curl args...> ; runs http_code on the curl args
+  local expected=$1 code
+  shift
+  code=$(http_code "$@")
+  [ "$code" = "$expected" ] || { echo "expected HTTP ${expected}, got ${code} for: $*"; return 1; }
+}
+
+assert_contains() { # <needle> <haystack> <message>
+  case "$2" in
+    *"$1"*) ;;
+    *) echo "${3}: '${2}' does not contain '${1}'"; return 1 ;;
+  esac
+}
+
+assert_not_contains() { # <needle> <haystack> <message>
+  case "$2" in
+    *"$1"*) echo "${3}: '${2}' unexpectedly contains '${1}'"; return 1 ;;
+  esac
+}
+
+# Resolve a download/resolved URL against the expected origin glob. Keeps the
+# origin globs in one place so scenarios just name the kind.
+assert_origin() { # <kind> <url> <message> ; kind: gitea-npm|gitea-pypi|gateway|devpi
+  local kind=$1 url=$2 msg=$3
+  case "$kind" in
+    gitea-npm)  case "$url" in */api/packages/*/npm/*) return 0 ;; esac ;;
+    gitea-pypi) case "$url" in */api/packages/*/pypi/files/*) return 0 ;; esac ;;
+    gateway)    case "$url" in "${GATEWAY_URL}/npm/"*) return 0 ;; esac ;;
+    devpi)      case "$url" in */root/pypi/*) return 0 ;; esac ;;
+    *) echo "assert_origin: unknown kind '${kind}'"; return 1 ;;
+  esac
+  echo "${msg}: '${url}' is not a '${kind}' origin"; return 1
+}
+
+gw_get() { # <path> -> body on stdout (dev1 PAT, fail on HTTP error)
+  curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}$1"
+}
+
 # ---- Gitea API (admin token) ---------------------------------------------------
 # Results land in globals (not stdout) so callers never lose them to subshells.
 API_CODE=""
