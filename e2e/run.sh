@@ -312,6 +312,11 @@ s3_npm_install_private() {
 # ---- S4: npm install left-pad via Verdaccio pull-through ----------------------------------
 s4_npm_install_public() {
   local proj="${WORK}/proj-s4" resolved
+  # k8s HTTP-mode startup race: the Verdaccio filter fails closed (empty
+  # packument) until its first policy poll lands, so wait until public
+  # pull-through is live before installing. With the default-allow seed policy,
+  # left-pad 1.3.0 being visible == the filter has fetched the policy.
+  wait_for 60 2 "left-pad visible via Verdaccio pull-through (filter has policy)" left_pad_130_visible || return 1
   mkdir -p "$proj"
   echo '{"name":"e2e-consumer-s4","version":"1.0.0"}' > "$proj/package.json"
   (cd "$proj" && npm_e2e install left-pad@1.3.0) || { echo "npm install left-pad failed"; return 1; }
@@ -335,6 +340,10 @@ left_pad_130_visible() {
 
 s5_npm_policy_block() {
   local versions
+  # establish the visible baseline first (see S4): a fail-closed empty packument
+  # would otherwise satisfy the hidden-check below for the wrong reason, masking
+  # whether the block actually took effect.
+  wait_for 60 2 "left-pad 1.3.0 visible before applying the block" left_pad_130_visible || return 1
   POLICY_DIRTY=1
   put_policy_file policy.toml "${POLICY_BLOCK_LEFTPAD_130}" "test(e2e): S5 block left-pad 1.3.0" || return 1
   wait_for 45 2 "left-pad 1.3.0 filtered from packument" left_pad_130_hidden || return 1
