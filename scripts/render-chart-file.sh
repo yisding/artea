@@ -21,6 +21,16 @@ for tool in helm yq; do
   command -v "$tool" >/dev/null || { echo "ERROR: $tool is required to render chart files" >&2; exit 1; }
 done
 
+# Helm validates Chart.yaml dependencies before rendering (even with
+# --show-only), and deploy/helm/artea/charts/ is gitignored, so populate the
+# pinned subcharts from the committed Chart.lock on a fresh checkout. Idempotent
+# and offline once charts/ is populated; chatter goes to stderr so it never
+# pollutes the rendered file on stdout.
+if [ -z "$(ls -A deploy/helm/artea/charts 2>/dev/null || true)" ]; then
+  echo "render-chart-file: fetching Helm chart dependencies (first run)..." >&2
+  helm dependency build deploy/helm/artea >&2
+fi
+
 helm template artea deploy/helm/artea \
   --values deploy/helm/artea/values-local.yaml \
   --show-only "$template" "$@" \
