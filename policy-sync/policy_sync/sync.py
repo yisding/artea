@@ -13,14 +13,17 @@ import logging
 import time
 from pathlib import Path
 
+from .compiler import compile_policy
 from .config import Config
 from .devpi import CONSTRAINED_INDEX, DevpiError, apply_constraints
 from .files import write_atomic
 from .gitea import GiteaError, GiteaNotFound, fetch_raw
+from .policy_model import PolicyError, parse_policy
 from .store import PolicyStore
 
 log = logging.getLogger(__name__)
 
+UNIFIED_POLICY_FILE = "policy.toml"
 NPM_RULES_FILE = "npm-rules.yaml"
 PYPI_CONSTRAINTS_FILE = "pypi-constraints.txt"
 UPSTREAM_POLICY_FILE = "upstream-policy.yaml"
@@ -91,11 +94,8 @@ class Syncer:
                 pass
         return DEFAULT_MIN_UPSTREAM_AGE
 
-    def _sync_upstream(self) -> None:
-        data = self._fetch(UPSTREAM_POLICY_FILE)
-        if data is None:
-            return
-        self.min_upstream_age = self._extract_min_upstream_age(data)
+    def _emit_upstream(self, data: bytes) -> None:
+        """Deliver upstream-policy.yaml bytes to the store and/or the shared file."""
         if self.upstream_store is not None:
             self.upstream_store.set(data)
         dest = self.upstream_dest
@@ -108,10 +108,15 @@ class Syncer:
         else:
             log.debug("%s unchanged", dest)
 
-    def _sync_npm(self) -> None:
-        data = self._fetch(NPM_RULES_FILE)
+    def _sync_upstream(self) -> None:
+        data = self._fetch(UPSTREAM_POLICY_FILE)
         if data is None:
             return
+        self.min_upstream_age = self._extract_min_upstream_age(data)
+        self._emit_upstream(data)
+
+    def _emit_npm(self, data: bytes) -> None:
+        """Deliver npm policy bytes to the store and/or the shared volume file."""
         if self.store is not None:
             self.store.set(data)  # the /policy endpoint serves the new policy immediately
         dest = self.npm_dest
@@ -124,11 +129,15 @@ class Syncer:
         else:
             log.debug("%s unchanged", dest)
 
-    def _sync_pypi(self) -> None:
-        data = self._fetch(PYPI_CONSTRAINTS_FILE)
-        constraints_text = data.decode("utf-8", errors="replace") if data is not None else None
+    def _emit_pypi(self, constraints_text: str | None) -> None:
+        """Optionally write the debug file and apply constraints to devpi.
+
+        constraints_text is None only in legacy mode when the legacy file is
+        absent (preserve devpi's existing constraints, sync only min_age).
+        """
         dest = self.pypi_dest
-        if data is not None and dest is not None:
+        if constraints_text is not None and dest is not None:
+            data = constraints_text.encode("utf-8")
             dest.parent.mkdir(parents=True, exist_ok=True)
             if write_atomic(dest, data):
                 log.info("wrote %s (%d bytes)", dest, len(data))
@@ -139,15 +148,68 @@ class Syncer:
         # idempotency source of truth, so a wiped+recreated devpi (fail-closed
         # '*' seed) is healed by the next poll even with an unchanged policy
         if apply_constraints(self.cfg, constraints_text, self.min_upstream_age):
-            if data is None:
+            if constraints_text is None:
                 log.info("applied min_upstream_age=%s to %s", self.min_upstream_age, CONSTRAINED_INDEX)
             else:
-                log.info("applied %d bytes of constraints to %s", len(data), CONSTRAINED_INDEX)
+                log.info("applied %d bytes of constraints to %s", len(constraints_text), CONSTRAINED_INDEX)
         else:
             log.debug("constraints unchanged; devpi untouched")
 
+    def _sync_npm(self) -> None:
+        data = self._fetch(NPM_RULES_FILE)
+        if data is None:
+            return
+        self._emit_npm(data)
+
+    def _sync_pypi(self) -> None:
+        data = self._fetch(PYPI_CONSTRAINTS_FILE)
+        constraints_text = data.decode("utf-8", errors="replace") if data is not None else None
+        self._emit_pypi(constraints_text)
+
+    def _sync_unified(self) -> bool:
+        """Try the unified policy.toml compiler path.
+
+        Returns True if the unified file was present and fully handled (npm, pypi,
+        and min_age all delivered from policy.toml). Returns False if the unified
+        file is ABSENT (404) so the caller falls back to the legacy files. Raises
+        PolicyError for a structurally broken policy so the whole sync fails and
+        the previously applied policy stays in effect (last-known-good).
+        """
+        data = self._fetch(UNIFIED_POLICY_FILE)
+        if data is None:
+            return False  # absent -> legacy fallback; not an error
+
+        # Validate + compile fully before writing anything. A PolicyError here
+        # propagates and fails the sync; nothing is written, so enforcement keeps
+        # serving the previously applied (last-known-good) policy.
+        policy = parse_policy(data)
+        artifacts = compile_policy(policy)
+
+        self.min_upstream_age = artifacts.min_age
+        # The Verdaccio filter takes min_age solely from upstream-policy.yaml via
+        # the CompositePolicyLoader; deliver that artifact exactly like the legacy
+        # _sync_upstream so the unified path feeds the npm quarantine gate (and a
+        # fresh unified-only deployment does not fail closed for lack of the file).
+        self._emit_upstream(artifacts.upstream_yaml.encode("utf-8"))
+        self._emit_npm(artifacts.npm_yaml.encode("utf-8"))
+        # unified mode is authoritative: emit exactly what compiled (including an
+        # empty string, which clears the constraints).
+        self._emit_pypi(artifacts.pypi_constraints)
+        return True
+
     def sync_once(self) -> bool:
         """Run one sync. Returns True if nothing retryable failed."""
+        try:
+            if self._sync_unified():
+                return True  # policy.toml owned this sync end to end
+        except (GiteaError, DevpiError, OSError) as e:
+            log.error("unified policy sync failed: %s", e)
+            return False
+        except PolicyError as e:
+            log.error("unified policy is invalid; keeping last-known-good policy: %s", e)
+            return False
+
+        # policy.toml absent -> legacy three-file path, unchanged.
         ok = True
         try:
             self._sync_upstream()
