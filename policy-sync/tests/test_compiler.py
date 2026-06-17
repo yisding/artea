@@ -192,6 +192,18 @@ def test_pypi_default_deny_appends_star():
     assert _effective_lines(arts.pypi_constraints) == ["*"]
 
 
+def test_pypi_default_deny_range_deny_is_noop_not_allow():
+    # under default-deny the package is already blocked by '*'; a range deny must
+    # stay a no-op. Emitting the complement would be read by devpi as an ALLOW of
+    # the complement versions, perversely un-blocking what the operator denied.
+    arts = compile_toml(
+        'schema = 1\n[defaults]\naction = "allow"\n'
+        '[defaults.ecosystems.pypi]\naction = "deny"\n'
+        '[[rules]]\necosystem = "pypi"\nname = "requests"\nversions = ">=2.30"\naction = "deny"\n'
+    )
+    assert _effective_lines(arts.pypi_constraints) == ["*"]
+
+
 def test_pypi_default_deny_with_allow_passthrough():
     arts = compile_toml(
         'schema = 1\n[defaults]\naction = "allow"\n'

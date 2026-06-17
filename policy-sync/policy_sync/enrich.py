@@ -254,7 +254,13 @@ def build_v1_1(name: str, files: list[dict], versions: list[str]) -> dict:
 def _fetch_pypi_file_meta(name: str, pypi_json_url: str) -> dict[str, dict]:
     """Map exact filename -> {upload-time, size, requires-python, yanked} from
     the PyPI JSON API. This is the same source the devpi policy plugin parses
-    for the age gate, so the value we surface matches the value the gate used."""
+    for the age gate, so the value we surface matches the value the gate used.
+
+    Each entry also carries the AUTHORITATIVE canonical PEP 440 version under the
+    internal ``__version`` key (the `releases` dict KEY for that file), so the
+    caller can build top-level versions[] from PyPI's own normalization rather
+    than re-deriving it from the filename. ``__version`` is internal-only: callers
+    MUST NOT copy it into the emitted file object (it is filtered there)."""
     url = f"{pypi_json_url.rstrip('/')}/{urllib.parse.quote(name)}/json"
     try:
         raw = _get(url, {"Accept": "application/json"})
@@ -266,7 +272,7 @@ def _fetch_pypi_file_meta(name: str, pypi_json_url: str) -> dict[str, dict]:
     releases = data.get("releases")
     if not isinstance(releases, dict):
         return out
-    for _version, release_files in releases.items():
+    for version, release_files in releases.items():
         if not isinstance(release_files, list):
             continue
         for item in release_files:
@@ -275,7 +281,9 @@ def _fetch_pypi_file_meta(name: str, pypi_json_url: str) -> dict[str, dict]:
             filename = item.get("filename")
             if not isinstance(filename, str):
                 continue
-            entry: dict = {}
+            # Authoritative version is the releases dict KEY (PyPI's own canonical
+            # PEP 440 normalization), not a filename heuristic. Internal-only.
+            entry: dict = {"__version": version} if isinstance(version, str) else {}
             uploaded_raw = item.get("upload_time_iso_8601") or item.get("upload_time")
             iso = normalize_to_iso_z(uploaded_raw) if isinstance(uploaded_raw, str) else None
             if iso is not None:
@@ -373,13 +381,22 @@ def enrich_devpi(name: str, devpi_url: str, pypi_json_url: str) -> dict:
         # yanked/etc.) then layer the PEP 700 fields on top.
         out = dict(entry)
         extra = meta_by_filename.get(filename) if isinstance(filename, str) else None
+        authoritative_version = None
         if extra:
             for key, value in extra.items():
+                # __version is internal: it carries the authoritative release key
+                # for versions[] but must NOT leak into the emitted file object.
+                if key == "__version":
+                    authoritative_version = value
+                    continue
                 out.setdefault(key, value)
         if isinstance(filename, str):
             if "upload-time" not in out:
                 missing += 1
-            ver = version_from_filename(filename, name)
+            # Prefer PyPI's authoritative release key; fall back to the filename
+            # heuristic only for base files with no PyPI-JSON match (e.g. the
+            # metadata-degraded path, or a devpi file absent from PyPI).
+            ver = authoritative_version or version_from_filename(filename, name)
             if ver:
                 versions.append(ver)
         files.append(out)

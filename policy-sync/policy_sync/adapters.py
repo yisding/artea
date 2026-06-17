@@ -125,37 +125,28 @@ class NpmAdapter:
 # rejects -> the whole PATCH 400s -> ALL pypi denies fail to freeze.
 _PYPI_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 
-# PEP 440 version token (subset sufficient for specifiers): epoch, release,
-# pre/post/dev, and a trailing .* for == / != prefix matching.
-_PEP440_VERSION = (
+# PEP 440 version token core (subset sufficient for specifiers): epoch, release,
+# pre/post/dev. Defined once and shared by every pattern below so the three
+# version matchers cannot drift out of sync.
+_PEP440_CORE = (
     r"(?:\d+!)?\d+(?:\.\d+)*"          # [epoch!]release
     r"(?:(?:a|b|c|rc|alpha|beta|pre|preview)\.?\d*)?"  # pre-release
     r"(?:(?:-|\.|_)?(?:post|rev|r)\.?\d*)?"            # post-release
     r"(?:(?:-|\.|_)?dev\.?\d*)?"                        # dev-release
-    r"(?:\.\*)?"                                        # trailing wildcard
 )
+# version token with a trailing .* for == / != prefix matching.
+_PEP440_VERSION = _PEP440_CORE + r"(?:\.\*)?"
 _PEP440_SPEC = rf"(?:===|==|!=|<=|>=|~=|<|>)\s*{_PEP440_VERSION}"
 _PEP440_SET_RE = re.compile(rf"^\s*{_PEP440_SPEC}(?:\s*,\s*{_PEP440_SPEC})*\s*$")
 # a SINGLE complementable comparator: one of < <= > >= == against a plain
 # version (no wildcard, no comma-set). Captures (op, version).
-_PEP440_SINGLE_CMP_RE = re.compile(
-    r"^\s*(<=|>=|==|<|>)\s*"
-    r"((?:\d+!)?\d+(?:\.\d+)*"
-    r"(?:(?:a|b|c|rc|alpha|beta|pre|preview)\.?\d*)?"
-    r"(?:(?:-|\.|_)?(?:post|rev|r)\.?\d*)?"
-    r"(?:(?:-|\.|_)?dev\.?\d*)?)\s*$"
-)
+_PEP440_SINGLE_CMP_RE = re.compile(rf"^\s*(<=|>=|==|<|>)\s*({_PEP440_CORE})\s*$")
 _PEP440_COMPLEMENT_OP = {"<": ">=", "<=": ">", ">": "<=", ">=": "<", "==": "!="}
 # a plain dotted-numeric release with no epoch/pre/post/dev/local suffix — the
 # only shape whose ordering a bare int tuple can safely compare.
 _PEP440_PLAIN_RELEASE_RE = re.compile(r"\d+(?:\.\d+)*")
 # a single "==X" with no wildcard (an exact pin used by the allow escape hatch).
-_PEP440_EXACT_RE = re.compile(
-    r"^\s*==\s*((?:\d+!)?\d+(?:\.\d+)*"
-    r"(?:(?:a|b|c|rc|alpha|beta|pre|preview)\.?\d*)?"
-    r"(?:(?:-|\.|_)?(?:post|rev|r)\.?\d*)?"
-    r"(?:(?:-|\.|_)?dev\.?\d*)?)\s*$"
-)
+_PEP440_EXACT_RE = re.compile(rf"^\s*==\s*({_PEP440_CORE})\s*$")
 
 
 class PypiAdapter:

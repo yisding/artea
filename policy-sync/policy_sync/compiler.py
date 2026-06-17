@@ -257,13 +257,23 @@ def _validate_pypi_line(adapter: PypiAdapter, line: str) -> None:
 
 
 def _emit_pypi_ranges(
-    adapter: PypiAdapter, ranges: dict[str, list[tuple[str, str | None]]]
+    adapter: PypiAdapter,
+    ranges: dict[str, list[tuple[str, str | None]]],
+    default_deny: bool,
 ) -> list[str]:
     """Range denies -> devpi reads a constraint as an ALLOW set, so emit the
     COMPLEMENT of each deny range. Multiple denies for one package combine into a
     SINGLE comma-joined specifier (devpi rejects a repeated project name), the
     intersection of each deny's complement. Each emitted line is validated here.
+
+    Under default-deny every package is already blocked by the trailing '*', so a
+    range deny is redundant; emitting its complement would be read by devpi as an
+    ALLOW of the complement versions (a constraint line above '*' is an allow-list
+    entry), silently turning the deny into an allow. Skip them all, mirroring the
+    whole-package deny branch.
     """
+    if default_deny:
+        return []
     out: list[str] = []
     for name in sorted(ranges):
         specs = [
@@ -391,7 +401,7 @@ def _emit_pypi(eco: _EcosystemRules, adapter: PypiAdapter, default_action: Actio
         (exact_passthrough[name],) = versions
 
     lines: list[str] = []
-    lines += _emit_pypi_ranges(adapter, ranges)
+    lines += _emit_pypi_ranges(adapter, ranges, default_deny)
     lines += _emit_pypi_wholes(adapter, whole, default_deny)
     lines += _emit_pypi_allows(adapter, exact_passthrough, allow_passthrough)
     if default_deny:

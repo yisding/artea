@@ -122,8 +122,45 @@ def test_devpi_join_annotates_upload_time_and_size(stub):
     assert f["requires-python"] == ">=3.6"
     assert "yanked" not in f, "false yanked is not surfaced"
     assert f["hashes"] == {"sha256": "abc"}  # base entry preserved verbatim
+    assert "__version" not in f, "internal version key must not leak into output"
     assert "1.0.0" in doc["versions"]
     assert "2.0.0" not in doc["versions"], "version not in the served file set is absent"
+
+
+def test_devpi_versions_use_authoritative_release_key_not_filename(stub):
+    # The base file's name embeds a version string ("1.0.0") that the filename
+    # heuristic would extract, but PyPI's authoritative release KEY normalizes it
+    # to a different canonical form ("1.0.0.post1+local"). versions[] must reflect
+    # the authoritative key, NOT the heuristic-extracted "1.0.0".
+    fname = "weird_pkg-1.0.0-py3-none-any.whl"
+    stub.route("/root/constrained/+simple/weird-pkg/", lambda h: _reply(
+        h, 200, json.dumps({"meta": {"api-version": "1.0"}, "name": "weird-pkg",
+                            "files": [{"filename": fname, "url": "http://x/f.whl", "hashes": {}}]}),
+        "application/vnd.pypi.simple.v1+json"))
+    stub.route("/weird-pkg/json", lambda h: _reply(h, 200, _pypi_json({
+        "1.0.0.post1+local": [{"filename": fname, "upload_time_iso_8601": "2023-06-15T10:23:45.123456Z"}],
+    })))
+
+    doc = enrich.enrich_devpi("weird-pkg", stub.url, stub.url)
+    assert doc["versions"] == ["1.0.0.post1+local"], "authoritative release key, not the heuristic 1.0.0"
+    # heuristic would have produced "1.0.0"; prove it did not
+    assert "1.0.0" not in doc["versions"]
+    assert "__version" not in doc["files"][0], "internal version key must not leak into output"
+
+
+def test_devpi_version_falls_back_to_filename_when_no_pypi_match(stub):
+    # A devpi file with no PyPI-JSON entry must still contribute a version via the
+    # filename heuristic fallback (the contract still relies on it).
+    fname = "six-9.9.9-py3-none-any.whl"
+    stub.route("/root/constrained/+simple/six/", lambda h: _reply(
+        h, 200, _devpi_simple([{"filename": fname, "url": "http://x/f.whl", "hashes": {}}]),
+        "application/vnd.pypi.simple.v1+json"))
+    stub.route("/six/json", lambda h: _reply(h, 200, _pypi_json({
+        "1.0.0": [{"filename": "six-1.0.0-py3-none-any.whl", "upload_time_iso_8601": "2023-06-15T10:23:45.123456Z"}],
+    })))
+
+    doc = enrich.enrich_devpi("six", stub.url, stub.url)
+    assert doc["versions"] == ["9.9.9"], "no PyPI match -> filename heuristic fallback"
 
 
 def test_devpi_filename_miss_keeps_file_without_upload_time(stub):
