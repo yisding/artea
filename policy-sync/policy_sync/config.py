@@ -49,12 +49,18 @@ class Config:
         if policy_file_path is None:
             policy_dir = env.get("POLICY_DIR", "/policy").rstrip("/")
             policy_file_path = f"{policy_dir}/npm-rules.yaml"
+
+        # a sibling artifact in the same directory as npm-rules.yaml; "" preserves
+        # HTTP-only mode (no policy file path -> no derived file paths either).
+        def _sibling(name: str) -> str:
+            return os.path.join(os.path.dirname(policy_file_path), name) if policy_file_path else ""
+
         upstream_policy_file_path = env.get("UPSTREAM_POLICY_FILE_PATH")
         if upstream_policy_file_path is None:
-            upstream_policy_file_path = str(os.path.join(os.path.dirname(policy_file_path), "upstream-policy.yaml")) if policy_file_path else ""
+            upstream_policy_file_path = _sibling("upstream-policy.yaml")
         pypi_policy_file_path = env.get("PYPI_POLICY_FILE_PATH")
         if pypi_policy_file_path is None:
-            pypi_policy_file_path = str(os.path.join(os.path.dirname(policy_file_path), "pypi-constraints.txt")) if policy_file_path else ""
+            pypi_policy_file_path = _sibling("pypi-constraints.txt")
         namespace = env.get("ARTEA_NAMESPACE", "artea")
 
         return cls(

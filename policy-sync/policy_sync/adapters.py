@@ -22,20 +22,8 @@ from ``exact_value``.
 """
 
 import re
-from typing import Protocol
 
 from .policy_model import PolicyError
-
-
-class Adapter(Protocol):
-    ecosystem: str
-
-    def normalize_name(self, name: str) -> str: ...
-    def supports_namespace(self) -> bool: ...
-    def normalize_namespace(self, ns: str) -> str: ...
-    def validate_range(self, expr: str) -> None: ...
-    def is_exact(self, expr: str) -> bool: ...
-    def exact_value(self, expr: str) -> str: ...
 
 
 # --------------------------------------------------------------------------- npm
@@ -158,6 +146,9 @@ _PEP440_SINGLE_CMP_RE = re.compile(
     r"(?:(?:-|\.|_)?dev\.?\d*)?)\s*$"
 )
 _PEP440_COMPLEMENT_OP = {"<": ">=", "<=": ">", ">": "<=", ">=": "<", "==": "!="}
+# a plain dotted-numeric release with no epoch/pre/post/dev/local suffix — the
+# only shape whose ordering a bare int tuple can safely compare.
+_PEP440_PLAIN_RELEASE_RE = re.compile(r"\d+(?:\.\d+)*")
 # a single "==X" with no wildcard (an exact pin used by the allow escape hatch).
 _PEP440_EXACT_RE = re.compile(
     r"^\s*==\s*((?:\d+!)?\d+(?:\.\d+)*"
@@ -214,8 +205,63 @@ class PypiAdapter:
         op, version = m.group(1), m.group(2)
         return f"{_PEP440_COMPLEMENT_OP[op]}{version}"
 
+    def _release_tuple(self, version: str) -> tuple[int, ...] | None:
+        """Return the dotted-numeric release of a plain PEP 440 version as an int
+        tuple, or None if it carries a pre/post/dev/epoch suffix (not safely
+        comparable with a bare tuple). Used only for the contradiction check below.
+        """
+        # strip an epoch (we can't compare across epochs with a plain tuple)
+        if "!" in version:
+            return None
+        # a pre/post/dev/local suffix makes simple tuple ordering unsafe; bail out.
+        if not _PEP440_PLAIN_RELEASE_RE.fullmatch(version):
+            return None
+        return tuple(int(p) for p in version.split("."))
 
-ADAPTERS: dict[str, Adapter] = {
-    "npm": NpmAdapter(),
-    "pypi": PypiAdapter(),
-}
+    def complement_set_is_empty(self, specs: list[str]) -> bool:
+        """Detect a contradictory two-sided combined complement (an empty allow-set).
+
+        Each spec here is a single-comparator complement the compiler produced from
+        a deny (so the combined form is always bounds-only). When the specs reduce
+        to a lower bound (>=A / >A) AND an upper bound (<B / <=B) with A and B
+        comparable dotted-numeric versions and the bounds cross (lower > upper, or
+        touch with an exclusive endpoint), the allow-set is empty and the package
+        would be silently blocked whole. Conservative: only flags a provable
+        contradiction.
+        """
+        lower: tuple[tuple[int, ...], bool] | None = None  # (version, inclusive)
+        upper: tuple[tuple[int, ...], bool] | None = None
+        for spec in specs:
+            m = _PEP440_SINGLE_CMP_RE.match(spec)
+            if not m:
+                return False  # not a simple bound (e.g. != complement); cannot decide
+            op, ver = m.group(1), m.group(2)
+            if op == "==":
+                return False  # an equality is not a one-sided bound
+            rel = self._release_tuple(ver)
+            if rel is None:
+                return False
+            if op in (">", ">="):
+                cand = (rel, op == ">=")
+                if lower is None or cand[0] > lower[0]:
+                    lower = cand
+            else:  # < or <=
+                cand = (rel, op == "<=")
+                if upper is None or cand[0] < upper[0]:
+                    upper = cand
+        if lower is None or upper is None:
+            return False
+        lo_v, lo_incl = lower
+        up_v, up_incl = upper
+        if lo_v > up_v:
+            return True
+        if lo_v == up_v and not (lo_incl and up_incl):
+            return True
+        return False
+
+
+# The adapter concept is the ADR-0007 extension seam; only one instance of each
+# is ever needed (they are stateless), so expose them as module constants rather
+# than via a dispatch registry.
+NPM = NpmAdapter()
+PYPI = PypiAdapter()

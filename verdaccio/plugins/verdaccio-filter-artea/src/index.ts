@@ -66,8 +66,13 @@ export function parseTarballPath(rawPath: string): TarballRef | null {
   return { name, version };
 }
 
+/** The packument's per-version publish-time map (`time`), or undefined when absent. */
+function timeMap(metadata: Manifest): Record<string, unknown> | undefined {
+  return metadata.time as Record<string, unknown> | undefined;
+}
+
 function publishTimeMs(metadata: Manifest, version: string): number | null {
-  const raw = (metadata.time as Record<string, unknown> | undefined)?.[version];
+  const raw = timeMap(metadata)?.[version];
   if (typeof raw !== 'string') {
     return null;
   }
@@ -162,7 +167,7 @@ export default class FilterArtea
     for (const version of removed) {
       delete clone.versions[version];
       if (clone.time) {
-        delete (clone.time as Record<string, unknown>)[version];
+        delete timeMap(clone)![version];
       }
     }
     repairDistTags(clone, new Set(removed));
@@ -222,7 +227,7 @@ export default class FilterArtea
   }
 
   private rememberPublishTimes(metadata: Manifest): void {
-    const times = metadata.time as Record<string, unknown> | undefined;
+    const times = timeMap(metadata);
     if (!times) {
       return;
     }

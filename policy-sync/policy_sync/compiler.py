@@ -19,10 +19,9 @@ before the caller writes anything, so a broken policy never touches enforcement
 (last-known-good is preserved by the caller).
 """
 
-import re
 from dataclasses import dataclass, field
 
-from .adapters import ADAPTERS, Adapter
+from .adapters import NPM, PYPI, NpmAdapter, PypiAdapter
 from .policy_model import Action, Policy, PolicyError, Rule
 
 
@@ -50,7 +49,9 @@ class _EcosystemRules:
     namespace_allows: set[str] = field(default_factory=set)
 
 
-def _classify(rules: tuple[Rule, ...], ecosystem: str, adapter: Adapter) -> _EcosystemRules:
+def _classify(
+    rules: tuple[Rule, ...], ecosystem: str, adapter: NpmAdapter | PypiAdapter
+) -> _EcosystemRules:
     """Normalize + validate every rule for one ecosystem into deny/allow buckets."""
     out = _EcosystemRules()
     for i, rule in enumerate(rules):
@@ -140,7 +141,7 @@ def _npm_quote(s: str) -> str:
     return "".join(out)
 
 
-def _resolve_npm(eco: _EcosystemRules, adapter: Adapter) -> tuple[list[str], list, dict]:
+def _resolve_npm(eco: _EcosystemRules, adapter: NpmAdapter) -> tuple[list[str], list, dict]:
     """Apply allow-wins and return (scopes, packages, ranges) ready to emit.
 
     packages: sorted list of bare whole-package deny names.
@@ -202,7 +203,7 @@ def _covered_by_scope(name: str, scopes: set[str]) -> bool:
 
 
 def _emit_npm(
-    eco: _EcosystemRules, adapter: Adapter, min_age: str, default_action: Action
+    eco: _EcosystemRules, adapter: NpmAdapter, min_age: str, default_action: Action
 ) -> str:
     if default_action is Action.DENY:
         raise PolicyError(
@@ -241,63 +242,100 @@ def _emit_npm(
 # ---------------------------------------------------------------- pypi emission
 
 
-def _pep440_release_tuple(version: str) -> tuple[int, ...] | None:
-    """Return the dotted-numeric release of a plain PEP 440 version as an int
-    tuple, or None if it carries a pre/post/dev/epoch suffix (not safely
-    comparable with a bare tuple). Used only for the contradiction check below.
+def _validate_pypi_line(adapter: PypiAdapter, line: str) -> None:
+    """Round-trip guard for a single emitted constraints line: the specifier
+    portion (everything from the first comparator char) must be a valid PEP 440
+    specifier the engine accepts. Bare passthrough names and '*' carry no
+    comparator and are exempt.
     """
-    # strip an epoch (we can't compare across epochs with a plain tuple)
-    if "!" in version:
-        return None
-    # a pre/post/dev/local suffix makes simple tuple ordering unsafe; bail out.
-    if not re.fullmatch(r"\d+(?:\.\d+)*", version):
-        return None
-    return tuple(int(p) for p in version.split("."))
+    if not any(op in line for op in ("==", "!=", "<", ">", "~=")):
+        return
+    for i, ch in enumerate(line):
+        if ch in "=!<>~":
+            adapter.validate_range(line[i:])
+            return
 
 
-def _combined_complement_is_empty(specs: list[str]) -> bool:
-    """Detect a contradictory two-sided combined complement (an empty allow-set).
-
-    Each spec here is a single-comparator complement the compiler produced from a
-    deny (so the combined form is always bounds-only). When the specs reduce to a
-    lower bound (>=A / >A) AND an upper bound (<B / <=B) with A and B comparable
-    dotted-numeric versions and the bounds cross (lower > upper, or touch with an
-    exclusive endpoint), the allow-set is empty and the package would be silently
-    blocked whole. Conservative: only flags a provable contradiction.
+def _emit_pypi_ranges(
+    adapter: PypiAdapter, ranges: dict[str, list[tuple[str, str | None]]]
+) -> list[str]:
+    """Range denies -> devpi reads a constraint as an ALLOW set, so emit the
+    COMPLEMENT of each deny range. Multiple denies for one package combine into a
+    SINGLE comma-joined specifier (devpi rejects a repeated project name), the
+    intersection of each deny's complement. Each emitted line is validated here.
     """
-    lower: tuple[tuple[int, ...], bool] | None = None  # (version, inclusive)
-    upper: tuple[tuple[int, ...], bool] | None = None
-    for spec in specs:
-        m = re.fullmatch(r"\s*(<=|>=|<|>)\s*(\S+)\s*", spec)
-        if not m:
-            return False  # not a simple bound (e.g. != complement); cannot decide
-        op, ver = m.group(1), m.group(2)
-        rel = _pep440_release_tuple(ver)
-        if rel is None:
-            return False
-        if op in (">", ">="):
-            cand = (rel, op == ">=")
-            if lower is None or cand[0] > lower[0]:
-                lower = cand
-        else:  # < or <=
-            cand = (rel, op == "<=")
-            if upper is None or cand[0] < upper[0]:
-                upper = cand
-    if lower is None or upper is None:
-        return False
-    lo_v, lo_incl = lower
-    up_v, up_incl = upper
-    if lo_v > up_v:
-        return True
-    if lo_v == up_v and not (lo_incl and up_incl):
-        return True
-    return False
+    out: list[str] = []
+    for name in sorted(ranges):
+        specs = [
+            adapter.complement(rng)
+            for rng, _reason in sorted(ranges[name], key=lambda t: t[0])
+        ]
+        combined = ",".join(specs)
+        # round-trip guard: the combined complement must be one valid specifier set.
+        try:
+            adapter.validate_range(combined)
+        except PolicyError:
+            raise PolicyError(
+                f"pypi: the denies for '{name}' combine into "
+                f"{combined!r}, which is not a single valid PEP 440 "
+                f"specifier set devpi can accept"
+            ) from None
+        # the combined specifier can be syntactically valid yet describe an EMPTY
+        # allow-set (e.g. deny >=2 + deny <5 -> complements >=5,<2). That would
+        # silently block the whole package, which the round-trip syntax guard
+        # above cannot catch. Reject it with an actionable message.
+        if adapter.complement_set_is_empty(specs):
+            raise PolicyError(
+                f"pypi: the denies for '{name}' combine into {combined!r}, an "
+                f"empty allow-set that would silently block the whole package; "
+                f"use a whole-package deny instead"
+            )
+        line = f"{name}{combined}"
+        _validate_pypi_line(adapter, line)
+        out.append(line)
+    return out
 
 
-def _emit_pypi(eco: _EcosystemRules, adapter: Adapter, default_action: Action) -> str:
+def _emit_pypi_wholes(
+    adapter: PypiAdapter, whole: dict[str, str | None], default_deny: bool
+) -> list[str]:
+    """Whole-package denies -> '==0' kill sentinel under default-allow; under
+    default-deny the package is already blocked by the trailing '*'.
+    """
+    if default_deny:
+        return []
+    out: list[str] = []
+    for name in sorted(whole):
+        line = f"{name}==0"
+        _validate_pypi_line(adapter, line)
+        out.append(line)
+    return out
+
+
+def _emit_pypi_allows(
+    adapter: PypiAdapter,
+    exact_passthrough: dict[str, str],
+    allow_passthrough: set[str],
+) -> list[str]:
+    """Allow passthroughs, in emit order: exact-version allows (constrain to ==v,
+    the only version that passes — whether carving out of a whole-package deny or
+    whitelisting under default-deny), then whole-package allows under default-deny
+    (the bare name listed above '*').
+    """
+    out: list[str] = []
+    for name in sorted(exact_passthrough):
+        line = f"{name}=={exact_passthrough[name]}"
+        _validate_pypi_line(adapter, line)
+        out.append(line)
+    # whole-package allow under default-deny -> list the bare name above '*'.
+    for name in sorted(allow_passthrough):
+        _validate_pypi_line(adapter, name)
+        out.append(name)
+    return out
+
+
+def _emit_pypi(eco: _EcosystemRules, adapter: PypiAdapter, default_action: Action) -> str:
     default_deny = default_action is Action.DENY
-
-    lines: list[str] = []
 
     whole = dict(eco.whole_denies)
     ranges: dict[str, list[tuple[str, str | None]]] = {
@@ -352,60 +390,10 @@ def _emit_pypi(eco: _EcosystemRules, adapter: Adapter, default_action: Action) -
             )
         (exact_passthrough[name],) = versions
 
-    emitted: list[str] = []
-    # range denies -> devpi reads a constraint as an ALLOW set, so emit the
-    # COMPLEMENT of each deny range. Multiple denies for one package combine into
-    # a SINGLE comma-joined specifier (devpi rejects a repeated project name), the
-    # intersection of each deny's complement.
-    for name in sorted(ranges):
-        specs = [
-            adapter.complement(rng)  # type: ignore[attr-defined]
-            for rng, _reason in sorted(ranges[name], key=lambda t: t[0])
-        ]
-        combined = ",".join(specs)
-        # round-trip guard: the combined complement must be one valid specifier set.
-        try:
-            adapter.validate_range(combined)
-        except PolicyError:
-            raise PolicyError(
-                f"pypi: the denies for '{name}' combine into "
-                f"{combined!r}, which is not a single valid PEP 440 "
-                f"specifier set devpi can accept"
-            ) from None
-        # the combined specifier can be syntactically valid yet describe an EMPTY
-        # allow-set (e.g. deny >=2 + deny <5 -> complements >=5,<2). That would
-        # silently block the whole package, which the round-trip syntax guard
-        # above cannot catch. Reject it with an actionable message.
-        if _combined_complement_is_empty(specs):
-            raise PolicyError(
-                f"pypi: the denies for '{name}' combine into {combined!r}, an "
-                f"empty allow-set that would silently block the whole package; "
-                f"use a whole-package deny instead"
-            )
-        emitted.append(f"{name}{combined}")
-    # whole-package denies -> '==0' kill sentinel under default-allow; under
-    # default-deny the package is already blocked by the trailing '*'.
-    for name in sorted(whole):
-        if not default_deny:
-            emitted.append(f"{name}==0")
-    # exact-version allow -> constrain to ==v (the only version that passes,
-    # whether carving out of a whole-package deny or whitelisting under default-deny).
-    for name in sorted(exact_passthrough):
-        emitted.append(f"{name}=={exact_passthrough[name]}")
-    # whole-package allow under default-deny -> list the bare name above '*'.
-    for name in sorted(allow_passthrough):
-        emitted.append(name)
-
-    # round-trip guard: every emitted line that carries a specifier must be a
-    # valid PEP 440 specifier (bare passthrough names and '*' are exempt).
-    for line in emitted:
-        if any(op in line for op in ("==", "!=", "<", ">", "~=")):
-            for i, ch in enumerate(line):
-                if ch in "=!<>~":
-                    adapter.validate_range(line[i:])
-                    break
-
-    lines.extend(emitted)
+    lines: list[str] = []
+    lines += _emit_pypi_ranges(adapter, ranges)
+    lines += _emit_pypi_wholes(adapter, whole, default_deny)
+    lines += _emit_pypi_allows(adapter, exact_passthrough, allow_passthrough)
     if default_deny:
         lines.append("*")
 
@@ -421,8 +409,8 @@ def compile_policy(policy: Policy) -> CompiledArtifacts:
     Validates the whole policy and produces all artifacts before returning, so a
     partial/inconsistent emit is never handed to the caller.
     """
-    npm_adapter = ADAPTERS["npm"]
-    pypi_adapter = ADAPTERS["pypi"]
+    npm_adapter = NPM
+    pypi_adapter = PYPI
 
     npm_eco = _classify(policy.rules, "npm", npm_adapter)
     pypi_eco = _classify(policy.rules, "pypi", pypi_adapter)
