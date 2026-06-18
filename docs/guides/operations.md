@@ -146,6 +146,9 @@ schema = 1
 [defaults]
 action = "allow"
 
+[osv]
+malicious_packages = true
+
 [[rules]]
 ecosystem = "npm"
 name = "left-pad"
@@ -156,11 +159,14 @@ reason = "example block"
 
 After merge, policy-sync compiles `policy.toml` into the per-engine artifacts
 (`npm-rules.yaml`, `upstream-policy.yaml`, `pypi-constraints.txt`) the engines
-consume — you do **not** edit those by hand. `policy.toml` is the only authoring
-input. A `policy.toml` that is absent or fails to parse or compile fails the
-sync and **keeps the last-known-good** enforcement in effect (it is never
-silently downgraded); the error is logged and `/healthz` reports
-`last_sync_ok: false`.
+consume — you do **not** edit those by hand. When
+`[osv] malicious_packages = true`, policy-sync also answers inline OSV
+malicious-package verdicts for the versions Verdaccio and devpi are already
+serving; only OSV `MAL-*` IDs block, and curated `allow` rules are the
+false-positive override. `policy.toml` is the only authoring input. A
+`policy.toml` that is absent or fails to parse or compile fails the sync and
+**keeps the last-known-good** enforcement in effect (it is never silently
+downgraded); the error is logged and `/healthz` reports `last_sync_ok: false`.
 
 **Verifying a sync.** Check policy-sync health for `last_sync_ok`:
 
@@ -189,6 +195,9 @@ e2e S15):
   age gate cannot be verified against PyPI JSON upload-time metadata, the
   devpi policy plugin hides/rejects the unverifiable public files rather than
   serving them unfiltered.
+- **OSV unavailable**: inline OSV malicious-package checks fail open for uncached
+  versions, while any fresh cached malicious verdicts remain blocking. The
+  curated compiled policy above remains fail-closed.
 
 Recovery is policy-sync's job and needs no manual steps: it syncs at startup,
 on every push webhook of `${ARTEA_NAMESPACE}/registry-policy`, and on a 5-minute fallback

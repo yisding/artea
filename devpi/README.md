@@ -85,9 +85,11 @@ retrying succeeds.
 
 Constraints are the `constraints` config key (list of requirement lines) on
 `root/constrained`. The shared upstream recency gate is `min_upstream_age`, an
-ISO 8601 duration such as `P3D` or `PT72H` (`P0D` disables it). Only `root` may
-modify these keys; devpi accepts HTTP Basic `root:$DEVPI_ROOT_PASSWORD`
-directly, so no login dance is needed.
+ISO 8601 duration such as `P3D` or `PT72H` (`P0D` disables it). The optional
+`osv_url` key points at policy-sync's internal `POST /osv/querybatch` endpoint;
+when set, the plugin hides/rejects public versions policy-sync reports as OSV
+malicious. Only `root` may modify these keys; devpi accepts HTTP Basic
+`root:$DEVPI_ROOT_PASSWORD` directly, so no login dance is needed.
 
 **Use the JSON API, not devpi-client.** Because the server runs with
 `--outside-url`, its `/+api` discovery response makes devpi-client rewrite its
@@ -112,7 +114,9 @@ the plugin normalizes strings itself, skipping blanks and `#` comments, so
 policy-sync can push the `pypi-constraints.txt` content as-is.
 Setting `"constraints": []` (or an empty string) restores **allow-all** — that is
 the plugin's no-constraints behavior; a single `*` line is default-deny. The
-plugin validates `min_upstream_age` when policy-sync PATCHes the index.
+plugin validates `min_upstream_age` when policy-sync PATCHes the index. If
+`osv_url` is unset in index config, the plugin falls back to `ARTEA_OSV_URL`.
+OSV lookup failures fail open for uncached versions.
 
 ## Persistence
 
@@ -131,6 +135,7 @@ plugin validates `min_upstream_age` when policy-sync PATCHes the index.
 | `DEVPI_PORT` | `3141` | listen port (contract value; only override in tests) |
 | `DEVPI_STARTUP_TIMEOUT` | `60` | seconds to wait for the server before the entrypoint gives up |
 | `DEVPI_ONESHOT` | `0` | `1` = init + ensure index, then exit (used by tests) |
+| `ARTEA_OSV_URL` | empty | policy-sync OSV verdict endpoint used when `root/constrained` has no `osv_url` config |
 
 ## Version pins
 

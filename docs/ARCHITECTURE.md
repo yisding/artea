@@ -234,18 +234,30 @@ upstream policies over HTTP for Kubernetes, and pushes the PyPI constraints plus
 `min_upstream_age` into devpi. Unchanged inputs compile byte-stably, so a no-op
 push does not bump the artifacts' mtime/ETag.
 
+When `[osv] malicious_packages = true`, policy-sync also serves
+`POST /osv/querybatch` as a cluster-internal runtime verdict endpoint. Verdaccio
+and devpi call it for the public package versions they are already listing or
+serving; policy-sync translates those requests to OSV.dev `querybatch` calls and
+caches bounded per-version verdicts. Only OpenSSF `MAL-*` IDs block. Curated
+`allow` rules override OSV hits, and OSV lookup failures fail open for uncached
+versions so Artea does not need to mirror the OSV database.
+
 **Enforcement depth (npm):** the filter plugin filters packuments (metadata) AND the
 same package registers a Verdaccio middleware that rejects tarball downloads
 (`GET .../-/<file>.tgz`) of blocked or too-new versions with 403 — blocks cannot
 be bypassed by constructing the tarball URL directly. For cold direct tarball
 requests under an active age gate, the middleware fetches npm registry metadata
 for publish timestamps and fails closed if it cannot verify the version age.
+When OSV filtering is enabled, the same packument and tarball paths also consult
+policy-sync's OSV verdict endpoint.
 
 **Enforcement depth (PyPI):** Artea's devpi policy plugin keeps the
 `type=constrained` index contract and filters the public simple index by version
 constraints and upstream upload time. It also guards direct `root/pypi` public
 file URLs inside devpi; when an age gate is active, a file without known
-project/upload-time context is rejected rather than served unverified.
+project/upload-time context is rejected rather than served unverified. With OSV
+filtering enabled, the same simple-link and direct-file decisions exclude
+versions policy-sync reports as OSV malicious.
 
 **Failure mode is fail-closed:** if `/policy/npm-rules.yaml` or
 `/policy/upstream-policy.yaml` is missing or unparsable,
@@ -258,6 +270,9 @@ constraint (block everything) and `min_upstream_age=P0D` so a wiped cache volume
 is closed until policy-sync's next successful sync replaces it with the real
 policy. With an active age gate, the devpi policy plugin rejects public versions
 or direct file URLs whose upload time cannot be verified from PyPI metadata.
+The OSV malicious-package layer is the exception to the fail-closed rule: OSV
+service failures fail open for uncached versions while fresh cached malicious
+verdicts remain blocking.
 
 **Governance:** policy changes go through PRs and are enforceably auditable:
 `registry-policy`'s default branch carries branch protection (no direct pushes except

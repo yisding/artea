@@ -82,6 +82,7 @@ services:
     container_name: devpi
     environment:
       DEVPI_ROOT_PASSWORD: ${DEVPI_ROOT_PASSWORD}
+      ARTEA_OSV_URL: http://policy-sync:8920/osv/querybatch
     volumes:
       - devpi-data:/devpi/server
     # healthcheck (GET /+status) is baked into the image
@@ -99,6 +100,7 @@ services:
       ARTEA_NAMESPACE: ${ARTEA_NAMESPACE:-artea}
       POLICY_REPO: ${POLICY_REPO:-}
       DEVPI_ROOT_PASSWORD: ${DEVPI_ROOT_PASSWORD}
+      OSV_API_URL: ${OSV_API_URL:-https://api.osv.dev}
     volumes:
       - policy-data:/policy
     depends_on:

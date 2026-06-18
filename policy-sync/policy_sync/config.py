@@ -28,6 +28,11 @@ class Config:
     # Config(...) construction sites (tests) working without changes.
     namespace: str = "artea"
     pypi_json_url: str = "https://pypi.org/pypi"
+    osv_api_url: str = "https://api.osv.dev"
+    osv_timeout_seconds: float = 5.0
+    osv_positive_ttl_seconds: float = 3600.0
+    osv_negative_ttl_seconds: float = 900.0
+    osv_batch_size: int = 100
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Config":
@@ -42,6 +47,15 @@ class Config:
             poll_interval = float(env.get("POLICY_SYNC_POLL_SECONDS", "300"))
         except ValueError as e:
             raise ConfigError(f"invalid numeric environment variable: {e}") from e
+        try:
+            osv_timeout = float(env.get("OSV_TIMEOUT_SECONDS", "5"))
+            osv_positive_ttl = float(env.get("OSV_POSITIVE_TTL_SECONDS", "3600"))
+            osv_negative_ttl = float(env.get("OSV_NEGATIVE_TTL_SECONDS", "900"))
+            osv_batch_size = int(env.get("OSV_BATCH_SIZE", "100"))
+        except ValueError as e:
+            raise ConfigError(f"invalid numeric environment variable: {e}") from e
+        if osv_timeout <= 0 or osv_positive_ttl <= 0 or osv_negative_ttl <= 0 or osv_batch_size <= 0:
+            raise ConfigError("OSV timeout, TTLs, and batch size must be positive")
 
         # POLICY_FILE_PATH unset -> compose default under POLICY_DIR;
         # set to "" -> HTTP-only mode (the /policy endpoint is the only output)
@@ -78,4 +92,9 @@ class Config:
             # PyPI JSON API base for PEP 700 upload-time enrichment of public
             # (devpi pull-through) packages; same source the devpi age gate uses.
             pypi_json_url=env.get("PYPI_JSON_URL", "https://pypi.org/pypi").rstrip("/"),
+            osv_api_url=env.get("OSV_API_URL", "https://api.osv.dev").rstrip("/"),
+            osv_timeout_seconds=osv_timeout,
+            osv_positive_ttl_seconds=osv_positive_ttl,
+            osv_negative_ttl_seconds=osv_negative_ttl,
+            osv_batch_size=osv_batch_size,
         )

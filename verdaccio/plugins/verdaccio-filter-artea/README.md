@@ -14,7 +14,9 @@ the shared upstream age policy
   tarball downloads — `GET /{pkg}/-/{file}.tgz`, scoped
   `GET /@{scope}/{pkg}/-/{file}.tgz`, and their URL-encoded variants (`%2f`, `%40`) —
   and answers `403` with a JSON error for blocked names, scopes, versions, and
-  versions younger than the configured upstream age.
+  versions younger than the configured upstream age. When `osv_url` is set, both
+  metadata and tarball paths also reject versions policy-sync reports as OSV
+  malicious.
   Metadata filtering alone can be bypassed by constructing the tarball URL directly
   (e2e scenario S13); the middleware closes that hole. The version is derived from
   the filename by stripping the exact `<unscoped-name>-` prefix, so hyphenated names
@@ -34,16 +36,21 @@ filters:
   filter-artea:
     policy_file: /policy/npm-rules.yaml   # default; the shared policy-data volume
     upstream_policy_file: /policy/upstream-policy.yaml
+    osv_url: http://policy-sync:8920/osv/querybatch
+    osv_timeout_ms: 5000
     npm_registry_url: https://registry.npmjs.org
 
 middlewares:
   filter-artea:                           # same package, middleware role (S13)
     policy_file: /policy/npm-rules.yaml
     upstream_policy_file: /policy/upstream-policy.yaml
+    osv_url: http://policy-sync:8920/osv/querybatch
+    osv_timeout_ms: 5000
     npm_registry_url: https://registry.npmjs.org
 ```
 
-In Kubernetes, use `policy_url` and `upstream_policy_url` instead.
+In Kubernetes, use `policy_url` and `upstream_policy_url` instead. `osv_url`
+always points at policy-sync's internal `POST /osv/querybatch` endpoint.
 
 ## Policy file schema
 
@@ -97,6 +104,9 @@ Semantics:
 - Other malformed entries (missing `name`, non-string scope) are skipped with a
   warning; the rest of the file still applies.
 - An empty file, or a file without `blocked`, is an empty policy.
+- OSV checks are request-time, not part of `npm-rules.yaml`: policy-sync decides
+  whether `[osv] malicious_packages` is enabled and blocks only OSV `MAL-*`
+  records. Curated `allow` rules in `policy.toml` override OSV false positives.
 
 ## Reload behavior
 
@@ -130,6 +140,9 @@ When rejection kicks in differs per mode:
   does the plugin fail closed — plus on **cold start**, when nothing has ever been
   fetched (there is no known-good policy to serve). The first successful poll
   recovers automatically.
+- **OSV mode**: `osv_url` lookup failures fail open for that OSV-only decision.
+  The compiled policy file and upstream age gate above still keep their normal
+  fail-closed behavior.
 
 Load failures and the open/closed transitions are logged once per transition
 (`warn`/`error` level); rejected requests log at `warn`.

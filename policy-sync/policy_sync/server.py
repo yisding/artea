@@ -20,8 +20,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 from . import enrich
+from . import osv
 from .config import Config
-from .store import PolicyStore
+from .policy_model import PolicyError
+from .store import ParsedPolicyStore, PolicyStore
 from .sync import Syncer
 
 log = logging.getLogger(__name__)
@@ -34,6 +36,7 @@ UPSTREAM_POLICY_ENDPOINT = "/policy/upstream-policy.yaml"
 # PEP 700 upload-time enrichment for the PyPI Simple API (the gateway njs
 # orchestrator calls this after it has decided Gitea-first vs devpi fallback).
 ENRICH_ENDPOINT = "/pypi/simple-enrich"
+OSV_ENDPOINT = "/osv/querybatch"
 
 # The name is already PEP 503-normalized by the gateway; reject anything that
 # is not (defense in depth — never interpolate an arbitrary string into an
@@ -98,6 +101,24 @@ class PolicySyncHandler(BaseHTTPRequestHandler):
             self._serve_enrichment()
         else:
             self._respond(404, {"error": "not found"})
+
+    def _read_json_body(self) -> dict | None:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = -1
+        if length <= 0 or length > MAX_BODY:
+            self._respond(400, {"error": "missing or oversized body"})
+            return None
+        try:
+            payload = json.loads(self.rfile.read(length))
+        except ValueError:
+            self._respond(400, {"error": "request body must be JSON"})
+            return None
+        if not isinstance(payload, dict):
+            self._respond(400, {"error": "request body must be a JSON object"})
+            return None
+        return payload
 
     def _serve_enrichment(self) -> None:
         """GET /pypi/simple-enrich?upstream={devpi|gitea}&name=<normalized>.
@@ -178,6 +199,9 @@ class PolicySyncHandler(BaseHTTPRequestHandler):
             self.wfile.write(content)
 
     def do_POST(self) -> None:  # noqa: N802
+        if self.path == OSV_ENDPOINT:
+            self._serve_osv_querybatch()
+            return
         if self.path != "/hooks/policy":
             self._respond(404, {"error": "not found"})
             return
@@ -205,6 +229,35 @@ class PolicySyncHandler(BaseHTTPRequestHandler):
         self.server.trigger_sync()
         self._respond(202, {"status": "sync scheduled"})
 
+    def _serve_osv_querybatch(self) -> None:
+        payload = self._read_json_body()
+        if payload is None:
+            return
+        ecosystem = payload.get("ecosystem")
+        name = payload.get("name")
+        versions = payload.get("versions")
+        if not isinstance(ecosystem, str) or not isinstance(name, str) or not isinstance(versions, list):
+            self._respond(400, {"error": "ecosystem, name, and versions are required"})
+            return
+        if len(versions) > 10000:
+            self._respond(400, {"error": "too many versions"})
+            return
+        try:
+            result = self.server.osv_client.decide(
+                self.server.parsed_policy_store.get(),
+                ecosystem,
+                name,
+                versions,
+            )
+        except PolicyError as e:
+            self._respond(400, {"error": str(e)})
+            return
+        except Exception:  # never crash the worker on an unexpected decision error
+            log.exception("OSV querybatch decision failed (name=%s)", name)
+            self._respond(500, {"error": "OSV decision failed"})
+            return
+        self._respond(200, osv.response_payload(result))
+
     def log_message(self, format: str, *args) -> None:  # noqa: A002 (match BaseHTTPRequestHandler signature)
         log.debug("%s %s", self.client_address[0], format % args)
 
@@ -220,6 +273,8 @@ class PolicySyncHTTPServer(ThreadingHTTPServer):
         state: SyncState,
         store: PolicyStore,
         upstream_store: PolicyStore,
+        parsed_policy_store: ParsedPolicyStore | None = None,
+        osv_client: osv.OsvClient | None = None,
         cfg: Config | None = None,
     ):
         super().__init__(addr, PolicySyncHandler)
@@ -228,8 +283,10 @@ class PolicySyncHTTPServer(ThreadingHTTPServer):
         self.state = state
         self.store = store
         self.upstream_store = upstream_store
+        self.parsed_policy_store = parsed_policy_store or ParsedPolicyStore()
+        self.osv_client = osv_client or osv.OsvClient()
         # Enrichment endpoint reads cfg.gitea_url / cfg.devpi_url / cfg.namespace
-        # / cfg.pypi_json_url; optional so existing call sites/tests still work.
+        # / cfg.pypi_json_url; None leaves that endpoint disabled (503).
         self.cfg = cfg
 
 
@@ -241,9 +298,21 @@ def make_http_server(
     state: SyncState,
     store: PolicyStore,
     upstream_store: PolicyStore,
+    parsed_policy_store: ParsedPolicyStore | None = None,
+    osv_client: osv.OsvClient | None = None,
     cfg: Config | None = None,
 ) -> PolicySyncHTTPServer:
-    return PolicySyncHTTPServer((host, port), webhook_secret, trigger_sync, state, store, upstream_store, cfg)
+    return PolicySyncHTTPServer(
+        (host, port),
+        webhook_secret,
+        trigger_sync,
+        state,
+        store,
+        upstream_store,
+        parsed_policy_store,
+        osv_client,
+        cfg,
+    )
 
 
 def run_sync_worker(syncer: Syncer, state: SyncState, wake: threading.Event, poll_interval: float, stop: threading.Event) -> None:
@@ -272,7 +341,15 @@ def main() -> None:
     # where the volume still holds the last synced policy
     store = PolicyStore(fallback_path=cfg.policy_file_path)
     upstream_store = PolicyStore(fallback_path=cfg.upstream_policy_file_path)
-    syncer = Syncer(cfg, store=store, upstream_store=upstream_store)
+    parsed_policy_store = ParsedPolicyStore()
+    osv_client = osv.OsvClient(
+        api_url=cfg.osv_api_url,
+        timeout=cfg.osv_timeout_seconds,
+        positive_ttl=cfg.osv_positive_ttl_seconds,
+        negative_ttl=cfg.osv_negative_ttl_seconds,
+        batch_size=cfg.osv_batch_size,
+    )
+    syncer = Syncer(cfg, store=store, upstream_store=upstream_store, parsed_policy_store=parsed_policy_store)
 
     worker = threading.Thread(
         target=run_sync_worker,
@@ -282,7 +359,18 @@ def main() -> None:
     )
     worker.start()
 
-    httpd = make_http_server("0.0.0.0", LISTEN_PORT, cfg.webhook_secret, wake.set, state, store, upstream_store, cfg)
+    httpd = make_http_server(
+        "0.0.0.0",
+        LISTEN_PORT,
+        cfg.webhook_secret,
+        wake.set,
+        state,
+        store,
+        upstream_store,
+        parsed_policy_store,
+        osv_client,
+        cfg,
+    )
     log.info("policy-sync listening on :%d (gitea=%s devpi=%s poll=%.0fs file=%s)",
              LISTEN_PORT, cfg.gitea_url, cfg.devpi_url, cfg.poll_interval,
              cfg.policy_file_path or "<disabled: HTTP-only>")

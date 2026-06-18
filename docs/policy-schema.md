@@ -42,6 +42,9 @@ schema = 1                 # required; integer; gates forward-compatible changes
 [defaults]
 action = "allow"           # registry baseline: allow (block-list) | deny (allow-list)
 
+[osv]
+malicious_packages = true  # query OSV.dev inline for OpenSSF MAL-* records
+
 [[rules]]                  # ordered array of tables; order is NOT significant
 ecosystem = "…"
 # …
@@ -73,7 +76,7 @@ action = "deny"            # PyPI locked down; everything else default-allow
 | `versions` | no | string | Version expression in the **ecosystem's native dialect**. Omitted = all versions. Only valid with `name`. |
 | `action` | no | `deny` \| `allow` | Defaults to `deny`. `deny` blocks; `allow` is an explicit carve-out (see Precedence). |
 | `reason` | no | string | Free text for humans; surfaced in logs and 403 bodies where practical. |
-| `source` | no | string | Provenance. `curated` (default) and `osv` are reserved: a future OSV integration uses `source` to apply different failure semantics (curated fails closed, OSV fails open). |
+| `source` | no | string | Provenance. `curated` is the default for human-authored rules; `osv` is reserved for OSV-derived policy metadata. Curated compiled policy fails closed, while the runtime OSV layer fails open for uncached lookup failures. |
 | `expires` | no | string (RFC 3339) | Optional. A rule whose `expires` is in the past is ignored. Resolved at compile time, so expiry takes effect within one sync/poll interval (≤ `POLICY_SYNC_POLL_SECONDS`). |
 
 ## Ecosystems and their dialects
@@ -222,6 +225,26 @@ a per-package block:
 min_age = "P3D"            # ISO 8601 duration; P0D disables
 ```
 
+### OSV malicious package layer
+
+`[osv] malicious_packages = true` enables request-time filtering for OSV.dev /
+OpenSSF malicious-package records. Verdaccio and devpi ask policy-sync about the
+actual public package versions they are about to list or serve; policy-sync calls
+OSV's `querybatch` API and caches bounded per-version verdicts. Artea does not
+mirror the OSV database.
+
+Only OSV IDs with the `MAL-` prefix block a version. Ordinary vulnerability
+advisories such as CVE, GHSA, and PYSEC records do not affect registry
+availability. A curated `allow` rule for the whole package or exact version
+overrides an OSV malicious hit for false-positive handling.
+
+The OSV layer is disabled when the `[osv]` table is absent or
+`malicious_packages = false`. If OSV or policy-sync's internal OSV endpoint is
+unavailable, enforcement fails open for uncached versions while continuing to
+block any still-fresh cached malicious verdicts. This is intentionally separate
+from the compiled curated policy artifacts, which continue to fail closed when
+missing or unreadable.
+
 ## Validation
 
 The policy is validated as a whole before anything is applied:
@@ -246,7 +269,8 @@ The policy is validated as a whole before anything is applied:
   `last_sync_ok: false`. A broken authoring change never tears down enforcement.
 - This is distinct from the runtime fail-closed behavior of the enforcement
   plugins (a missing/unreadable *compiled* artifact still fails closed there) and
-  from a future OSV layer's fail-open behavior for `source: osv` rules.
+  from the runtime OSV malicious-package layer's fail-open behavior for uncached
+  lookup failures.
 
 ## Compilation and enforcement
 
@@ -273,6 +297,10 @@ allow/deny themselves:
   Verdaccio `CompositePolicyLoader` reads. The loader takes `min_age` solely from
   this file, so the compiler emits it alongside the npm rules; the same value
   also feeds the devpi `min_upstream_age`.
+- **OSV malicious packages** → no compiled block-list artifact. policy-sync keeps
+  the last-known-good parsed `policy.toml` in memory and serves
+  `POST /osv/querybatch` for Verdaccio and devpi to query inline as package
+  requests arrive.
 
 Because precedence is resolved in the compiler, each engine only ever sees
 already-decided blocks. Beyond parse/normalize/validate, the per-ecosystem

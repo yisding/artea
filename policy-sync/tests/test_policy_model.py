@@ -121,6 +121,26 @@ def test_min_age_parsed_and_validated():
     assert p.min_age == "P3D"
 
 
+def test_osv_malicious_packages_defaults_disabled():
+    p = parse("schema = 1\n")
+    assert p.osv_malicious_packages is False
+
+
+def test_osv_malicious_packages_parsed():
+    p = parse("schema = 1\n[osv]\nmalicious_packages = true\n")
+    assert p.osv_malicious_packages is True
+
+
+def test_bad_osv_malicious_packages_rejected():
+    with pytest.raises(PolicyError, match="osv.malicious_packages must be a boolean"):
+        parse('schema = 1\n[osv]\nmalicious_packages = "yes"\n')
+
+
+def test_unknown_osv_key_rejected():
+    with pytest.raises(PolicyError, match="osv: unknown key"):
+        parse("schema = 1\n[osv]\nbogus = true\n")
+
+
 def test_min_age_alias_minimum_age():
     p = parse('schema = 1\n[upstream]\nminimum_age = "PT12H"\n')
     assert p.min_age == "PT12H"

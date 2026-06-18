@@ -96,6 +96,22 @@ def test_simple_links_filter_applies_min_upstream_age(monkeypatch):
     assert result == [True, False]
 
 
+def test_simple_links_filter_applies_osv_malicious_verdict(monkeypatch):
+    customizer = make_stage("P0D")
+    customizer.stage.ixconfig["osv_url"] = "http://policy-sync.example/osv/querybatch"
+    monkeypatch.setattr(
+        "artea_devpi_policy.main.query_osv_blocked_versions",
+        lambda osv_url, project, versions: {"2.0.0"},
+    )
+
+    result = list(customizer.get_simple_links_filter_iter("six", [
+        FakeLink("1.0.0", "six-1.0.0-py3-none-any.whl"),
+        FakeLink("2.0.0", "six-2.0.0-py3-none-any.whl"),
+    ]))
+
+    assert result == [True, False]
+
+
 def test_file_allowed_requires_upload_time(monkeypatch):
     now = time.time()
     customizer = make_stage("P3D")
@@ -117,6 +133,18 @@ def test_link_allowed_applies_constraints_without_rendering_simple_page():
     assert customizer.link_allowed("six", FakeLink("1.17.0", "six-1.17.0-py2.py3-none-any.whl")) is True
     assert customizer.link_allowed("six", FakeLink("2.0.0", "six-2.0.0-py3-none-any.whl")) is False
     assert customizer.link_allowed("six", FakeELink("1.17.0", "six-1.17.0-py2.py3-none-any.whl")) is True
+
+
+def test_link_allowed_applies_osv_malicious_verdict(monkeypatch):
+    customizer = make_stage("P0D")
+    customizer.stage.ixconfig["osv_url"] = "http://policy-sync.example/osv/querybatch"
+    monkeypatch.setattr(
+        "artea_devpi_policy.main.query_osv_blocked_versions",
+        lambda osv_url, project, versions: {"2.0.0"},
+    )
+
+    assert customizer.link_allowed("six", FakeLink("1.0.0", "six-1.0.0-py3-none-any.whl")) is True
+    assert customizer.link_allowed("six", FakeLink("2.0.0", "six-2.0.0-py3-none-any.whl")) is False
 
 
 def test_file_allowed_endpoint_uses_current_constrained_policy():
@@ -204,6 +232,35 @@ def test_direct_public_file_tween_enforces_min_upstream_age(monkeypatch):
         versions={},
     )
     monkeypatch.setattr(customizer, "_project_metadata", lambda project: metadata)
+
+    class FakeConstrainedStage:
+        def __init__(self, stage_customizer):
+            self.customizer = stage_customizer
+
+    class FakeMirrorStage:
+        def get_link_from_entrypath(self, path):
+            return FakeLink("2.0.0", "six-2.0.0-py3-none-any.whl")
+
+    class FakeModel:
+        def getstage(self, name):
+            return {"root/constrained": FakeConstrainedStage(customizer), "root/pypi": FakeMirrorStage()}.get(name)
+
+    class FakeXom:
+        model = FakeModel()
+
+    tween = file_age_tween_factory(lambda request: "ok", {"xom": FakeXom()})
+
+    with pytest.raises(HTTPForbidden):
+        tween(FakeRequest("/root/pypi/+f/abc/six-2.0.0-py3-none-any.whl"))
+
+
+def test_direct_public_file_tween_enforces_osv_malicious_verdict(monkeypatch):
+    customizer = make_stage("P0D")
+    customizer.stage.ixconfig["osv_url"] = "http://policy-sync.example/osv/querybatch"
+    monkeypatch.setattr(
+        "artea_devpi_policy.main.query_osv_blocked_versions",
+        lambda osv_url, project, versions: {"2.0.0"},
+    )
 
     class FakeConstrainedStage:
         def __init__(self, stage_customizer):

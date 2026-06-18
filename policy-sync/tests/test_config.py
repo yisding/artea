@@ -18,6 +18,11 @@ def test_defaults_match_architecture_contract():
     assert cfg.upstream_policy_file_path == "/policy/upstream-policy.yaml"
     assert cfg.pypi_policy_file_path == "/policy/pypi-constraints.txt"
     assert cfg.poll_interval == 300
+    assert cfg.osv_api_url == "https://api.osv.dev"
+    assert cfg.osv_timeout_seconds == 5
+    assert cfg.osv_positive_ttl_seconds == 3600
+    assert cfg.osv_negative_ttl_seconds == 900
+    assert cfg.osv_batch_size == 100
 
 
 def test_namespace_sets_default_policy_repo():
@@ -78,3 +83,24 @@ def test_trailing_slashes_stripped():
 def test_invalid_poll_interval_raises():
     with pytest.raises(ConfigError):
         Config.from_env(dict(REQUIRED, POLICY_SYNC_POLL_SECONDS="nope"))
+
+
+def test_osv_config_can_be_overridden():
+    cfg = Config.from_env(dict(
+        REQUIRED,
+        OSV_API_URL="https://osv.example.test/",
+        OSV_TIMEOUT_SECONDS="2.5",
+        OSV_POSITIVE_TTL_SECONDS="600",
+        OSV_NEGATIVE_TTL_SECONDS="30",
+        OSV_BATCH_SIZE="25",
+    ))
+    assert cfg.osv_api_url == "https://osv.example.test"
+    assert cfg.osv_timeout_seconds == 2.5
+    assert cfg.osv_positive_ttl_seconds == 600
+    assert cfg.osv_negative_ttl_seconds == 30
+    assert cfg.osv_batch_size == 25
+
+
+def test_invalid_osv_numeric_config_raises():
+    with pytest.raises(ConfigError):
+        Config.from_env(dict(REQUIRED, OSV_BATCH_SIZE="0"))

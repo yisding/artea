@@ -198,3 +198,27 @@ def test_pypi_is_exact(s, exact):
 
 def test_pypi_exact_value():
     assert pypi.exact_value("==1.2.3") == "1.2.3"
+
+
+@pytest.mark.parametrize("expr,version,allows", [
+    ("==1.0.0", "1.0.0", True),     # identical
+    ("==1.0", "1.0.0", True),       # trailing-zero release equality (PEP 440)
+    ("==1", "1.0.0", True),
+    ("==1.0.0", "1.0", True),       # symmetric
+    ("==1.0", "1.0.1", False),      # different release
+    ("==1.0", "1.1", False),
+    ("==1.0", "1.0a1", False),      # pre-release: conservative string fallback
+    ("==1!1.0", "1.0", False),      # epoch: not equal, no false match
+    ("==1.0.0", "1.0.0+local", False),  # local segment: conservative
+])
+def test_pypi_exact_allows_release_semantics(expr, version, allows):
+    assert pypi.exact_allows(expr, version) is allows
+
+
+@pytest.mark.parametrize("expr,version,allows", [
+    ("1.2.3", "1.2.3", True),
+    ("v1.2.3", "1.2.3", True),      # operator/prefix stripped
+    ("1.2.3", "1.2.4", False),
+])
+def test_npm_exact_allows(expr, version, allows):
+    assert npm.exact_allows(expr, version) is allows

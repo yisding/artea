@@ -2,6 +2,7 @@ import * as semver from 'semver';
 import type { pluginUtils } from '@verdaccio/core';
 import type { Logger, Manifest } from '@verdaccio/types';
 import { type PolicyLoader, SEMVER_OPTS, createPolicyLoader, isNameBlocked, isVersionBlocked } from './policy';
+import { OsvDecisionClient } from './osv';
 
 export interface FilterArteaConfig {
   /** Path to the policy file (compose: the shared /policy volume). Mutually exclusive with policy_url. */
@@ -18,6 +19,10 @@ export interface FilterArteaConfig {
   fail_grace_ms?: number;
   /** Registry metadata source for cold direct tarball age checks. */
   npm_registry_url?: string;
+  /** policy-sync OSV decision endpoint. Omit to disable inline OSV malicious-package filtering. */
+  osv_url?: string;
+  /** OSV decision endpoint timeout in ms (default 5000). */
+  osv_timeout_ms?: number;
 }
 
 // minimal structural express types — keeps the plugin free of an express dependency
@@ -123,12 +128,16 @@ export default class FilterArtea
   private readonly logger: Logger;
   private readonly policyLoader: PolicyLoader;
   private readonly npmRegistryUrl: string;
+  private readonly osvClient: OsvDecisionClient | null;
   private readonly publishTimes = new Map<string, Map<string, number>>();
 
   public constructor(config: FilterArteaConfig, options: pluginUtils.PluginOptions) {
     this.logger = options.logger;
     this.policyLoader = createPolicyLoader(config, this.logger);
     this.npmRegistryUrl = (config.npm_registry_url ?? 'https://registry.npmjs.org').replace(/\/+$/, '');
+    this.osvClient = config.osv_url
+      ? new OsvDecisionClient(config.osv_url, this.logger, config.osv_timeout_ms)
+      : null;
   }
 
   /** Not part of the verdaccio plugin API; lets tests/embedders stop URL polling. */
@@ -152,14 +161,21 @@ export default class FilterArtea
       return this.blockAll(metadata);
     }
     const ranges = policy.ranges.get(name) ?? [];
-    if ((!ranges.length && policy.minAgeMs <= 0) || !metadata.versions) {
+    if ((!ranges.length && policy.minAgeMs <= 0 && this.osvClient === null) || !metadata.versions) {
       return metadata;
     }
-    const removed = Object.keys(metadata.versions).filter((v) =>
+    const removed = new Set(Object.keys(metadata.versions).filter((v) =>
       ranges.some((range) => semver.satisfies(v, range, SEMVER_OPTS))
         || isTooYoung(publishTimeMs(metadata, v), policy.minAgeMs),
-    );
-    if (removed.length === 0) {
+    ));
+    if (this.osvClient !== null) {
+      const candidates = Object.keys(metadata.versions).filter((version) => !removed.has(version));
+      const blocked = await this.osvClient.blockedVersions('npm', name, candidates);
+      for (const version of blocked.keys()) {
+        removed.add(version);
+      }
+    }
+    if (removed.size === 0) {
       return metadata;
     }
     // never mutate the input: verdaccio shares it with its storage layer
@@ -170,8 +186,8 @@ export default class FilterArtea
         delete timeMap(clone)![version];
       }
     }
-    repairDistTags(clone, new Set(removed));
-    this.logger.info({ name, count: removed.length }, 'filter-artea: removed @{count} blocked version(s) of @{name}');
+    repairDistTags(clone, removed);
+    this.logger.info({ name, count: removed.size }, 'filter-artea: removed @{count} blocked version(s) of @{name}');
     return clone;
   }
 
@@ -209,6 +225,15 @@ export default class FilterArtea
       this.logger.info({ name: ref.name, version: ref.version }, 'filter-artea: blocked tarball download of @{name}@@{version}');
       res.status(403).json({ error: `forbidden: ${ref.name}@${ref.version} is blocked by registry policy` });
       return;
+    }
+    if (ref.version !== null && this.osvClient !== null) {
+      const blocked = await this.osvClient.blockedVersions('npm', ref.name, [ref.version]);
+      const ids = blocked.get(ref.version);
+      if (ids !== undefined) {
+        this.logger.info({ name: ref.name, version: ref.version, ids: ids.join(',') }, 'filter-artea: blocked OSV malicious tarball download of @{name}@@{version}');
+        res.status(403).json({ error: `forbidden: ${ref.name}@${ref.version} is blocked by OSV malicious-package policy` });
+        return;
+      }
     }
     if (state.policy.minAgeMs > 0) {
       if (ref.version === null) {

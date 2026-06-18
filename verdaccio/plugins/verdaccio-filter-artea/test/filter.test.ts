@@ -139,6 +139,49 @@ describe('verdaccio-filter-artea', () => {
       expect(await plugin.filter_metadata(input)).toBe(input);
     });
 
+    it('removes versions blocked by OSV malicious-package verdicts', async () => {
+      const file = tmpPolicyPath();
+      writePolicy(file, 'blocked: {}\n');
+      const plugin = makePlugin(file, { osv_url: 'http://policy-sync.example/osv/querybatch' });
+      const fetchMock = vi.fn(async (_url: string, init: { body?: unknown }) => {
+        const body = JSON.parse(String(init.body));
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            status: 'ok',
+            results: body.versions.map((version: string) => ({
+              version,
+              blocked: version === '1.3.0',
+              ids: version === '1.3.0' ? ['MAL-2026-1'] : [],
+            })),
+          }),
+        };
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      const output = await plugin.filter_metadata(packument('left-pad', ['1.2.0', '1.3.0'], '1.3.0'));
+
+      expect(Object.keys(output.versions)).toEqual(['1.2.0']);
+      expect(output['dist-tags'].latest).toBe('1.2.0');
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://policy-sync.example/osv/querybatch',
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+
+    it('fails open when OSV lookup is unavailable', async () => {
+      const file = tmpPolicyPath();
+      writePolicy(file, 'blocked: {}\n');
+      const plugin = makePlugin(file, { osv_url: 'http://policy-sync.example/osv/querybatch' });
+      vi.stubGlobal('fetch', vi.fn(async () => {
+        throw new Error('connect failed');
+      }));
+      const input = packument('left-pad', ['1.3.0']);
+
+      expect(await plugin.filter_metadata(input)).toBe(input);
+    });
+
     it('reloads the policy when the file mtime changes', async () => {
       const file = tmpPolicyPath();
       writePolicy(file, 'blocked: {}\n');
@@ -288,6 +331,33 @@ describe('verdaccio-filter-artea', () => {
       const result = runMiddleware(blockedPlugin(), '/left-pad/-/left-pad-1.3.0.tgz');
       expect(result.status).toBe(403);
       expect(result.body!.error).toContain('left-pad@1.3.0');
+      expect(result.nexted).toBe(false);
+    });
+
+    it('rejects an OSV malicious tarball with a 403 JSON error', async () => {
+      const file = tmpPolicyPath();
+      writePolicy(file, 'blocked: {}\n');
+      const plugin = makePlugin(file, { osv_url: 'http://policy-sync.example/osv/querybatch' });
+      vi.stubGlobal('fetch', vi.fn(async (_url: string, init: { body?: unknown }) => {
+        const body = JSON.parse(String(init.body));
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            status: 'ok',
+            results: body.versions.map((version: string) => ({
+              version,
+              blocked: true,
+              ids: ['MAL-2026-1'],
+            })),
+          }),
+        };
+      }));
+
+      const result = await runMiddlewareAsync(plugin, '/left-pad/-/left-pad-1.3.0.tgz');
+
+      expect(result.status).toBe(403);
+      expect(result.body!.error).toContain('OSV malicious-package policy');
       expect(result.nexted).toBe(false);
     });
 

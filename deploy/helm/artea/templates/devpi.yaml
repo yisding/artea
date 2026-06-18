@@ -54,6 +54,8 @@ spec:
             # gateway origin (entrypoint passes --outside-url --absolute-urls)
             - name: DEVPI_OUTSIDE_URL
               value: {{ trimSuffix "/" .Values.global.baseUrl | quote }}
+            - name: ARTEA_OSV_URL
+              value: {{ printf "%s/osv/querybatch" (include "artea.policySyncUrl" .) | quote }}
           ports:
             - name: http
               containerPort: 3141
