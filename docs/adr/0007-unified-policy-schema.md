@@ -74,7 +74,8 @@ One schema for all ecosystems, specified in `docs/policy-schema.md`. Key choices
    (unknown ecosystem, bad target, unparsable range, …) fails the whole sync and
    keeps the previously applied policy in effect, logged loudly via `/healthz`.
    This is distinct from the engines' runtime fail-closed on a missing compiled
-   artifact, and from a future OSV layer's fail-open for `source: osv` rules.
+   artifact, and from the runtime OSV layer's fail-open behavior for uncached
+   lookup failures.
 
 `upstream.min_age` stays a top-level key (it is a registry-wide recency gate, not
 a per-package block) and keeps its ADR-0006 behavior.
@@ -145,7 +146,7 @@ pairs that pin the npm validator without needing node at CI time.
   must pass authored as unified rules; add a scenario for the specific-`allow`
   override beating a broader `deny`, and one for validation rejecting a malformed
   policy without disturbing last-known-good enforcement.
-- A `source` field is introduced now as provenance so the planned OSV
-  integration (separate ADR) can attach fail-open semantics to `source: osv`
-  rules without another schema change.
+- A `source` field was introduced as provenance for automated feeds. The runtime
+  OSV malicious-package layer uses the same allow-wins override model but queries
+  OSV inline instead of compiling a mirrored OSV database into policy artifacts.
 </content>

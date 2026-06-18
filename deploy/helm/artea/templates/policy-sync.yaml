@@ -43,6 +43,8 @@ spec:
             # Keep in sync with the devpi constrained index's pypi_json_url.
             - name: PYPI_JSON_URL
               value: {{ .Values.policySync.pypiJsonUrl | quote }}
+            - name: OSV_API_URL
+              value: {{ .Values.policySync.osvApiUrl | quote }}
             - name: POLICY_SYNC_POLL_SECONDS
               value: {{ .Values.policySync.pollSeconds | quote }}
             - name: POLICY_SYNC_TOKEN

@@ -20,7 +20,7 @@ from .devpi import CONSTRAINED_INDEX, DevpiError, apply_constraints
 from .files import write_atomic
 from .gitea import GiteaError, GiteaNotFound, fetch_raw
 from .policy_model import PolicyError, parse_policy
-from .store import PolicyStore
+from .store import ParsedPolicyStore, PolicyStore
 
 log = logging.getLogger(__name__)
 
@@ -34,11 +34,13 @@ class Syncer:
         sleep=time.sleep,
         store: PolicyStore | None = None,
         upstream_store: PolicyStore | None = None,
+        parsed_policy_store: ParsedPolicyStore | None = None,
     ):
         self.cfg = cfg
         self.sleep = sleep
         self.store = store
         self.upstream_store = upstream_store
+        self.parsed_policy_store = parsed_policy_store
 
     @property
     def npm_dest(self) -> Path | None:
@@ -110,6 +112,8 @@ class Syncer:
             # outage still publishes the npm policy.
             self._emit_upstream(artifacts.upstream_yaml.encode("utf-8"))
             self._emit_npm(artifacts.npm_yaml.encode("utf-8"))
+            if self.parsed_policy_store is not None:
+                self.parsed_policy_store.set(policy)
             self._emit_pypi(artifacts.pypi_constraints, artifacts.min_age)
             return True
         except PolicyError as e:

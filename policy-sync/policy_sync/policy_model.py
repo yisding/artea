@@ -73,6 +73,7 @@ class Policy:
     defaults: Defaults
     rules: tuple[Rule, ...]
     min_age: str
+    osv_malicious_packages: bool
 
 
 def _validate_min_age(raw: object) -> str:
@@ -228,7 +229,8 @@ def _parse_rule(raw: object, index: int) -> Rule | None:
     )
 
 
-_ALLOWED_TOP_LEVEL = {"schema", "defaults", "rules", "upstream"}
+_ALLOWED_TOP_LEVEL = {"schema", "defaults", "rules", "upstream", "osv"}
+_ALLOWED_OSV_KEYS = {"malicious_packages"}
 
 
 def parse_policy(data: bytes) -> Policy:
@@ -244,7 +246,7 @@ def parse_policy(data: bytes) -> Policy:
     if unknown:
         keys = ", ".join(sorted(unknown))
         raise PolicyError(
-            f"unknown top-level key {keys}; allowed: schema, defaults, rules, upstream"
+            f"unknown top-level key {keys}; allowed: defaults, osv, rules, schema, upstream"
         )
 
     schema = doc.get("schema")
@@ -264,6 +266,18 @@ def parse_policy(data: bytes) -> Policy:
             raw_min_age = upstream.get("minimum_age")
         min_age = _validate_min_age(raw_min_age)
 
+    osv = doc.get("osv")
+    if osv is None:
+        osv_malicious_packages = False
+    elif not isinstance(osv, dict):
+        raise PolicyError("'osv' must be a table")
+    else:
+        _reject_unknown_keys(osv, _ALLOWED_OSV_KEYS, "osv")
+        raw_malicious = osv.get("malicious_packages", False)
+        if not isinstance(raw_malicious, bool):
+            raise PolicyError("osv.malicious_packages must be a boolean")
+        osv_malicious_packages = raw_malicious
+
     raw_rules = doc.get("rules", [])
     if not isinstance(raw_rules, list):
         raise PolicyError("'rules' must be an array of tables")
@@ -273,4 +287,10 @@ def parse_policy(data: bytes) -> Policy:
         if rule is not None:
             rules.append(rule)
 
-    return Policy(schema=schema, defaults=defaults, rules=tuple(rules), min_age=min_age)
+    return Policy(
+        schema=schema,
+        defaults=defaults,
+        rules=tuple(rules),
+        min_age=min_age,
+        osv_malicious_packages=osv_malicious_packages,
+    )

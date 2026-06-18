@@ -120,6 +120,9 @@ policySync:
   # with the devpi constrained index's pypi_json_url so the server-side age gate
   # and the surfaced upload-time come from the same source.
   pypiJsonUrl: "https://pypi.org/pypi"
+  # OSV.dev API base for inline malicious-package checks. policy-sync queries it
+  # only for package versions that clients actually request.
+  osvApiUrl: "https://api.osv.dev"
   resources: {}
 
 # ---- bootstrap Job (post-install/post-upgrade hook) ---------------------------

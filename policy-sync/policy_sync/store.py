@@ -14,6 +14,8 @@ import hashlib
 import threading
 from pathlib import Path
 
+from .policy_model import Policy
+
 
 def etag_for(content: bytes) -> str:
     return f'"{hashlib.sha256(content).hexdigest()}"'
@@ -44,3 +46,25 @@ class PolicyStore:
                 return None
             return content, etag_for(content)
         return None
+
+
+class ParsedPolicyStore:
+    """In-memory last-known-good parsed policy for request-time decisions.
+
+    The emitted engine artifacts remain the durable enforcement source. This store
+    only backs inline decisions that need the unified policy's metadata, such as
+    whether OSV-generated denies are enabled and whether a curated allow overrides
+    an OSV malicious-package hit.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._policy: Policy | None = None
+
+    def set(self, policy: Policy) -> None:
+        with self._lock:
+            self._policy = policy
+
+    def get(self) -> Policy | None:
+        with self._lock:
+            return self._policy

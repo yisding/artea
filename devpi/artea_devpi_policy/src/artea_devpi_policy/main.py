@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 import urllib.error
@@ -36,6 +37,7 @@ DEFAULT_METADATA_CACHE_SECONDS = 300.0
 CONSTRAINED_INDEX = "root/constrained"
 PYPI_MIRROR_INDEX = "root/pypi"
 PYPI_FILE_PREFIXES = ("root/pypi/+f/", "root/pypi/+e/")
+OSV_TIMEOUT_SECONDS = 5
 
 ISO_DURATION_RE = re.compile(
     r"^P(?:(?P<weeks>\d+(?:\.\d+)?)W)?(?:(?P<days>\d+(?:\.\d+)?)D)?"
@@ -68,6 +70,10 @@ class ProjectMetadata:
 
 
 metadata_cache: dict[tuple[str, str], ProjectMetadata] = {}
+
+
+def default_osv_url() -> str:
+    return os.environ.get("ARTEA_OSV_URL", "").strip()
 
 
 def parse_iso_duration_seconds(raw: Any) -> float:
@@ -161,17 +167,49 @@ def fetch_project_metadata(project: str, pypi_json_url: str, now=time.time) -> P
     return metadata
 
 
+def query_osv_blocked_versions(osv_url: str, project: str, versions: list[str]) -> set[str]:
+    unique = sorted({str(version) for version in versions if str(version)})
+    if not osv_url or not unique:
+        return set()
+    payload = json.dumps({"ecosystem": "pypi", "name": project, "versions": unique}).encode()
+    req = urllib.request.Request(
+        osv_url,
+        data=payload,
+        method="POST",
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=OSV_TIMEOUT_SECONDS) as resp:
+            data = json.load(resp)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+        log.warning("OSV lookup unavailable for %s; failing open: %s", project, e)
+        return set()
+    blocked: set[str] = set()
+    results = data.get("results")
+    if not isinstance(results, list):
+        log.warning("OSV lookup for %s returned invalid response; failing open", project)
+        return set()
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        version = item.get("version")
+        if item.get("blocked") is True and isinstance(version, str):
+            blocked.add(version)
+    return blocked
+
+
 class ConstrainedStage:
     readonly = True
 
     def get_possible_indexconfig_keys(self):
-        return ("constraints", "min_upstream_age", "pypi_json_url")
+        return ("constraints", "min_upstream_age", "pypi_json_url", "osv_url")
 
     def get_default_config_items(self):
         return [
             ("constraints", []),
             ("min_upstream_age", "P0D"),
             ("pypi_json_url", DEFAULT_PYPI_JSON_URL),
+            ("osv_url", ""),
         ]
 
     def normalize_indexconfig_value(self, key, value):
@@ -191,6 +229,12 @@ class ConstrainedStage:
         if key == "pypi_json_url":
             if not isinstance(value, str) or not value.strip():
                 raise self.InvalidIndexconfig(["pypi_json_url must be a non-empty URL"])
+            return value.rstrip("/")
+        if key == "osv_url":
+            if value in (None, ""):
+                return ""
+            if not isinstance(value, str):
+                raise self.InvalidIndexconfig(["osv_url must be a URL string"])
             return value.rstrip("/")
         return value
 
@@ -219,6 +263,10 @@ class ConstrainedStage:
     def pypi_json_url(self):
         return self.stage.ixconfig.get("pypi_json_url") or DEFAULT_PYPI_JSON_URL
 
+    @property
+    def osv_url(self):
+        return (self.stage.ixconfig.get("osv_url") or default_osv_url()).rstrip("/")
+
     def get_projects_filter_iter(self, projects):
         constraints = self.constraints
         if not constraints.constrain_all:
@@ -229,22 +277,23 @@ class ConstrainedStage:
     def _constraint_decision(self, project):
         """Resolve the shared opening decision for the per-project filters.
 
-        Returns ``(version_filter, include_legacy, needs_age)`` when the caller
-        must inspect items individually, or ``None`` as a sentinel meaning "this
-        project is unconstrained and not age-gated, so express no opinion"
-        (iters yield nothing, ``link_allowed`` returns ``True``). When the whole
-        index is constrained but the project is not listed, this raises the
-        per-item decision by returning a tuple whose ``version_filter`` is None
-        with ``constrain_all`` active, which the matcher resolves to a deny.
+        Returns ``(version_filter, include_legacy, needs_age, needs_osv)`` when
+        the caller must inspect items individually, or ``None`` as a sentinel
+        meaning "this project is unconstrained and not age-gated, so express no
+        opinion" (iters yield nothing, ``link_allowed`` returns ``True``). When
+        the whole index is constrained but the project is not listed, this raises
+        the per-item decision by returning a tuple whose ``version_filter`` is
+        None with ``constrain_all`` active, which the matcher resolves to a deny.
         """
         constraints = self.constraints
         version_filter = constraints.get(project)
         if version_filter is None:
-            if not constraints.constrain_all and self.min_upstream_age_seconds <= 0:
+            if not constraints.constrain_all and self.min_upstream_age_seconds <= 0 and not self.osv_url:
                 return None
         include_legacy = version_filter is None or not len(version_filter)
         needs_age = self.min_upstream_age_seconds > 0
-        return version_filter, include_legacy, needs_age
+        needs_osv = bool(self.osv_url)
+        return version_filter, include_legacy, needs_age, needs_osv
 
     def _filter_iter(self, project, items, version_of, age_ok_of):
         """Generic per-item filter shared by versions and simple-links iters.
@@ -258,20 +307,36 @@ class ConstrainedStage:
         decision = self._constraint_decision(project)
         if decision is None:
             return
-        version_filter, include_legacy, needs_age = decision
+        version_filter, include_legacy, needs_age, needs_osv = decision
         metadata = self._project_metadata(project) if needs_age else None
+        pending: list[tuple[Any, str | None, bool]] = []
         for item in items:
             version = version_of(item)
             if version is None:
-                yield False
+                pending.append((item, None, False))
                 continue
             if not self._version_matches_filter(version, version_filter, constraints, include_legacy):
-                yield False
+                pending.append((item, str(version), False))
                 continue
             if metadata is not None and not age_ok_of(metadata, item):
-                yield False
+                pending.append((item, str(version), False))
                 continue
-            yield True
+            pending.append((item, str(version), True))
+        blocked = (
+            query_osv_blocked_versions(
+                self.osv_url,
+                project,
+                [
+                    version
+                    for _item, version, allowed in pending
+                    if allowed and version is not None
+                ],
+            )
+            if needs_osv
+            else set()
+        )
+        for _item, version, allowed in pending:
+            yield allowed and version not in blocked
 
     def get_versions_filter_iter(self, project, versions):
         return self._filter_iter(
@@ -294,7 +359,7 @@ class ConstrainedStage:
         decision = self._constraint_decision(project)
         if decision is None:
             return True
-        version_filter, include_legacy, needs_age = decision
+        version_filter, include_legacy, needs_age, needs_osv = decision
         version = self._link_version(project, link_info)
         if version is None:
             return False
@@ -304,6 +369,8 @@ class ConstrainedStage:
             metadata = self._project_metadata(project)
             if not self._file_old_enough(metadata, filename_from_link(link_info)):
                 return False
+        if needs_osv and str(version) in query_osv_blocked_versions(self.osv_url, project, [str(version)]):
+            return False
         return True
 
     def file_allowed(self, project: str, filename: str) -> bool:
@@ -373,7 +440,7 @@ def file_age_tween_factory(handler, registry):
         if not path.startswith(PYPI_FILE_PREFIXES):
             return handler(request)
         customizer = constrained_customizer(registry)
-        if customizer is None or customizer.min_upstream_age_seconds <= 0:
+        if customizer is None or (customizer.min_upstream_age_seconds <= 0 and not customizer.osv_url):
             return handler(request)
         mirror = registry["xom"].model.getstage(PYPI_MIRROR_INDEX)
         link = mirror.get_link_from_entrypath(path) if mirror is not None else None
@@ -381,8 +448,8 @@ def file_age_tween_factory(handler, registry):
         if link is None or not project:
             raise HTTPForbidden("public PyPI file requires age-verifiable mirror metadata")
         filename = getattr(link, "basename", filename_from_path(path))
-        if not customizer.file_allowed(project, filename):
-            raise HTTPForbidden("%s is newer than the registry minimum upstream age" % filename)
+        if not customizer.link_allowed(project, link):
+            raise HTTPForbidden("%s is blocked by current constraints, upstream age policy, or OSV malicious-package policy" % filename)
         return handler(request)
 
     return tween

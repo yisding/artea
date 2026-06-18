@@ -13,6 +13,9 @@
 #   [defaults]
 #   action = "allow"           # baseline: allow (block-list) | deny (allow-list)
 #
+#   [osv]
+#   malicious_packages = true  # query OSV.dev inline for OpenSSF MAL-* records
+#
 #   [[rules]]                  # ordered array of tables; order is NOT significant
 #   ecosystem = "npm"          # required; must have a registered adapter
 #   name = "left-pad"          # full package name (or use `namespace` for a scope)
@@ -28,3 +31,6 @@ action = "allow"
 
 [upstream]
 min_age = "P0D"
+
+[osv]
+malicious_packages = true

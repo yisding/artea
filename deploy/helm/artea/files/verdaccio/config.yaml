@@ -44,9 +44,11 @@ filters:
 {{- if $compose }}
     policy_file: /policy/npm-rules.yaml
     upstream_policy_file: /policy/upstream-policy.yaml
+    osv_url: http://policy-sync:8920/osv/querybatch
 {{- else }}
     policy_url: http://artea-policy-sync:8920/policy/npm-rules.yaml
     upstream_policy_url: http://artea-policy-sync:8920/policy/upstream-policy.yaml
+    osv_url: http://artea-policy-sync:8920/osv/querybatch
     poll_interval_ms: {{ .Values.verdaccio.arteaPolicy.pollIntervalMs }}
     fail_grace_ms: {{ .Values.verdaccio.arteaPolicy.failGraceMs }}
 {{- end }}
@@ -88,9 +90,11 @@ middlewares:
 {{- if $compose }}
     policy_file: /policy/npm-rules.yaml
     upstream_policy_file: /policy/upstream-policy.yaml
+    osv_url: http://policy-sync:8920/osv/querybatch
 {{- else }}
     policy_url: http://artea-policy-sync:8920/policy/npm-rules.yaml
     upstream_policy_url: http://artea-policy-sync:8920/policy/upstream-policy.yaml
+    osv_url: http://artea-policy-sync:8920/osv/querybatch
     poll_interval_ms: {{ .Values.verdaccio.arteaPolicy.pollIntervalMs }}
     fail_grace_ms: {{ .Values.verdaccio.arteaPolicy.failGraceMs }}
 {{- end }}
