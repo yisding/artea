@@ -420,7 +420,7 @@ def _make_enrich_server(stub):
     )
     httpd = PolicySyncHTTPServer(
         ("127.0.0.1", 0), "s", lambda: None, SyncState(),
-        PolicyStore(fallback_path=""), PolicyStore(fallback_path=""), cfg,
+        PolicyStore(fallback_path=""), PolicyStore(fallback_path=""), cfg=cfg,
     )
     httpd.daemon_threads = True
     threading.Thread(target=lambda: httpd.serve_forever(poll_interval=0.01), daemon=True).start()

@@ -252,6 +252,10 @@ class PolicySyncHandler(BaseHTTPRequestHandler):
         except PolicyError as e:
             self._respond(400, {"error": str(e)})
             return
+        except Exception:  # never crash the worker on an unexpected decision error
+            log.exception("OSV querybatch decision failed (name=%s)", name)
+            self._respond(500, {"error": "OSV decision failed"})
+            return
         self._respond(200, osv.response_payload(result))
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002 (match BaseHTTPRequestHandler signature)
@@ -269,13 +273,10 @@ class PolicySyncHTTPServer(ThreadingHTTPServer):
         state: SyncState,
         store: PolicyStore,
         upstream_store: PolicyStore,
-        parsed_policy_store: ParsedPolicyStore | Config | None = None,
+        parsed_policy_store: ParsedPolicyStore | None = None,
         osv_client: osv.OsvClient | None = None,
         cfg: Config | None = None,
     ):
-        if isinstance(parsed_policy_store, Config) and osv_client is None and cfg is None:
-            cfg = parsed_policy_store
-            parsed_policy_store = None
         super().__init__(addr, PolicySyncHandler)
         self.webhook_secret = webhook_secret
         self.trigger_sync = trigger_sync
@@ -285,7 +286,7 @@ class PolicySyncHTTPServer(ThreadingHTTPServer):
         self.parsed_policy_store = parsed_policy_store or ParsedPolicyStore()
         self.osv_client = osv_client or osv.OsvClient()
         # Enrichment endpoint reads cfg.gitea_url / cfg.devpi_url / cfg.namespace
-        # / cfg.pypi_json_url; optional so existing call sites/tests still work.
+        # / cfg.pypi_json_url; None leaves that endpoint disabled (503).
         self.cfg = cfg
 
 
@@ -308,8 +309,8 @@ def make_http_server(
         state,
         store,
         upstream_store,
-        parsed_policy_store or ParsedPolicyStore(),
-        osv_client or osv.OsvClient(),
+        parsed_policy_store,
+        osv_client,
         cfg,
     )
 

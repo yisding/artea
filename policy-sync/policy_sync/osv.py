@@ -88,9 +88,12 @@ class _VerdictCache:
                     del self._data[old_key]
             overflow = len(self._data) - self.max_entries
             if overflow > 0:
-                for old_key, _entry in sorted(self._data.items(), key=lambda kv: kv[1].stored_at)[
-                    :overflow
-                ]:
+                # Evict clean (negative) verdicts before malicious ones so a
+                # still-valid MAL- verdict keeps blocking through an OSV outage,
+                # as the fail-open contract documents. (blocked False < True.)
+                for old_key, _entry in sorted(
+                    self._data.items(), key=lambda kv: (kv[1].verdict.blocked, kv[1].stored_at)
+                )[:overflow]:
                     del self._data[old_key]
 
 

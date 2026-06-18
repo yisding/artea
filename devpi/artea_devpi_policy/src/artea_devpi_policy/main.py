@@ -168,7 +168,7 @@ def fetch_project_metadata(project: str, pypi_json_url: str, now=time.time) -> P
 
 
 def query_osv_blocked_versions(osv_url: str, project: str, versions: list[str]) -> set[str]:
-    unique = sorted({str(version) for version in versions if str(version)})
+    unique = sorted({s for s in (str(version) for version in versions) if s})
     if not osv_url or not unique:
         return set()
     payload = json.dumps({"ecosystem": "pypi", "name": project, "versions": unique}).encode()
