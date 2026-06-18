@@ -1,0 +1,16 @@
+{
+  "_comment": "Cross-language contract for the upstream min-age ISO-8601 duration string (policy.toml [upstream] min_age; devpi index min_upstream_age). Three independent parsers must accept/reject these identically: verdaccio-filter-artea parseDurationMs (TS, returns ms), devpi parse_iso_duration_seconds (Py, returns seconds), policy-sync policy_model._validate_min_age (Py, validates only). Each test suite loads this file so the lockstep is CI-enforced instead of kept in sync by hand-copied regexes. 'seconds' is the canonical magnitude (TS scales by 1000). Inputs are duration STRINGS only — the None/empty/0 short-circuits differ by language binding and are tested separately.",
+  "valid": [
+    { "input": "P0D", "seconds": 0 },
+    { "input": "PT0S", "seconds": 0 },
+    { "input": "P3D", "seconds": 259200 },
+    { "input": "PT72H", "seconds": 259200 },
+    { "input": "P1W", "seconds": 604800 },
+    { "input": "PT1H30M", "seconds": 5400 },
+    { "input": "PT45S", "seconds": 45 },
+    { "input": "P1DT2H3M4S", "seconds": 93784 },
+    { "input": "P1.5D", "seconds": 129600 },
+    { "input": "p3d", "seconds": 259200 }
+  ],
+  "invalid": ["P", "PT", "3D", "P3X", "P-1D", "P1M", "P1H", "P3D4D"]
+}

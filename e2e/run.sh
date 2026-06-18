@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Artea e2e scenario suite — codifies S1-S18 from docs/ARCHITECTURE.md (the
+# Artea e2e scenario suite — codifies S1-S20 from docs/ARCHITECTURE.md (the
 # definition of done for v1).
 # Requires a running stack (`make up`) and a completed bootstrap
 # (`make bootstrap`); uses real client tools: npm with an
@@ -81,7 +81,7 @@ PY_VERSION="0.0.${RUN_ID}"
 PY_RO_VERSION="0.0.${RUN_ID}.post1"
 SHADOW_NAME="tinynetrc" # real PyPI package, published privately as 0.0.1 in S9
 SHADOW_VERSION="0.0.1"
-# PEP 700 JSON Simple API media type (S18 upload-time enrichment)
+# PEP 700 JSON Simple API media type (S20 upload-time enrichment)
 PYPI_JSON_ACCEPT="application/vnd.pypi.simple.v1+json"
 
 RO_TOKEN_NAME="e2e-ro-${RUN_ID}"
@@ -94,39 +94,34 @@ NPM_CACHE="${WORK}/npm-cache"
 VENV="${ROOT}/e2e/tmp/venv"
 VENV_PYTHON_STAMP="${VENV}/.artea-e2e-python"
 
-# the seed file ends with an empty 'blocked:' mapping; appending would be
-# invalid YAML, so S5/S13 replace the whole file (each scenario reverts it)
-BLOCK_LEFTPAD_RULES='# e2e fixture — temporarily blocks left-pad 1.3.0; reverted by the suite.
-blocked:
-  scopes: []
-  packages:
-    - name: left-pad
-      versions: "1.3.0"
-      reason: e2e fixture'
+# policy.toml fixture used by S5 and S13 to block left-pad 1.3.0 (each scenario
+# authors it then reverts to ORIG_POLICY)
+POLICY_BLOCK_LEFTPAD_130='# e2e fixture — blocks left-pad 1.3.0; reverted by the suite.
+schema = 1
 
-NPM_RULES_DIRTY=0
-CONSTRAINTS_DIRTY=0
+[defaults]
+action = "allow"
+
+[[rules]]
+ecosystem = "npm"
+name = "left-pad"
+versions = "1.3.0"
+action = "deny"
+reason = "e2e fixture"'
+
+POLICY_DIRTY=0        # policy.toml mutated by a scenario; cleanup reverts to ORIG_POLICY
 POLICY_FILE_REMOVED=0 # S15/compose: /policy/npm-rules.yaml deleted in the live volume
 POLICY_SYNC_SCALED=0  # S15/k8s: policy-sync scaled to 0 replicas
 DEVPI_WIPED=0         # S15: devpi cache wiped, constraints not yet re-synced
-UNIFIED_DIRTY=0       # S18-S21: policy.toml authored; must be deleted to re-arm legacy mode
 E2E_SCENARIOS="${E2E_SCENARIOS:-}"
-ALL_SCENARIOS="S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14 S15 S16 S17 S18 S19 S20 S21 S22"
+ALL_SCENARIOS="S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14 S15 S16 S17 S18 S19 S20"
 
 # ---- cleanup (idempotent, tolerates partial runs) ---------------------------------
 cleanup() {
   local rc=$?
   set +e
-  if [ "${NPM_RULES_DIRTY}" = 1 ]; then
-    put_policy_file npm-rules.yaml "${ORIG_NPM_RULES}" "test(e2e): revert npm rules (cleanup)" >/dev/null
-  fi
-  if [ "${CONSTRAINTS_DIRTY}" = 1 ]; then
-    put_policy_file pypi-constraints.txt "${ORIG_CONSTRAINTS}" "test(e2e): revert pypi constraints (cleanup)" >/dev/null
-  fi
-  # the unified scenarios author policy.toml, which (when present) wins over the
-  # legacy files; deleting it re-arms legacy mode for any later scenario
-  if [ "${UNIFIED_DIRTY}" = 1 ]; then
-    delete_policy_file policy.toml "test(e2e): drop policy.toml, restore legacy mode (cleanup)" >/dev/null
+  if [ "${POLICY_DIRTY}" = 1 ]; then
+    put_policy_file policy.toml "${ORIG_POLICY}" "test(e2e): revert policy.toml (cleanup)" >/dev/null
   fi
   delete_pkg_version npm "${NPM_NAME_ENC}" "${NPM_VERSION}" >/dev/null
   delete_pkg_version npm "${NPM_NAME_ENC}" "${NPM_RO_VERSION}" >/dev/null
@@ -164,19 +159,9 @@ trap cleanup EXIT
 # ---- suite setup -------------------------------------------------------------------
 log "run id ${RUN_ID}; work dir ${WORK}"
 
-ORIG_NPM_RULES=$(get_policy_file npm-rules.yaml) || die "cannot read npm-rules.yaml from the policy repo"
-ORIG_UPSTREAM_POLICY=$(get_policy_file upstream-policy.yaml) || die "cannot read upstream-policy.yaml from the policy repo"
-ORIG_CONSTRAINTS=$(get_policy_file pypi-constraints.txt) || die "cannot read pypi-constraints.txt from the policy repo"
-
-# A fresh bootstrap seeds the canonical policy.toml, which (when present) wins
-# over the three legacy files and makes policy-sync return before reading them
-# (policy-sync/policy_sync/sync.py:_sync_unified). The legacy-3-file scenarios
-# (S5/S10/S13/S14) edit npm-rules.yaml / pypi-constraints.txt and would become
-# silent no-ops while policy.toml exists, so drop it here to establish the legacy
-# baseline. The unified scenarios (S18-S21) re-author it on demand and drop it
-# again, so "no policy.toml" is the suite's resting state either way.
-delete_policy_file policy.toml "test(e2e): drop seeded policy.toml, arm legacy baseline" \
-  || die "cannot drop policy.toml to establish the legacy baseline"
+# The seeded policy.toml is default-allow (no deny rules) and is the suite's
+# resting state. Scenarios mutate it and revert by writing ORIG_POLICY back.
+ORIG_POLICY=$(get_policy_file policy.toml) || die "cannot read policy.toml from the policy repo"
 
 write_npmrc "${NPMRC}" "${DEV1_TOKEN}"
 mkdir -p "${NPM_CACHE}"
@@ -284,24 +269,20 @@ s1_bootstrap() {
   admin_api GET /user
   [ "$API_CODE" = 200 ] || { echo "admin token rejected (HTTP ${API_CODE})"; return 1; }
   login=$(echo "$API_BODY" | jq -r .login)
-  [ "$login" = "${ARTEA_ADMIN_USER}" ] || { echo "admin token belongs to ${login}"; return 1; }
+  assert_eq "${ARTEA_ADMIN_USER}" "$login" "admin token belongs to ${login}" || return 1
   admin_api GET "/orgs/${ARTEA_NAMESPACE}"
   [ "$API_CODE" = 200 ] || { echo "org ${ARTEA_NAMESPACE} missing"; return 1; }
   [ "$(echo "$API_BODY" | jq -r .visibility)" = private ] || { echo "org ${ARTEA_NAMESPACE} is not private"; return 1; }
-  admin_api GET "/repos/${POLICY_REPO}/contents/npm-rules.yaml"
-  [ "$API_CODE" = 200 ] || { echo "npm-rules.yaml not seeded"; return 1; }
-  admin_api GET "/repos/${POLICY_REPO}/contents/upstream-policy.yaml"
-  [ "$API_CODE" = 200 ] || { echo "upstream-policy.yaml not seeded"; return 1; }
-  admin_api GET "/repos/${POLICY_REPO}/contents/pypi-constraints.txt"
-  [ "$API_CODE" = 200 ] || { echo "pypi-constraints.txt not seeded"; return 1; }
+  admin_api GET "/repos/${POLICY_REPO}/contents/policy.toml"
+  [ "$API_CODE" = 200 ] || { echo "policy.toml not seeded"; return 1; }
   admin_api GET "/repos/${POLICY_REPO}/hooks"
   [ "$API_CODE" = 200 ] || { echo "cannot list hooks"; return 1; }
   echo "$API_BODY" | jq -e --arg hook "${POLICY_SYNC_URL}/hooks/policy" \
     'any(.[]; .config.url == $hook and .active)' >/dev/null \
     || { echo "policy webhook not wired (expected ${POLICY_SYNC_URL}/hooks/policy)"; return 1; }
   login=$(curl -sf -H "Authorization: token ${DEV1_TOKEN}" "${GATEWAY_URL}/api/v1/user" | jq -r .login)
-  [ "$login" = dev1 ] || { echo "dev1 PAT rejected"; return 1; }
-  echo "org, policy repo (both files), webhook, admin+dev1 PATs all present"
+  assert_eq dev1 "$login" "dev1 PAT rejected" || return 1
+  echo "org, policy repo, webhook, admin+dev1 PATs all present"
 }
 
 # ---- S2: npm publish private scoped package -> 201 in Gitea ------------------------------
@@ -320,57 +301,60 @@ s3_npm_install_private() {
   echo '{"name":"e2e-consumer-s3","version":"1.0.0"}' > "$proj/package.json"
   (cd "$proj" && npm_e2e install "${NPM_NAME}@${NPM_VERSION}") || { echo "npm install failed"; return 1; }
   version=$(jq -r .version "$proj/node_modules/${NPM_NAME}/package.json")
-  [ "$version" = "${NPM_VERSION}" ] || { echo "installed version ${version}, expected ${NPM_VERSION}"; return 1; }
+  assert_eq "${NPM_VERSION}" "$version" "installed version mismatch" || return 1
   resolved=$(jq -r ".packages[\"node_modules/${NPM_NAME}\"].resolved" "$proj/package-lock.json")
   echo "resolved: ${resolved}"
   # even under gateway scope routing (packument fetched via /npm/) the tarball
   # URL is Gitea-built from ROOT_URL, so it stays on /api/packages/<namespace>/npm/
-  case "$resolved" in
-    */api/packages/"${ARTEA_NAMESPACE}"/npm/*) ;;
-    *) echo "tarball did not come from Gitea (gateway scope routing)"; return 1 ;;
-  esac
+  assert_origin gitea-npm "$resolved" "tarball did not come from Gitea (gateway scope routing)" || return 1
 }
 
 # ---- S4: npm install left-pad via Verdaccio pull-through ----------------------------------
 s4_npm_install_public() {
   local proj="${WORK}/proj-s4" resolved
+  # k8s HTTP-mode startup race: the Verdaccio filter fails closed (empty
+  # packument) until its first policy poll lands, so wait until public
+  # pull-through is live before installing. With the default-allow seed policy,
+  # left-pad 1.3.0 being visible == the filter has fetched the policy.
+  wait_for 60 2 "left-pad visible via Verdaccio pull-through (filter has policy)" left_pad_130_visible || return 1
   mkdir -p "$proj"
   echo '{"name":"e2e-consumer-s4","version":"1.0.0"}' > "$proj/package.json"
   (cd "$proj" && npm_e2e install left-pad@1.3.0) || { echo "npm install left-pad failed"; return 1; }
   [ -f "$proj/node_modules/left-pad/package.json" ] || { echo "left-pad not in node_modules"; return 1; }
   resolved=$(jq -r '.packages["node_modules/left-pad"].resolved' "$proj/package-lock.json")
   echo "resolved: ${resolved}"
-  case "$resolved" in
-    "${GATEWAY_URL}/npm/"*) ;;
-    *) echo "tarball did not come through the gateway /npm/ (verdaccio) path"; return 1 ;;
-  esac
+  assert_origin gateway "$resolved" "tarball did not come through the gateway /npm/ (verdaccio) path" || return 1
 }
 
-# ---- S5: block left-pad 1.3.0 via npm-rules.yaml push -------------------------------------
+# ---- S5: block left-pad 1.3.0 via policy.toml push ----------------------------------------
 left_pad_130_hidden() {
   local body
-  body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/left-pad") || return 1
+  body=$(gw_get /npm/left-pad) || return 1
   ! grep -q '"1.3.0":' <<<"$body"
 }
 left_pad_130_visible() {
   local body
-  body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/left-pad") || return 1
+  body=$(gw_get /npm/left-pad) || return 1
   grep -q '"1.3.0":' <<<"$body"
 }
 
 s5_npm_policy_block() {
   local versions
-  NPM_RULES_DIRTY=1
-  put_policy_file npm-rules.yaml "${BLOCK_LEFTPAD_RULES}" "test(e2e): S5 block left-pad 1.3.0" || return 1
+  # establish the visible baseline first (see S4): a fail-closed empty packument
+  # would otherwise satisfy the hidden-check below for the wrong reason, masking
+  # whether the block actually took effect.
+  wait_for 60 2 "left-pad 1.3.0 visible before applying the block" left_pad_130_visible || return 1
+  POLICY_DIRTY=1
+  put_policy_file policy.toml "${POLICY_BLOCK_LEFTPAD_130}" "test(e2e): S5 block left-pad 1.3.0" || return 1
   wait_for 45 2 "left-pad 1.3.0 filtered from packument" left_pad_130_hidden || return 1
   versions=$(npm_fresh view left-pad versions --json) || { echo "npm view failed"; return 1; }
   echo "npm view left-pad versions: ${versions}"
   echo "$versions" | jq -e 'length > 0' >/dev/null || { echo "empty versions list"; return 1; }
   echo "$versions" | jq -e 'index("1.3.0") == null' >/dev/null \
     || { echo "1.3.0 still present in npm view output"; return 1; }
-  put_policy_file npm-rules.yaml "${ORIG_NPM_RULES}" "test(e2e): S5 revert npm rules" || return 1
+  put_policy_file policy.toml "${ORIG_POLICY}" "test(e2e): S5 revert policy" || return 1
   wait_for 45 2 "left-pad 1.3.0 visible again after revert" left_pad_130_visible || return 1
-  NPM_RULES_DIRTY=0
+  POLICY_DIRTY=0
 }
 
 # ---- S6: twine upload private wheel -> Gitea ---------------------------------------------
@@ -390,10 +374,7 @@ s7_pip_install_private() {
     --report "$report" "${PY_NAME}==${PY_VERSION}" || { echo "pip install failed"; return 1; }
   url=$(jq -r '.install[0].download_info.url' "$report")
   echo "downloaded from: ${url}"
-  case "$url" in
-    */api/packages/"${ARTEA_NAMESPACE}"/pypi/files/*) ;;
-    *) echo "wheel did not come from Gitea"; return 1 ;;
-  esac
+  assert_origin gitea-pypi "$url" "wheel did not come from Gitea" || return 1
 }
 
 # ---- S8: pip install six via gateway -> devpi -> PyPI ----------------------------------------
@@ -403,10 +384,8 @@ s8_pip_install_public() {
     --report "$report" six || { echo "pip install six failed"; return 1; }
   url=$(jq -r '.install[0].download_info.url' "$report")
   echo "downloaded from: ${url}"
-  case "$url" in
-    */root/pypi/*) ;; # public PyPI mirror path through the gateway
-    *) echo "six did not come through the devpi pull-through path"; return 1 ;;
-  esac
+  # public PyPI mirror path through the gateway
+  assert_origin devpi "$url" "six did not come through the devpi pull-through path" || return 1
 }
 
 # ---- S9: private name shadows the public one entirely ----------------------------------------
@@ -426,21 +405,21 @@ s9_precedence_shadowing() {
     || { echo "expected ONLY ${SHADOW_VERSION}; public versions leaked through"; return 1; }
 }
 
-# ---- S10: pypi-constraints.txt urllib3<2 ------------------------------------------------------
+# ---- S10: policy.toml constrains pypi urllib3 to <2 -------------------------------------------
 urllib3_v2_hidden() {
   local body
-  body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/urllib3/") || return 1
+  body=$(gw_get /pypi/simple/urllib3/) || return 1
   ! grep -q 'urllib3-2\.' <<<"$body"
 }
 urllib3_v2_visible() {
   local body
-  body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/urllib3/") || return 1
+  body=$(gw_get /pypi/simple/urllib3/) || return 1
   grep -q 'urllib3-2\.' <<<"$body"
 }
 
 s10_pypi_policy_constraint() {
-  local out line wheel code body blocked_file_path
-  body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/urllib3/") \
+  local out line wheel body blocked_file_path
+  body=$(gw_get /pypi/simple/urllib3/) \
     || { echo "pre-policy urllib3 simple fetch failed"; return 1; }
   blocked_file_path=$(echo "$body" \
     | grep -Eo 'href="[^"]*urllib3-2[^"]*\.(whl|tar\.gz|zip)[^"]*"' \
@@ -448,18 +427,28 @@ s10_pypi_policy_constraint() {
     | sed -E 's/^href="//; s/"$//; s#^https?://[^/]+##; s/#.*$//')
   [ -n "$blocked_file_path" ] \
     || { echo "could not find a urllib3 2.x file link before applying constraints"; return 1; }
-  CONSTRAINTS_DIRTY=1
-  put_policy_file pypi-constraints.txt "${ORIG_CONSTRAINTS}"$'\n'"urllib3<2" \
-    "test(e2e): S10 constrain urllib3<2" || return 1
+  POLICY_DIRTY=1
+  put_policy_file policy.toml "$(cat <<'TOML'
+# e2e fixture (S10) — policy.toml constraining urllib3 to <2; reverted by the suite.
+schema = 1
+
+[defaults]
+action = "allow"
+
+[[rules]]
+ecosystem = "pypi"
+name = "urllib3"
+versions = ">=2"
+action = "deny"
+reason = "e2e fixture (S10): pin to 1.x"
+TOML
+)" "test(e2e): S10 constrain urllib3<2 via policy.toml" || return 1
   wait_for 45 2 "urllib3 2.x filtered from simple index" urllib3_v2_hidden || return 1
   for path in "/root/pypi/+simple/urllib3/" "/root/constrained/+simple/urllib3/"; do
-    code=$(http_code -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}${path}")
-    [ "$code" = 404 ] || { echo "direct devpi route ${path} got HTTP ${code}, expected 404"; return 1; }
+    assert_code 404 -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}${path}" || return 1
   done
   echo "direct devpi simple routes are not reachable through the gateway"
-  code=$(http_code -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}${blocked_file_path}")
-  [ "$code" = 403 ] \
-    || { echo "blocked direct devpi file ${blocked_file_path} got HTTP ${code}, expected 403"; return 1; }
+  assert_code 403 -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}${blocked_file_path}" || return 1
   echo "direct devpi file URLs obey current PyPI constraints"
   out=$(pip_e2e index versions urllib3 --index-url "${INDEX_URL}" 2>&1) \
     || { echo "pip index versions failed: ${out}"; return 1; }
@@ -476,14 +465,14 @@ s10_pypi_policy_constraint() {
     urllib3-1.*) ;;
     *) echo "pip resolved a non-1.x urllib3"; return 1 ;;
   esac
-  put_policy_file pypi-constraints.txt "${ORIG_CONSTRAINTS}" "test(e2e): S10 revert constraints" || return 1
+  put_policy_file policy.toml "${ORIG_POLICY}" "test(e2e): S10 revert policy" || return 1
   wait_for 45 2 "urllib3 2.x visible again after revert" urllib3_v2_visible || return 1
-  CONSTRAINTS_DIRTY=0
+  POLICY_DIRTY=0
 }
 
 # ---- S11: one PAT everywhere; read:package can pull but not publish (401) ---------------------
 s11_token_scopes() {
-  local ro_token no_package_token out code proj="${WORK}/proj-s11"
+  local ro_token no_package_token out proj="${WORK}/proj-s11"
   # dev1's single write:package PAT already drove S2-S10 (publish+install, npm+pypi)
   ro_token=$(mint_dev1_token "${RO_TOKEN_NAME}" '["read:package","read:user","read:organization"]') \
     || { echo "minting read-only token failed"; return 1; }
@@ -496,8 +485,7 @@ s11_token_scopes() {
     npm install "${NPM_NAME}@${NPM_VERSION}") || { echo "read-only npm install failed"; return 1; }
   pip_e2e install -q --index-url "$(index_url "${ro_token}")" --force-reinstall --no-deps \
     "${PY_NAME}==${PY_VERSION}" || { echo "read-only pip install failed"; return 1; }
-  code=$(http_code -u "dev1:${ro_token}" "${GATEWAY_URL}/npm/left-pad")
-  [ "$code" = 200 ] || { echo "read-only verdaccio pull got HTTP ${code}"; return 1; }
+  assert_code 200 -u "dev1:${ro_token}" "${GATEWAY_URL}/npm/left-pad" || return 1
   echo "read-only token installs fine (npm private+public, pip private)"
 
   # npm publish with the read-only token must be rejected with 401 (not 403)
@@ -528,11 +516,11 @@ s11_token_scopes() {
     "${GATEWAY_URL}/pypi/simple/six/" \
     "${GATEWAY_URL}/api/packages/${ARTEA_NAMESPACE}/pypi/simple/${PY_NAME}/"
   do
-    code=$(http_code -u "dev1:${no_package_token}" "$url")
-    [ "$code" = 403 ] || { echo "no-package-scope token got HTTP ${code} for ${url}, expected 403"; return 1; }
+    assert_code 403 -u "dev1:${no_package_token}" "$url" || return 1
   done
-  code=$(http_code -u "dev1:${no_package_token}" "${GATEWAY_URL}/api/v1/packages/${ARTEA_NAMESPACE}/?type=pypi&limit=1")
-  [ "$code" = 403 ] || { echo "Gitea package-management probe with no package scope got HTTP ${code}, expected 403"; return 1; }
+  assert_code 403 -u "dev1:${no_package_token}" \
+    "${GATEWAY_URL}/api/v1/packages/${ARTEA_NAMESPACE}/?type=pypi&limit=1" \
+    || { echo "Gitea package-management probe with no package scope rejected"; return 1; }
   echo "token with read:user/read:organization but no package scope is rejected before package proxies"
 
   delete_dev1_token "${RO_TOKEN_NAME}"
@@ -580,32 +568,29 @@ tarball_130_blocked() { [ "$(http_code -u "dev1:${DEV1_TOKEN}" "${TARBALL_BLOCKE
 tarball_130_allowed() { [ "$(http_code -u "dev1:${DEV1_TOKEN}" "${TARBALL_BLOCKED}")" = 200 ]; }
 
 s13_tarball_enforcement() {
-  local code body
+  local body
   # anonymous /npm/: Verdaccio's service endpoints must challenge, not answer
   body=$(curl -s -o /dev/null -w '%{http_code} %header{www-authenticate}' "${GATEWAY_URL}/npm/-/ping")
-  [ "$body" = '401 Basic realm="Artea"' ] \
-    || { echo "anonymous /npm/-/ping: expected 401 + Basic challenge, got: ${body}"; return 1; }
-  code=$(http_code "${GATEWAY_URL}/npm/-/v1/search?text=left-pad")
-  [ "$code" = 401 ] || { echo "anonymous /npm/ search got HTTP ${code}, expected 401"; return 1; }
+  assert_eq '401 Basic realm="Artea"' "$body" "anonymous /npm/-/ping: expected 401 + Basic challenge" || return 1
+  assert_code 401 "${GATEWAY_URL}/npm/-/v1/search?text=left-pad" || return 1
   echo "anonymous /npm/-/ping and /npm/-/v1/search get 401 with Basic challenge"
 
-  NPM_RULES_DIRTY=1
-  put_policy_file npm-rules.yaml "${BLOCK_LEFTPAD_RULES}" "test(e2e): S13 block left-pad 1.3.0" || return 1
+  POLICY_DIRTY=1
+  put_policy_file policy.toml "${POLICY_BLOCK_LEFTPAD_130}" "test(e2e): S13 block left-pad 1.3.0" || return 1
   wait_for 45 2 "blocked tarball rejected with 403" tarball_130_blocked || return 1
   body=$(curl -s -u "dev1:${DEV1_TOKEN}" "${TARBALL_BLOCKED}")
-  grep -q 'blocked by registry policy' <<<"$body" \
-    || { echo "403 body is not the policy middleware's JSON error: ${body}"; return 1; }
-  code=$(http_code -u "dev1:${DEV1_TOKEN}" "${TARBALL_ALLOWED}")
-  [ "$code" = 200 ] || { echo "unblocked 1.2.0 tarball got HTTP ${code}, expected 200"; return 1; }
+  assert_contains 'blocked by registry policy' "$body" \
+    "403 body is not the policy middleware's JSON error: ${body}" || return 1
+  assert_code 200 -u "dev1:${DEV1_TOKEN}" "${TARBALL_ALLOWED}" || return 1
   echo "blocked 1.3.0 tarball -> 403 (policy JSON); unblocked 1.2.0 tarball -> 200"
-  put_policy_file npm-rules.yaml "${ORIG_NPM_RULES}" "test(e2e): S13 revert npm rules" || return 1
+  put_policy_file policy.toml "${ORIG_POLICY}" "test(e2e): S13 revert policy" || return 1
   wait_for 45 2 "tarball served again after revert" tarball_130_allowed || return 1
-  NPM_RULES_DIRTY=0
+  POLICY_DIRTY=0
 }
 
 # ---- S14: branch protection on registry-policy@main (governance) ------------------------------
 s14_branch_protection() {
-  local token auth_header clone="${WORK}/s14-policy-clone" out code sha b64
+  local token auth_header clone="${WORK}/s14-policy-clone" out sha b64
   token=$(mint_dev1_token "${S14_TOKEN_NAME}" '["write:repository","read:user"]') \
     || { echo "minting dev1 repo-scoped token failed"; return 1; }
   auth_header=$(printf 'dev1:%s' "$token" | base64 | tr -d '\n')
@@ -614,7 +599,7 @@ s14_branch_protection() {
   git -c "http.extraHeader=Authorization: Basic ${auth_header}" \
     clone -q "http://${GATEWAY_HOSTPORT}/${POLICY_REPO}.git" "$clone" \
     || { echo "git clone as dev1 failed (developers team should have code read)"; return 1; }
-  (cd "$clone" && echo "# e2e S14 direct-push probe" >> npm-rules.yaml \
+  (cd "$clone" && echo "# e2e S14 direct-push probe" >> policy.toml \
     && git -c user.email=dev1@localhost -c user.name=dev1 commit -aqm "test(e2e): S14 probe") || return 1
   if out=$(git -C "$clone" -c "http.extraHeader=Authorization: Basic ${auth_header}" \
     push origin HEAD:main 2>&1); then
@@ -625,24 +610,24 @@ s14_branch_protection() {
   echo "dev1 git push to main rejected: protected branch"
 
   # the contents API goes through the same check: dev1 gets 403
-  admin_api GET "/repos/${POLICY_REPO}/contents/npm-rules.yaml"
+  admin_api GET "/repos/${POLICY_REPO}/contents/policy.toml"
   sha=$(echo "$API_BODY" | jq -r .sha)
   b64=$(printf '%s\n' '# e2e S14 contents-API probe' | json_b64)
-  code=$(http_code -X PUT -H "Authorization: token ${token}" -H 'Content-Type: application/json' \
+  assert_code 403 -X PUT -H "Authorization: token ${token}" -H 'Content-Type: application/json' \
     -d "{\"content\":\"${b64}\",\"sha\":\"${sha}\",\"message\":\"test(e2e): S14 contents probe\"}" \
-    "${GATEWAY_URL}/api/v1/repos/${POLICY_REPO}/contents/npm-rules.yaml")
-  [ "$code" = 403 ] || { echo "dev1 contents-API edit got HTTP ${code}, expected 403"; return 1; }
-  [ "$(get_policy_file npm-rules.yaml)" = "${ORIG_NPM_RULES}" ] \
-    || { echo "npm-rules.yaml on main changed despite the rejections"; return 1; }
+    "${GATEWAY_URL}/api/v1/repos/${POLICY_REPO}/contents/policy.toml" \
+    || { echo "dev1 contents-API edit was not rejected with 403"; return 1; }
+  [ "$(get_policy_file policy.toml)" = "${ORIG_POLICY}" ] \
+    || { echo "policy.toml on main changed despite the rejections"; return 1; }
   echo "dev1 contents-API edit rejected with 403; main unchanged"
 
   # the configured admin stays on the push allowlist: contents-API edits still land
-  NPM_RULES_DIRTY=1
-  put_policy_file npm-rules.yaml "${ORIG_NPM_RULES}"$'\n'"# e2e S14: admin allowlist probe" \
+  POLICY_DIRTY=1
+  put_policy_file policy.toml "${ORIG_POLICY}"$'\n'"# e2e S14: admin allowlist probe" \
     "test(e2e): S14 admin edit through branch protection" \
     || { echo "${ARTEA_ADMIN_USER} contents-API edit failed under branch protection"; return 1; }
-  put_policy_file npm-rules.yaml "${ORIG_NPM_RULES}" "test(e2e): S14 revert admin probe" || return 1
-  NPM_RULES_DIRTY=0
+  put_policy_file policy.toml "${ORIG_POLICY}" "test(e2e): S14 revert admin probe" || return 1
+  POLICY_DIRTY=0
   echo "${ARTEA_ADMIN_USER} contents-API edits on main still work (push allowlist)"
 
   delete_dev1_token "${S14_TOKEN_NAME}"
@@ -670,7 +655,7 @@ six_blocked() { # fresh '*'-seeded mirror exposes no six files through the gatew
 }
 six_served() {
   local body
-  body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/six/") || return 1
+  body=$(gw_get /pypi/simple/six/) || return 1
   grep -q 'six-1\.' <<<"$body"
 }
 # S13/S14 policy pushes leave webhook syncs (with 2/4/8s retries) in flight; one
@@ -758,24 +743,22 @@ s15_fail_closed() {
   fi
   wait_for 15 1 "fresh mirror serves nothing (entrypoint's '*' seed)" six_blocked || return 1
   # heal via the real trigger: a policy-repo push webhook fires a full sync,
-  # and policy-sync compares the LIVE index config, so the unchanged
-  # constraints file still replaces the '*' seed
-  CONSTRAINTS_DIRTY=1
-  put_policy_file pypi-constraints.txt "${ORIG_CONSTRAINTS}"$'\n'"# e2e S15 sync trigger" \
+  # and policy-sync compares the LIVE index config, so the (re-compiled)
+  # constraints still replace the '*' seed. A byte-change to policy.toml is
+  # enough to fire the webhook.
+  POLICY_DIRTY=1
+  put_policy_file policy.toml "${ORIG_POLICY}"$'\n'"# e2e S15 sync trigger" \
     "test(e2e): S15 trigger policy sync" || return 1
   wait_for 60 2 "six served again after policy-sync heals devpi" six_served || return 1
-  put_policy_file pypi-constraints.txt "${ORIG_CONSTRAINTS}" "test(e2e): S15 revert sync trigger" || return 1
-  CONSTRAINTS_DIRTY=0
+  put_policy_file policy.toml "${ORIG_POLICY}" "test(e2e): S15 revert sync trigger" || return 1
+  POLICY_DIRTY=0
   DEVPI_WIPED=0
   # S8 works again end-to-end: pip install six lands on the devpi mirror path
   pip_e2e install -q --index-url "${INDEX_URL}" --force-reinstall --no-deps \
     --report "$report" six || { echo "pip install six failed after recovery"; return 1; }
   url=$(jq -r '.install[0].download_info.url' "$report")
   echo "post-recovery six downloaded from: ${url}"
-  case "$url" in
-    */root/pypi/*) ;;
-    *) echo "six did not come through the devpi pull-through path"; return 1 ;;
-  esac
+  assert_origin devpi "$url" "six did not come through the devpi pull-through path" || return 1
 }
 
 # ---- S16: PEP 503 normalization cannot dodge the private shadow --------------------------------
@@ -788,10 +771,10 @@ s16_normalization() {
     code=${body##*$'\n'}
     body=${body%$'\n'*}
     [ "$code" = 200 ] || { echo "GET /pypi/simple/${s} -> HTTP ${code}, expected 200"; return 1; }
-    grep -q "/api/packages/${ARTEA_NAMESPACE}/pypi/files/" <<<"$body" \
-      || { echo "/pypi/simple/${s}: no Gitea file URLs — not the private package"; return 1; }
-    grep -q '/root/' <<<"$body" \
-      && { echo "/pypi/simple/${s}: devpi mirror URLs leaked into the response"; return 1; }
+    assert_contains "/api/packages/${ARTEA_NAMESPACE}/pypi/files/" "$body" \
+      "/pypi/simple/${s}: no Gitea file URLs — not the private package" || return 1
+    assert_not_contains "/root/" "$body" \
+      "/pypi/simple/${s}: devpi mirror URLs leaked into the response" || return 1
     echo "/pypi/simple/${s} -> 200 with Gitea file URLs only"
   done
   # pip, fed a non-canonical spelling, must install the private wheel from Gitea
@@ -799,10 +782,7 @@ s16_normalization() {
     --report "$report" "${PY_NAME_UNDERSCORE}==${PY_VERSION}" || { echo "pip install ${PY_NAME_UNDERSCORE} failed"; return 1; }
   url=$(jq -r '.install[0].download_info.url' "$report")
   echo "pip downloaded from: ${url}"
-  case "$url" in
-    */api/packages/"${ARTEA_NAMESPACE}"/pypi/files/*) ;;
-    *) echo "wheel did not come from Gitea"; return 1 ;;
-  esac
+  assert_origin gitea-pypi "$url" "wheel did not come from Gitea" || return 1
 }
 
 # ---- S17: legacy scoped .npmrc still works; encoded private-scope paths route to Gitea ------
@@ -817,7 +797,7 @@ s17_legacy_and_encoding() {
   (cd "$proj" && npm_config_userconfig="${npmrc_legacy}" npm_config_cache="${WORK}/npm-cache-s17" \
     npm install "${NPM_NAME}@${NPM_VERSION}") || { echo "legacy-npmrc npm install failed"; return 1; }
   version=$(jq -r .version "$proj/node_modules/${NPM_NAME}/package.json")
-  [ "$version" = "${NPM_VERSION}" ] || { echo "legacy install got ${version}, expected ${NPM_VERSION}"; return 1; }
+  assert_eq "${NPM_VERSION}" "$version" "legacy install version mismatch" || return 1
   echo "legacy two-registry .npmrc installs ${NPM_NAME}@${NPM_VERSION}"
 
   # b. packuments under /npm/: encoded and literal private-scope spellings both reach Gitea
@@ -826,8 +806,8 @@ s17_legacy_and_encoding() {
     code=${body##*$'\n'}
     body=${body%$'\n'*}
     [ "$code" = 200 ] || { echo "GET /npm/${spelling} -> HTTP ${code}, expected 200"; return 1; }
-    grep -qF "\"${NPM_VERSION}\"" <<<"$body" \
-      || { echo "/npm/${spelling}: packument does not contain ${NPM_VERSION}"; return 1; }
+    assert_contains "\"${NPM_VERSION}\"" "$body" \
+      "/npm/${spelling}: packument does not contain ${NPM_VERSION}" || return 1
     echo "/npm/${spelling} -> 200, packument contains ${NPM_VERSION}"
   done
 
@@ -840,18 +820,17 @@ s17_legacy_and_encoding() {
   # d. boundary: <scope>-evil must NOT be captured by the configured scope route — it falls
   # through to Verdaccio, which misses on npmjs (404). 400 would mean the
   # gateway's encoded-path rejection fired; 401 would mean Gitea answered.
-  code=$(http_code -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/@${ARTEA_NAMESPACE}-evil%2fnope")
-  [ "$code" = 404 ] || { echo "/npm/@${ARTEA_NAMESPACE}-evil%2fnope -> HTTP ${code}, expected 404 (Verdaccio miss)"; return 1; }
+  assert_code 404 -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/@${ARTEA_NAMESPACE}-evil%2fnope" \
+    || { echo "expected 404 (Verdaccio miss), not the Gitea route"; return 1; }
   echo "/npm/@${ARTEA_NAMESPACE}-evil%2fnope -> 404 from the Verdaccio path, not the Gitea route"
 
   # e. the private-scope route is guarded before Gitea; unauthenticated callers
   # get the gateway Basic challenge.
-  code=$(http_code "${GATEWAY_URL}/npm/${NPM_NAME_ENC}")
-  [ "$code" = 401 ] || { echo "anonymous /npm/${NPM_NAME_ENC} -> HTTP ${code}, expected 401"; return 1; }
+  assert_code 401 "${GATEWAY_URL}/npm/${NPM_NAME_ENC}" || return 1
   echo "anonymous /npm/${NPM_NAME_ENC} -> 401"
 }
 
-# ---- S22: PEP 700 upload-time enrichment of the JSON Simple API --------------------------------
+# ---- S20: PEP 700 upload-time enrichment of the JSON Simple API --------------------------------
 # Proves the end-to-end mechanism the routing unit test only stubs: a real
 # Accept: application/vnd.pypi.simple.v1+json request through the gateway is
 # enriched to api-version 1.1 with per-file upload-time, for BOTH the public
@@ -862,8 +841,8 @@ pypi_json() { # <token> <name> -> v1+json Simple API body (enriched) or non-zero
     "${GATEWAY_URL}/pypi/simple/$2/"
 }
 
-s22_pep700_upload_time() {
-  local body report="${WORK}/s22-report.json" url stamped
+s20_pep700_upload_time() {
+  local body report="${WORK}/s20-report.json" url stamped
   # a. PUBLIC branch (six -> devpi pull-through). The Gitea-first probe 404s, so
   #    enrichment joins devpi's constrained list with PyPI JSON upload-time.
   body=$(pypi_json "${DEV1_TOKEN}" six) || { echo "public v1+json fetch failed"; return 1; }
@@ -892,7 +871,7 @@ s22_pep700_upload_time() {
 
   # c. non-JSON path is unchanged: a plain Accept must still get PEP 503 HTML,
   #    not the enriched JSON (regression guard for the byte-for-byte path).
-  body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/six/") \
+  body=$(gw_get /pypi/simple/six/) \
     || { echo "non-JSON six fetch failed"; return 1; }
   grep -q 'api-version' <<<"$body" && { echo "non-JSON path leaked JSON enrichment"; return 1; }
   echo "non-JSON path still serves PEP 503 HTML (no enrichment)"
@@ -901,134 +880,45 @@ s22_pep700_upload_time() {
   #    index. pip --uploaded-prior-to needs >= 24.1; skip gracefully if older
   #    (the curl assertions above already prove upload-time is present).
   if pip_e2e download --help 2>&1 | grep -q -- '--uploaded-prior-to'; then
-    rm -rf "${WORK}/s22-dl" && mkdir -p "${WORK}/s22-dl"
+    rm -rf "${WORK}/s20-dl" && mkdir -p "${WORK}/s20-dl"
     # a date far in the future accepts all existing releases; the point is that
     # the index now PROVIDES upload-time so the flag no longer hard-errors.
-    pip_e2e download -q --index-url "${INDEX_URL}" --no-deps -d "${WORK}/s22-dl" \
+    pip_e2e download -q --index-url "${INDEX_URL}" --no-deps -d "${WORK}/s20-dl" \
       --uploaded-prior-to 2999-01-01T00:00:00Z six \
       || { echo "pip --uploaded-prior-to install of six failed against the enriched index"; return 1; }
-    echo "pip --uploaded-prior-to resolved six: $(ls "${WORK}/s22-dl" | head -1)"
+    echo "pip --uploaded-prior-to resolved six: $(ls "${WORK}/s20-dl" | head -1)"
     # private package too: proves the Gitea-branch upload-time is consumable
-    rm -rf "${WORK}/s22-dl-priv" && mkdir -p "${WORK}/s22-dl-priv"
-    pip_e2e download -q --index-url "${INDEX_URL}" --no-deps -d "${WORK}/s22-dl-priv" \
+    rm -rf "${WORK}/s20-dl-priv" && mkdir -p "${WORK}/s20-dl-priv"
+    pip_e2e download -q --index-url "${INDEX_URL}" --no-deps -d "${WORK}/s20-dl-priv" \
       --uploaded-prior-to 2999-01-01T00:00:00Z "${PY_NAME}==${PY_VERSION}" \
       || { echo "pip --uploaded-prior-to install of the private package failed"; return 1; }
-    echo "pip --uploaded-prior-to resolved ${PY_NAME}: $(ls "${WORK}/s22-dl-priv" | head -1)"
+    echo "pip --uploaded-prior-to resolved ${PY_NAME}: $(ls "${WORK}/s20-dl-priv" | head -1)"
   else
     echo "pip lacks --uploaded-prior-to (< 24.1); skipped the install leg (curl assertions cover metadata)"
   fi
 }
 
-# ---- S18-S21: unified policy.toml (ADR-0007) --------------------------------------------------
-# LIVE VALIDATION PENDING: these scenarios are written + integrated but have NOT
-# been executed against a live stack here (no `make up`/`make bootstrap` available
-# in this environment). They follow the existing scenario/helper patterns and the
-# unified compile semantics in docs/policy-schema.md, but must be run once against
-# a real deployment before being trusted. Do not assume they pass.
-#
-# All four author policy.toml (which, when present, wins over the legacy files —
-# docs/policy-schema.md "Migration") and then DELETE it so the legacy-3-file mode
-# the other scenarios depend on (S5/S10/S13/S14) is restored. UNIFIED_DIRTY guards
-# the cleanup revert, mirroring NPM_RULES_DIRTY/CONSTRAINTS_DIRTY.
+# ---- S18-S19: unified policy.toml (ADR-0007) --------------------------------------------------
+# These scenarios author non-trivial policy.toml documents and revert to
+# ORIG_POLICY afterward (POLICY_DIRTY guards the cleanup revert). They exercise
+# the unified compile semantics in docs/policy-schema.md.
 
-# S18: unified npm block — S5 authored as policy.toml.
-# A single deny rule (ecosystem=npm, name=left-pad, versions=1.3.0) compiles to
-# the same npm-rules.yaml block the legacy S5 push produces.
-s18_unified_npm_block() {
-  local versions
-  UNIFIED_DIRTY=1
-  put_policy_file policy.toml "$(cat <<'TOML'
-# e2e fixture (S18) — unified policy.toml blocking left-pad 1.3.0; reverted by the suite.
-schema = 1
-
-[defaults]
-action = "allow"
-
-[[rules]]
-ecosystem = "npm"
-name = "left-pad"
-versions = "1.3.0"
-action = "deny"
-reason = "e2e fixture (S18 unified)"
-TOML
-)" "test(e2e): S18 block left-pad 1.3.0 via policy.toml" || return 1
-  wait_for 45 2 "left-pad 1.3.0 filtered from packument (unified)" left_pad_130_hidden || return 1
-  versions=$(npm_fresh view left-pad versions --json) || { echo "npm view failed"; return 1; }
-  echo "npm view left-pad versions: ${versions}"
-  echo "$versions" | jq -e 'length > 0' >/dev/null || { echo "empty versions list"; return 1; }
-  echo "$versions" | jq -e 'index("1.3.0") == null' >/dev/null \
-    || { echo "1.3.0 still present in npm view output"; return 1; }
-  # drop policy.toml -> back to legacy mode -> 1.3.0 visible again
-  delete_policy_file policy.toml "test(e2e): S18 drop policy.toml (restore legacy)" || return 1
-  wait_for 45 2 "left-pad 1.3.0 visible again after dropping policy.toml" left_pad_130_visible || return 1
-  UNIFIED_DIRTY=0
-}
-
-# S19: unified pypi constrain — S10 authored as policy.toml.
-# deny pypi urllib3 >=2 compiles to the constraint `urllib3<2` (allow-list of <2).
-s19_unified_pypi_constrain() {
-  local out line wheel code body blocked_file_path
-  body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/urllib3/") \
-    || { echo "pre-policy urllib3 simple fetch failed"; return 1; }
-  blocked_file_path=$(echo "$body" \
-    | grep -Eo 'href="[^"]*urllib3-2[^"]*\.(whl|tar\.gz|zip)[^"]*"' \
-    | head -1 \
-    | sed -E 's/^href="//; s/"$//; s#^https?://[^/]+##; s/#.*$//')
-  [ -n "$blocked_file_path" ] \
-    || { echo "could not find a urllib3 2.x file link before applying constraints"; return 1; }
-  UNIFIED_DIRTY=1
-  put_policy_file policy.toml "$(cat <<'TOML'
-# e2e fixture (S19) — unified policy.toml constraining urllib3 to <2; reverted by the suite.
-schema = 1
-
-[defaults]
-action = "allow"
-
-[[rules]]
-ecosystem = "pypi"
-name = "urllib3"
-versions = ">=2"
-action = "deny"
-reason = "e2e fixture (S19 unified): pin to 1.x"
-TOML
-)" "test(e2e): S19 constrain urllib3<2 via policy.toml" || return 1
-  wait_for 45 2 "urllib3 2.x filtered from simple index (unified)" urllib3_v2_hidden || return 1
-  for path in "/root/pypi/+simple/urllib3/" "/root/constrained/+simple/urllib3/"; do
-    code=$(http_code -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}${path}")
-    [ "$code" = 404 ] || { echo "direct devpi route ${path} got HTTP ${code}, expected 404"; return 1; }
-  done
-  echo "direct devpi simple routes are not reachable through the gateway"
-  code=$(http_code -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}${blocked_file_path}")
-  [ "$code" = 403 ] \
-    || { echo "blocked direct devpi file ${blocked_file_path} got HTTP ${code}, expected 403"; return 1; }
-  echo "direct devpi file URLs obey the unified-compiled PyPI constraints"
-  out=$(pip_e2e index versions urllib3 --index-url "${INDEX_URL}" 2>&1) \
-    || { echo "pip index versions failed: ${out}"; return 1; }
-  line=$(echo "$out" | grep '^Available versions:') || { echo "no versions line"; return 1; }
-  echo "$line"
-  grep -Eq '(:|, )2\.' <<<"$line" && { echo "a 2.x version is still visible"; return 1; }
-  # drop policy.toml -> back to legacy mode -> urllib3 2.x visible again
-  delete_policy_file policy.toml "test(e2e): S19 drop policy.toml (restore legacy)" || return 1
-  wait_for 45 2 "urllib3 2.x visible again after dropping policy.toml" urllib3_v2_visible || return 1
-  UNIFIED_DIRTY=0
-}
-
-# S20: allow-wins — a specific exact-version allow beats a broader whole-package
+# S18: allow-wins — a specific exact-version allow beats a broader whole-package
 # deny. deny left-pad (whole) + allow left-pad ==1.3.0 compiles to the semver
 # complement `<1.3.0 || >1.3.0`, so 1.3.0 stays VISIBLE while every other version
 # is blocked. (docs/policy-schema.md "Precedence and evaluation (allow-wins)".)
 left_pad_only_130_visible() { # 1.3.0 present AND at least one other version hidden
   local body
-  body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/left-pad") || return 1
+  body=$(gw_get /npm/left-pad) || return 1
   grep -q '"1.3.0":' <<<"$body" || return 1   # the carved-out version stays
   ! grep -q '"1.2.0":' <<<"$body"             # a broader-deny version is gone
 }
 
-s20_unified_allow_wins() {
+s18_unified_allow_wins() {
   local body
-  UNIFIED_DIRTY=1
+  POLICY_DIRTY=1
   put_policy_file policy.toml "$(cat <<'TOML'
-# e2e fixture (S20) — unified policy.toml: allow-wins exact-version carve-out;
+# e2e fixture (S18) — unified policy.toml: allow-wins exact-version carve-out;
 # reverted by the suite. Whole-package deny of left-pad, but 1.3.0 is explicitly
 # allowed, so the compiler emits the complement `<1.3.0 || >1.3.0` and 1.3.0 stays.
 schema = 1
@@ -1040,36 +930,36 @@ action = "allow"
 ecosystem = "npm"
 name = "left-pad"
 action = "deny"
-reason = "e2e fixture (S20): broad deny"
+reason = "e2e fixture (S18): broad deny"
 
 [[rules]]
 ecosystem = "npm"
 name = "left-pad"
 versions = "1.3.0"
 action = "allow"
-reason = "e2e fixture (S20): vetted exact version"
+reason = "e2e fixture (S18): vetted exact version"
 TOML
-)" "test(e2e): S20 allow 1.3.0 beats whole-package deny" || return 1
+)" "test(e2e): S18 allow 1.3.0 beats whole-package deny" || return 1
   wait_for 45 2 "only left-pad 1.3.0 visible (allow-wins carve-out)" left_pad_only_130_visible || return 1
-  body=$(curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/left-pad") || { echo "packument fetch failed"; return 1; }
+  body=$(gw_get /npm/left-pad) || { echo "packument fetch failed"; return 1; }
   grep -q '"1.3.0":' <<<"$body" || { echo "1.3.0 (allowed) is missing"; return 1; }
   grep -q '"1.2.0":' <<<"$body" && { echo "1.2.0 (denied) is still present"; return 1; }
   echo "allow-wins: left-pad 1.3.0 visible, 1.2.0 blocked by the broader deny"
-  delete_policy_file policy.toml "test(e2e): S20 drop policy.toml (restore legacy)" || return 1
-  wait_for 45 2 "left-pad 1.2.0 visible again after dropping policy.toml" left_pad_130_visible || return 1
-  UNIFIED_DIRTY=0
+  put_policy_file policy.toml "${ORIG_POLICY}" "test(e2e): S18 revert policy" || return 1
+  wait_for 45 2 "left-pad 1.2.0 visible again after revert" left_pad_130_visible || return 1
+  POLICY_DIRTY=0
 }
 
-# S21: a malformed policy.toml keeps last-known-good. policy-sync validates the
+# S19: a malformed policy.toml keeps last-known-good. policy-sync validates the
 # whole policy before applying; a structural error fails the sync, the previously
 # applied policy stays in effect, /healthz reports last_sync_ok:false, and public
 # fetch keeps working. (docs/policy-schema.md "Validation".)
-s21_unified_last_known_good() {
+s19_unified_last_known_good() {
   local state
-  UNIFIED_DIRTY=1
+  POLICY_DIRTY=1
   # 1. a VALID policy.toml that blocks left-pad 1.3.0; wait until applied
   put_policy_file policy.toml "$(cat <<'TOML'
-# e2e fixture (S21) — valid baseline blocking left-pad 1.3.0; a malformed edit
+# e2e fixture (S19) — valid baseline blocking left-pad 1.3.0; a malformed edit
 # below must NOT tear this down (last-known-good). Reverted by the suite.
 schema = 1
 
@@ -1081,16 +971,16 @@ ecosystem = "npm"
 name = "left-pad"
 versions = "1.3.0"
 action = "deny"
-reason = "e2e fixture (S21): last-known-good baseline"
+reason = "e2e fixture (S19): last-known-good baseline"
 TOML
-)" "test(e2e): S21 valid baseline (block left-pad 1.3.0)" || return 1
+)" "test(e2e): S19 valid baseline (block left-pad 1.3.0)" || return 1
   wait_for 45 2 "left-pad 1.3.0 blocked by the valid baseline" left_pad_130_hidden || return 1
   echo "baseline applied: left-pad 1.3.0 hidden"
 
   # 2. push a structurally BROKEN policy.toml (a rule with neither name nor
   # namespace) — policy_model rejects it, the sync fails, nothing is re-applied
   put_policy_file policy.toml "$(cat <<'TOML'
-# e2e fixture (S21) — deliberately malformed: a rule with neither name nor
+# e2e fixture (S19) — deliberately malformed: a rule with neither name nor
 # namespace is a structural error; policy-sync must keep last-known-good.
 schema = 1
 
@@ -1101,7 +991,7 @@ action = "allow"
 ecosystem = "npm"
 action = "deny"
 TOML
-)" "test(e2e): S21 malformed policy.toml (must keep last-known-good)" || return 1
+)" "test(e2e): S19 malformed policy.toml (must keep last-known-good)" || return 1
 
   # 3a. the previously-applied block STAYS in effect after the failed sync
   sleep 10 # allow at least one poll/webhook sync attempt to fail
@@ -1110,7 +1000,7 @@ TOML
 
   # 3b. public fetch still works (the packument still resolves with versions;
   # 1.3.0 stays filtered per 3a, but the rest of the package is served)
-  curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/left-pad" \
+  gw_get /npm/left-pad \
     | jq -e '.versions | length > 0' >/dev/null \
     || { echo "public fetch broke during the malformed-policy window"; return 1; }
   echo "public fetch still works (left-pad packument still has versions)"
@@ -1124,10 +1014,10 @@ TOML
     *) echo "warning: expected last_sync_ok:false after a malformed push, saw: ${state}" ;;
   esac
 
-  # 4. drop policy.toml -> legacy mode -> left-pad fully visible again
-  delete_policy_file policy.toml "test(e2e): S21 drop policy.toml (restore legacy)" || return 1
-  wait_for 45 2 "left-pad 1.3.0 visible again after dropping policy.toml" left_pad_130_visible || return 1
-  UNIFIED_DIRTY=0
+  # 4. revert to the default-allow baseline -> left-pad fully visible again
+  put_policy_file policy.toml "${ORIG_POLICY}" "test(e2e): S19 revert policy" || return 1
+  wait_for 45 2 "left-pad 1.3.0 visible again after revert" left_pad_130_visible || return 1
+  POLICY_DIRTY=0
 }
 
 # ---- run ---------------------------------------------------------------------------------------
@@ -1137,12 +1027,12 @@ run_scenario S1 "bootstrap state: stack healthy, org/repo/webhook/PATs present" 
 run_scenario S2 "npm publish ${NPM_NAME}@${NPM_VERSION} -> Gitea" s2_npm_publish
 run_scenario S3 "npm install ${NPM_NAME} resolves from Gitea (gateway scope routing)" s3_npm_install_private
 run_scenario S4 "npm install left-pad via Verdaccio pull-through" s4_npm_install_public
-run_scenario S5 "policy push hides left-pad 1.3.0 from npm view" s5_npm_policy_block
+run_scenario S5 "policy.toml push hides left-pad 1.3.0 from npm view" s5_npm_policy_block
 run_scenario S6 "twine upload ${PY_NAME} ${PY_VERSION} -> Gitea" s6_twine_upload
 run_scenario S7 "pip install ${PY_NAME} via the gateway index" s7_pip_install_private
 run_scenario S8 "pip install six via gateway -> devpi -> PyPI" s8_pip_install_public
 run_scenario S9 "private ${SHADOW_NAME} fully shadows the PyPI name" s9_precedence_shadowing
-run_scenario S10 "constraints push limits urllib3 to <2 via gateway" s10_pypi_policy_constraint
+run_scenario S10 "policy.toml constrains urllib3 to <2 via gateway" s10_pypi_policy_constraint
 run_scenario S11 "read:package PAT installs but gets 401 on publish" s11_token_scopes
 run_scenario S12 "revoked PAT stops installing within 60s" s12_revocation
 run_scenario S13 "blocked version's tarball GET -> 403; anonymous /npm/ -> 401" s13_tarball_enforcement
@@ -1150,11 +1040,9 @@ run_scenario S14 "dev1 cannot push registry-policy@main; admin allowlist works" 
 run_scenario S15 "fail-closed: missing npm policy / wiped devpi, then recovery" s15_fail_closed
 run_scenario S16 "non-canonical pypi spellings still resolve to the private package" s16_normalization
 run_scenario S17 "legacy scoped .npmrc still works; encoded private-scope paths route to Gitea" s17_legacy_and_encoding
-run_scenario S18 "unified policy.toml hides left-pad 1.3.0 (S5 in the new format)" s18_unified_npm_block
-run_scenario S19 "unified policy.toml constrains urllib3 to <2 (S10 in the new format)" s19_unified_pypi_constrain
-run_scenario S20 "unified allow-wins: exact-version allow beats a whole-package deny" s20_unified_allow_wins
-run_scenario S21 "malformed policy.toml keeps last-known-good; public fetch still works" s21_unified_last_known_good
-run_scenario S22 "PEP 700 upload-time: v1+json enriched to api-version 1.1 (public+private)" s22_pep700_upload_time
+run_scenario S18 "unified allow-wins: exact-version allow beats a whole-package deny" s18_unified_allow_wins
+run_scenario S19 "malformed policy.toml keeps last-known-good; public fetch still works" s19_unified_last_known_good
+run_scenario S20 "PEP 700 upload-time: v1+json enriched to api-version 1.1 (public+private)" s20_pep700_upload_time
 
 if [ "$SELECTED_SCENARIOS" -eq 0 ]; then
   die "E2E_SCENARIOS selected no scenarios: ${E2E_SCENARIOS}"
@@ -1163,7 +1051,7 @@ fi
 echo
 if [ "$FAILED" = 0 ]; then
   if [ -z "${E2E_SCENARIOS}" ]; then
-    log "all 22 scenarios passed"
+    log "all 20 scenarios passed"
   else
     log "${SELECTED_SCENARIOS} selected scenario(s) passed: ${E2E_SCENARIOS}"
   fi

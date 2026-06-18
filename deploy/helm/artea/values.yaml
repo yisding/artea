@@ -56,6 +56,11 @@ gateway:
   service:
     type: ClusterIP
     port: 80
+  # Upstream-resolution mode for the single-source nginx.conf. "k8s" (default)
+  # emits startup-resolved upstream{} blocks; "compose" emits a resolver +
+  # per-request set $..._upstream and is set only by scripts/render-configs.sh
+  # when it renders the compose copy. Leave "k8s" for every Kubernetes install.
+  upstreamMode: k8s
   # Cluster DNS names baked into nginx.conf (files/gateway/nginx.conf). nginx
   # resolves them at startup; K8s Service ClusterIPs are stable, so per-request
   # re-resolution (the docker-compose pattern) is not needed.
@@ -328,87 +333,14 @@ verdaccio:
       - name: plugins
         mountPath: /verdaccio/plugins
         readOnly: true
-  # No htpasswd: auth is the auth-gitea plugin (secrets.htpasswd stays empty).
-  configMap: |
-    # Verdaccio config for Artea on Kubernetes — read-only npm pull-through
-    # cache behind the gateway. Adapted from verdaccio/config.yaml (compose):
-    # - listen: omitted (the chart's VERDACCIO_PORT env owns it)
-    # - policy_file -> policy_url: policy is fetched over HTTP from policy-sync
-    #   (no shared volume / RWX in K8s); the plugin polls with ETag, keeps
-    #   last-known-good in memory, and fails closed after a grace window.
-
-    # chart-managed PVC mounted at /verdaccio/storage (image default data dir)
-    storage: /verdaccio/storage/data
-
-    # emptyDir populated by the copy-plugins init container — the loader
-    # resolves <dir>/verdaccio-<name>
-    plugins: /verdaccio/plugins
-
-    # gateway serves us at <baseUrl>/npm/ and strips the prefix; url_prefix
-    # makes generated tarball/metadata URLs resolve back through it
-    url_prefix: /npm/
-
-    # no anonymous access anywhere (ARCHITECTURE.md auth model) — the web UI
-    # has no per-user auth gate in verdaccio 6, so it is disabled outright
-    web:
-      enable: false
-
-    auth:
-      # replaces htpasswd entirely: validates user:PAT against Gitea and maps
-      # configured namespace org/team membership to groups
-      auth-gitea:
-        gitea_url: http://artea-gitea-http:3000
-        private_namespace: '{{ include "artea.privateNamespace" . }}'
-
-    filters:
-      # policy over HTTP from policy-sync; missing/unparsable policy FAILS
-      # CLOSED (public packages rejected)
-      filter-artea:
-        policy_url: http://artea-policy-sync:8920/policy/npm-rules.yaml
-        upstream_policy_url: http://artea-policy-sync:8920/policy/upstream-policy.yaml
-        poll_interval_ms: {{ .Values.arteaPolicy.pollIntervalMs }}
-        fail_grace_ms: {{ .Values.arteaPolicy.failGraceMs }}
-
-    uplinks:
-      npmjs:
-        url: https://registry.npmjs.org/
-        cache: true
-        maxage: 2m
-        max_fails: 5
-        fail_timeout: 5m
-
-    packages:
-      # private scope: defense in depth. The gateway routes the configured
-      # private scope to Gitea; if one is misconfigured we still deny everything
-      # here — no access, no publish, no proxy, so private names never leak to
-      # npmjs.
-      '@{{ include "artea.privateNamespace" . }}/*':
-        access: []
-        publish: []
-        unpublish: []
-
-      # everything else: authenticated pull-through of npmjs. Publish is denied
-      # for everyone — Verdaccio is read-only; the only writable surface is Gitea.
-      '**':
-        access: $authenticated
-        publish: []
-        unpublish: []
-        proxy: npmjs
-
-    middlewares:
-      # proxy `npm audit` to the uplink
-      audit:
-        enabled: true
-      # same package as in filters: (one package, two plugin roles) — the
-      # middleware 403s direct tarball downloads of blocked versions (S13) and
-      # 503s them while the policy is unavailable (fail-closed, S15)
-      filter-artea:
-        policy_url: http://artea-policy-sync:8920/policy/npm-rules.yaml
-        upstream_policy_url: http://artea-policy-sync:8920/policy/upstream-policy.yaml
-        poll_interval_ms: {{ .Values.arteaPolicy.pollIntervalMs }}
-        fail_grace_ms: {{ .Values.arteaPolicy.failGraceMs }}
-
-    server:
-      keepAliveTimeout: 60
-
-    log: { type: stdout, format: pretty, level: info }
+  # The Verdaccio config is single-sourced from files/verdaccio/config.yaml and
+  # delivered via the umbrella ConfigMap artea-verdaccio-config (templates/
+  # verdaccio-config.yaml); existingConfigMap below points the subchart's mount
+  # at it. configMode selects that file's target-specific parts ("k8s" default;
+  # scripts/render-configs.sh sets "compose" for the compose render). No
+  # htpasswd: auth is the auth-gitea plugin (secrets.htpasswd stays empty).
+  configMode: k8s
+  existingConfigMap: artea-verdaccio-config
+  # The subchart still renders its own (now unused) ConfigMap from this key;
+  # keep it empty rather than duplicating the single source above.
+  configMap: ""

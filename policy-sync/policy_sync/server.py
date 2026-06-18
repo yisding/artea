@@ -151,12 +151,11 @@ class PolicySyncHandler(BaseHTTPRequestHandler):
         self._respond_raw(200, body, enrich.SIMPLE_JSON_ACCEPT)
 
     def do_HEAD(self) -> None:  # noqa: N802
-        if self.path == POLICY_ENDPOINT:
-            self._serve_policy(self.server.store, "npm")
-        elif self.path == UPSTREAM_POLICY_ENDPOINT:
-            self._serve_policy(self.server.upstream_store, "upstream")
-        else:
-            self._respond(404, {"error": "not found"})
+        # The response writers (_respond / _respond_raw / _serve_policy) all
+        # suppress the body when self.command == "HEAD", so a HEAD is just a GET
+        # whose body is dropped — route it through do_GET rather than duplicate
+        # the path table.
+        self.do_GET()
 
     def _serve_policy(self, store: PolicyStore, label: str) -> None:
         got = store.get()

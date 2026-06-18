@@ -37,13 +37,6 @@ function objectValue(value: unknown): ApiObject | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as ApiObject) : null;
 }
 
-function appendGroup(groups: string[], seen: Set<string>, group: string | null): void {
-  if (group !== null && !seen.has(group)) {
-    seen.add(group);
-    groups.push(group);
-  }
-}
-
 function namespaceFromConfig(config: AuthGiteaConfig): string {
   const namespace = config.private_namespace ?? process.env.ARTEA_NAMESPACE ?? DEFAULT_PRIVATE_NAMESPACE;
   if (!NAMESPACE_PATTERN.test(namespace)) {
@@ -171,15 +164,10 @@ export default class AuthGitea implements Pick<pluginUtils.Auth<AuthGiteaConfig>
    * a team lookup failure is non-fatal (auth proceeds with the org groups).
    */
   private async fetchMembershipGroups(user: string, headers: Record<string, string>): Promise<string[]> {
-    const groups: string[] = [];
-    const seen = new Set<string>();
-    for (const group of await this.fetchOrgGroups(user, headers)) {
-      appendGroup(groups, seen, group);
-    }
-    for (const group of await this.fetchTeamGroups(user, headers)) {
-      appendGroup(groups, seen, group);
-    }
-    return groups;
+    const orgGroups = await this.fetchOrgGroups(user, headers);
+    const teamGroups = await this.fetchTeamGroups(user, headers);
+    // Set preserves first-seen insertion order, so org groups still lead teams.
+    return [...new Set([...orgGroups, ...teamGroups])];
   }
 
   private async fetchOrgGroups(user: string, headers: Record<string, string>): Promise<string[]> {

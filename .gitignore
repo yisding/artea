@@ -12,5 +12,4 @@ data/
 e2e/tmp/
 .generated/
 backups/
-.generated/
 .claude/

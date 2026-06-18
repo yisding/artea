@@ -1,8 +1,10 @@
-// Boots real verdaccio 6 in-process with our committed config template (container
-// paths swapped for temp/local ones) and the built plugins, asserts the auth +
-// deny contract over HTTP, then exits. Requires `pnpm build` in ../plugins first.
+// Boots real verdaccio 6 in-process with our single-source config (rendered for
+// compose, container paths swapped for temp/local ones) and the built plugins,
+// asserts the auth + deny contract over HTTP, then exits. Requires `pnpm build`
+// in ../plugins first, plus helm + yq on PATH to render the config.
 import { createServer, type Server as HttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -10,9 +12,36 @@ import { dump as yamlDump, load as yamlLoad } from 'js-yaml';
 import { runServer } from 'verdaccio';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-const REPO_CONFIG = resolve(__dirname, '..', '..', 'config.yaml.template');
+const REPO_ROOT = resolve(__dirname, '..', '..', '..');
+const RENDER_SCRIPT = resolve(REPO_ROOT, 'scripts', 'render-chart-file.sh');
 const PLUGINS_DIR = resolve(__dirname, '..', '..', 'plugins');
 const TEST_NAMESPACE = 'acme';
+
+// The Verdaccio config is single-sourced as a Helm template; render its compose
+// variant here (helm + yq required — skip the suite when either is missing).
+function hasRenderTools(): boolean {
+  try {
+    execFileSync('sh', ['-c', 'command -v helm >/dev/null && command -v yq >/dev/null'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function renderComposeConfig(): string {
+  return execFileSync(
+    RENDER_SCRIPT,
+    [
+      'templates/verdaccio-config.yaml',
+      'config.yaml',
+      '--set',
+      'verdaccio.configMode=compose',
+      '--set',
+      `global.privateNamespace=${TEST_NAMESPACE}`,
+    ],
+    { cwd: REPO_ROOT, encoding: 'utf8' },
+  );
+}
 
 const USER = 'alice';
 const PAT = 'pat-alice-0123456789abcdef';
@@ -31,7 +60,7 @@ function mockGitea(): HttpServer {
   });
 }
 
-describe('verdaccio 6 boots with our config and plugins', () => {
+describe.skipIf(!hasRenderTools())('verdaccio 6 boots with our config and plugins', () => {
   let tmp: string;
   let gitea: HttpServer;
   let verdaccio: HttpServer;
@@ -43,8 +72,9 @@ describe('verdaccio 6 boots with our config and plugins', () => {
     await new Promise<void>((r) => gitea.listen(0, '127.0.0.1', r));
     const giteaUrl = `http://127.0.0.1:${(gitea.address() as AddressInfo).port}`;
 
-    // start from the committed template so the smoke test validates its real keys
-    const rendered = readFileSync(REPO_CONFIG, 'utf8').replaceAll('__ARTEA_NAMESPACE__', TEST_NAMESPACE);
+    // render the single-source config (compose variant) so the smoke test
+    // validates the real keys verdaccio loads
+    const rendered = renderComposeConfig();
     const config = yamlLoad(rendered) as Record<string, any>;
     expect(config.url_prefix).toBe('/npm/');
     expect(config.auth['auth-gitea']).toBeDefined();

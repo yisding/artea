@@ -64,14 +64,6 @@ def test_apply_patches_when_min_upstream_age_differs(cfg, mock_devpi):
     assert mock_devpi.config["min_upstream_age"] == "P3D"
 
 
-def test_apply_min_upstream_age_without_replacing_constraints(cfg, mock_devpi):
-    mock_devpi.config["constraints"] = ["urllib3<2", "requests ==2.31.0"]
-    mock_devpi.config["min_upstream_age"] = "P0D"
-    assert apply_constraints(cfg, None, "P3D") is True
-    assert mock_devpi.config["constraints"] == ["urllib3<2", "requests ==2.31.0"]
-    assert mock_devpi.config["min_upstream_age"] == "P3D"
-
-
 def test_get_failure_raises_without_patching(cfg, mock_devpi):
     mock_devpi.fail_remaining = 1
     with pytest.raises(DevpiError, match="GET .* 500"):

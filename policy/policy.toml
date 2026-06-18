@@ -6,12 +6,6 @@
 # block-list YAML and the devpi PEP 440 constraints text). See the schema at
 # docs/policy-schema.md and the rationale in docs/adr/0007-unified-policy-schema.md.
 #
-# This single file supersedes the three legacy per-format files
-# (npm-rules.yaml, pypi-constraints.txt, upstream-policy.yaml). Those still work
-# as a fallback for existing deployments when policy.toml is absent, but
-# policy.toml is the canonical source for fresh installs. To convert an existing
-# legacy policy, run `python -m policy_sync.migrate`.
-#
 # Quick reference (full schema: docs/policy-schema.md):
 #
 #   schema = 1                 # required; gates forward-compatible changes

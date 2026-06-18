@@ -226,70 +226,81 @@ class ConstrainedStage:
         for project in projects:
             yield project in constraints
 
-    def get_versions_filter_iter(self, project, versions):
+    def _constraint_decision(self, project):
+        """Resolve the shared opening decision for the per-project filters.
+
+        Returns ``(version_filter, include_legacy, needs_age)`` when the caller
+        must inspect items individually, or ``None`` as a sentinel meaning "this
+        project is unconstrained and not age-gated, so express no opinion"
+        (iters yield nothing, ``link_allowed`` returns ``True``). When the whole
+        index is constrained but the project is not listed, this raises the
+        per-item decision by returning a tuple whose ``version_filter`` is None
+        with ``constrain_all`` active, which the matcher resolves to a deny.
+        """
         constraints = self.constraints
         version_filter = constraints.get(project)
         if version_filter is None:
-            if constraints.constrain_all:
-                for _i in range(len(versions)):
-                    yield False
-                return
-            if self.min_upstream_age_seconds <= 0:
-                return
-
+            if not constraints.constrain_all and self.min_upstream_age_seconds <= 0:
+                return None
         include_legacy = version_filter is None or not len(version_filter)
-        metadata = self._project_metadata(project) if self.min_upstream_age_seconds > 0 else None
-        for version in versions:
-            if not self._version_matches_filter(version, version_filter, constraints, include_legacy):
-                yield False
-                continue
-            if metadata is not None and not self._version_old_enough(metadata, str(version)):
-                yield False
-                continue
-            yield True
+        needs_age = self.min_upstream_age_seconds > 0
+        return version_filter, include_legacy, needs_age
 
-    def get_simple_links_filter_iter(self, project, links):
+    def _filter_iter(self, project, items, version_of, age_ok_of):
+        """Generic per-item filter shared by versions and simple-links iters.
+
+        ``version_of(item)`` extracts the version (or ``None`` to deny the item)
+        and ``age_ok_of(metadata, item)`` is the age predicate to apply. The
+        fail-closed contract is preserved: an unknown timestamp makes the age
+        predicate return ``False`` and the item is blocked.
+        """
         constraints = self.constraints
-        version_filter = constraints.get(project)
-        if version_filter is None:
-            if constraints.constrain_all:
-                for _i in range(len(links)):
-                    yield False
-                return
-            if self.min_upstream_age_seconds <= 0:
-                return
-
-        include_legacy = version_filter is None or not len(version_filter)
-        metadata = self._project_metadata(project) if self.min_upstream_age_seconds > 0 else None
-        for link_info in links:
-            version = self._link_version(project, link_info)
+        decision = self._constraint_decision(project)
+        if decision is None:
+            return
+        version_filter, include_legacy, needs_age = decision
+        metadata = self._project_metadata(project) if needs_age else None
+        for item in items:
+            version = version_of(item)
             if version is None:
                 yield False
                 continue
             if not self._version_matches_filter(version, version_filter, constraints, include_legacy):
                 yield False
                 continue
-            if metadata is not None and not self._file_old_enough(metadata, filename_from_link(link_info)):
+            if metadata is not None and not age_ok_of(metadata, item):
                 yield False
                 continue
             yield True
 
+    def get_versions_filter_iter(self, project, versions):
+        return self._filter_iter(
+            project,
+            versions,
+            version_of=lambda version: version,
+            age_ok_of=lambda metadata, version: self._version_old_enough(metadata, str(version)),
+        )
+
+    def get_simple_links_filter_iter(self, project, links):
+        return self._filter_iter(
+            project,
+            links,
+            version_of=lambda link_info: self._link_version(project, link_info),
+            age_ok_of=lambda metadata, link_info: self._file_old_enough(metadata, filename_from_link(link_info)),
+        )
+
     def link_allowed(self, project: str, link_info) -> bool:
         constraints = self.constraints
-        version_filter = constraints.get(project)
-        if version_filter is None:
-            if constraints.constrain_all:
-                return False
-            if self.min_upstream_age_seconds <= 0:
-                return True
-
-        include_legacy = version_filter is None or not len(version_filter)
+        decision = self._constraint_decision(project)
+        if decision is None:
+            return True
+        version_filter, include_legacy, needs_age = decision
         version = self._link_version(project, link_info)
         if version is None:
             return False
         if not self._version_matches_filter(version, version_filter, constraints, include_legacy):
             return False
-        if self.min_upstream_age_seconds > 0:
+        if needs_age:
             metadata = self._project_metadata(project)
             if not self._file_old_enough(metadata, filename_from_link(link_info)):
                 return False

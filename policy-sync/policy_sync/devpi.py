@@ -64,11 +64,10 @@ def _has_expected_base(value) -> bool:
     return value == "root/pypi" or value == ["root/pypi"]
 
 
-def apply_constraints(cfg: Config, constraints_text: str | None, min_upstream_age: str) -> bool:
+def apply_constraints(cfg: Config, constraints_text: str, min_upstream_age: str) -> bool:
     """Ensure the index holds constraints_text and min_upstream_age.
 
-    If constraints_text is None, preserve the existing constraints and only
-    synchronize min_upstream_age. Returns True if devpi was PATCHed.
+    Returns True if devpi was PATCHed.
     """
     url = f"{cfg.devpi_url}/{CONSTRAINED_INDEX}"
     config = _request(urllib.request.Request(url, headers={"Accept": "application/json"})).get("result")
@@ -79,19 +78,14 @@ def apply_constraints(cfg: Config, constraints_text: str | None, min_upstream_ag
     if not _has_expected_base(config.get("bases")):
         raise DevpiError(f"GET {url}: index bases are {config.get('bases')!r}, expected root/pypi")
 
-    constraints_match = (
-        constraints_text is None
-        or _effective_lines(config.get("constraints")) == _effective_lines(constraints_text)
-    )
     if (
-        constraints_match
+        _effective_lines(config.get("constraints")) == _effective_lines(constraints_text)
         and config.get("min_upstream_age", "P0D") == min_upstream_age
     ):
         log.debug("%s already holds these constraints; no PATCH", CONSTRAINED_INDEX)
         return False
 
-    if constraints_text is not None:
-        config["constraints"] = constraints_text
+    config["constraints"] = constraints_text
     config["min_upstream_age"] = min_upstream_age
     auth = base64.b64encode(f"root:{cfg.devpi_root_password}".encode()).decode()
     _request(

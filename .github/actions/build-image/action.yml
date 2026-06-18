@@ -1,0 +1,38 @@
+# Composite step shared by kind-e2e.yml's four service-image builds. Keyed on
+# the same {name, context, dockerfile} list images.yml uses, so the two
+# workflows stay in lock-step. Builds locally with load: true (kind-loadable),
+# provenance: false, and the same per-image gha cache scopes as before:
+#   cache-from: artea-<name> (warmed by images.yml) + kind-e2e-<name>
+#   cache-to:   kind-e2e-<name> (ignore-error: don't fail the build on a miss)
+name: build-image
+description: Build one Artea service image locally and load it for kind.
+inputs:
+  name:
+    description: Image short name (devpi, policy-sync, bootstrap, verdaccio-assets).
+    required: true
+  context:
+    description: Docker build context.
+    required: true
+  dockerfile:
+    description: Path to the Dockerfile.
+    required: true
+  image-prefix:
+    description: Registry/owner prefix, e.g. ghcr.io/<owner>.
+    required: true
+  image-tag:
+    description: Local image tag (e.g. e2e).
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ inputs.dockerfile }}
+        load: true
+        tags: ${{ inputs.image-prefix }}/artea-${{ inputs.name }}:${{ inputs.image-tag }}
+        provenance: false
+        cache-from: |
+          type=gha,scope=artea-${{ inputs.name }}
+          type=gha,scope=kind-e2e-${{ inputs.name }}
+        cache-to: type=gha,mode=max,scope=kind-e2e-${{ inputs.name }},ignore-error=true

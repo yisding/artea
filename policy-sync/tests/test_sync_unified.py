@@ -3,11 +3,6 @@ from pathlib import Path
 from policy_sync.store import PolicyStore
 from policy_sync.sync import Syncer
 
-# legacy files (so we can prove unified wins over them)
-LEGACY_NPM = b"blocked:\n  packages:\n    - legacy-pkg\n"
-LEGACY_PYPI = b"# legacy\nlegacy-constraint<1\n"
-LEGACY_UPSTREAM = b"upstream:\n  min_age: PT1H\n"
-
 UNIFIED = b"""
 schema = 1
 [upstream]
@@ -51,39 +46,11 @@ def test_unified_present_compiles_and_applies(cfg, mock_gitea, mock_devpi):
     upstream = Path(cfg.upstream_policy_file_path).read_text()
     assert upstream == 'upstream:\n  min_age: "P3D"\n'
 
-    # legacy files must NOT be fetched when the unified file is present
+    # only policy.toml is fetched — no stray artifact-name probes
     paths = _requested_paths(mock_gitea)
     assert not any("npm-rules.yaml" in p for p in paths)
     assert not any("pypi-constraints.txt" in p for p in paths)
     assert not any("upstream-policy.yaml" in p for p in paths)
-
-
-def test_unified_absent_falls_back_to_legacy(cfg, mock_gitea, mock_devpi):
-    mock_gitea.files["npm-rules.yaml"] = LEGACY_NPM
-    mock_gitea.files["pypi-constraints.txt"] = LEGACY_PYPI
-    mock_gitea.files["upstream-policy.yaml"] = LEGACY_UPSTREAM
-    syncer, _ = make_syncer(cfg)
-
-    assert syncer.sync_once() is True
-    assert Path(cfg.policy_file_path).read_bytes() == LEGACY_NPM
-    assert mock_devpi.config["constraints"] == LEGACY_PYPI.decode()
-    assert mock_devpi.config["min_upstream_age"] == "PT1H"
-    # the unified file was probed
-    assert any("policy.toml" in p for p in _requested_paths(mock_gitea))
-
-
-def test_unified_wins_over_legacy(cfg, mock_gitea, mock_devpi):
-    mock_gitea.files["policy.toml"] = UNIFIED
-    mock_gitea.files["npm-rules.yaml"] = LEGACY_NPM
-    mock_gitea.files["pypi-constraints.txt"] = LEGACY_PYPI
-    mock_gitea.files["upstream-policy.yaml"] = LEGACY_UPSTREAM
-    syncer, _ = make_syncer(cfg)
-
-    assert syncer.sync_once() is True
-    npm = Path(cfg.policy_file_path).read_text()
-    assert "legacy-pkg" not in npm
-    assert '- "event-stream"' in npm
-    assert "legacy-constraint" not in mock_devpi.config["constraints"]
 
 
 def test_bad_unified_keeps_last_known_good(cfg, mock_gitea, mock_devpi):

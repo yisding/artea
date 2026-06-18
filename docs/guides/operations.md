@@ -156,30 +156,11 @@ reason = "example block"
 
 After merge, policy-sync compiles `policy.toml` into the per-engine artifacts
 (`npm-rules.yaml`, `upstream-policy.yaml`, `pypi-constraints.txt`) the engines
-consume — you do **not** edit those by hand. A `policy.toml` that fails to
-parse or compile fails the sync and **keeps the last-known-good** enforcement in
-effect (it does not silently fall back to legacy files); the error is logged and
-`/healthz` reports `last_sync_ok: false`.
-
-**Legacy three-file fallback.** Deployments that predate the unified schema can
-keep authoring the three hand-written files directly (`npm-rules.yaml`,
-`upstream-policy.yaml`, `pypi-constraints.txt`); when `policy.toml` is **absent**
-from the repo, policy-sync reads them as-is. This fallback exists only for
-existing deployments — new policy work should use `policy.toml`.
-
-**Migrating legacy → unified.** Generate an equivalent `policy.toml` from the
-three legacy files with the stdlib migration tool:
-
-```sh
-make policy-migrate            # prints policy.toml from the legacy policy/ files
-# or directly:
-python -m policy_sync.migrate policy/ --out policy/policy.toml
-```
-
-It is best-effort and conservative: constructs that cannot be round-tripped
-cleanly are skipped with a warning on stderr rather than emitting something that
-changes meaning, so **review the output before committing it** (then open it as
-a PR like any other policy change).
+consume — you do **not** edit those by hand. `policy.toml` is the only authoring
+input. A `policy.toml` that is absent or fails to parse or compile fails the
+sync and **keeps the last-known-good** enforcement in effect (it is never
+silently downgraded); the error is logged and `/healthz` reports
+`last_sync_ok: false`.
 
 **Verifying a sync.** Check policy-sync health for `last_sync_ok`:
 
@@ -211,9 +192,8 @@ e2e S15):
 
 Recovery is policy-sync's job and needs no manual steps: it syncs at startup,
 on every push webhook of `${ARTEA_NAMESPACE}/registry-policy`, and on a 5-minute fallback
-poll, compiling `policy.toml` (or, in legacy mode, reading the three files
-directly) into `npm-rules.yaml` (picked up by Verdaccio within the
-mtime-reload window) and `upstream-policy.yaml`, writing
+poll, compiling `policy.toml` into `npm-rules.yaml` (picked up by Verdaccio
+within the mtime-reload window) and `upstream-policy.yaml`, writing
 `pypi-constraints.txt` for debugging, and replacing the seeded `*` constraints
 plus `min_upstream_age` in devpi with the real policy. To force immediate recovery:
 `docker compose restart policy-sync`
@@ -254,7 +234,7 @@ Remember that Okta deactivation does not delete Gitea PATs — see
 | Package proxy requests return 401 or 403 with a valid-looking token | Token revoked, missing `read:user`/`read:organization`/package scope, non-member of the configured namespace org, or Gitea unreachable from verdaccio/gateway | `curl -u user:PAT http://localhost:8080/api/v1/user`; then `curl -u user:PAT http://localhost:8080/api/v1/orgs/${ARTEA_NAMESPACE}/members/user` (204 means org guard can pass); package-scope probes should return 200 with a JSON package list: `curl -u user:PAT "http://localhost:8080/api/v1/packages/${ARTEA_NAMESPACE}/?type=pypi&limit=1"`; check Gitea logs |
 | `npm install @${ARTEA_NAMESPACE}/x` 404s | Package/version not published — the gateway routes `@${ARTEA_NAMESPACE}/*` to Gitea server-side, so missing client scope config is no longer a cause (legacy scope-registry configs still work) | Check the configured namespace org's package list in Gitea; client setup in [clients-npm.md](clients-npm.md) |
 | `npm publish` rejected | Read-only cache (unscoped publish), missing `write:package` / `read:user` / `read:organization`, or no org write permission | Scope the package `@${ARTEA_NAMESPACE}/*`; check token scope and org membership |
-| Public npm package has missing versions | A `deny` rule in `policy.toml` (or, in legacy mode, `npm-rules.yaml`), or the shared `upstream.min_age` | Intentional; edit `policy.toml` in the policy repo via PR (see [Policy authoring](#policy-authoring)) |
+| Public npm package has missing versions | A `deny` rule in `policy.toml`, or the shared `upstream.min_age` | Intentional; edit `policy.toml` in the policy repo via PR (see [Policy authoring](#policy-authoring)) |
 | Policy change has no effect | Webhook not delivered, policy-sync down, or `policy.toml` failed to compile (sync kept last-known-good) | Repo settings → Webhooks → recent deliveries on `${ARTEA_NAMESPACE}/registry-policy`; `docker compose logs policy-sync` (a compile error in `policy.toml` is logged and fails that sync, leaving the previous policy in effect); check `/healthz` for `last_sync_ok`; verify the compiled `/policy/npm-rules.yaml`, `/policy/upstream-policy.yaml`, and `/policy/pypi-constraints.txt` changed as expected; the slow-poll fallback will also catch up eventually |
 | `pip install <private>` resolves a public version | Gateway 404-fallback misrouting (or a client `extra-index-url` bypass) | Treat as a security incident if client config is clean: verify the gateway serves Gitea's 200 for `/pypi/simple/<name>/` and only falls back on 404 |
 | `pip install <public>` 404s | devpi mirror cold/unreachable, name blocked by `pypi-constraints.txt`, still too new under `upstream-policy.yaml`, or a freshly recreated cache still fail-closed (`*` seed) | `docker compose logs devpi` and `policy-sync`; check the policy files in the policy repo; check policy-sync `/healthz` for `last_sync_ok` |

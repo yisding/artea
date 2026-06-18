@@ -134,9 +134,9 @@ npm install left-pad             # public, via Verdaccio pull-through of npmjs.o
 Private `@${ARTEA_NAMESPACE}/*` requests never touch the public cache or
 npmjs.org — the gateway peels the scope off before Verdaccio, which
 additionally denies it by configuration. Public requests are filtered by the
-org policy in `${ARTEA_NAMESPACE}/registry-policy`: `npm-rules.yaml` blocks
-names/versions, and `upstream-policy.yaml` hides versions younger than the
-shared `upstream.min_age` duration.
+org policy (`policy.toml`) in `${ARTEA_NAMESPACE}/registry-policy`: `deny` rules
+block names/versions, and the shared `upstream.min_age` duration hides versions
+that are too young.
 
 ## 5. pnpm
 
@@ -178,6 +178,6 @@ unsafeHttpWhitelist:
 | `ENEEDAUTH` on publish, no request sent | The `//localhost:8080/npm/:_auth` line is missing — npm's publish preflight checks only the exact registry nerf-dart, never the host-rooted line |
 | Publish of an unscoped package rejected | Expected: the cache is read-only; only `@${ARTEA_NAMESPACE}/*` (→ Gitea) is publishable |
 | `404` for `@${ARTEA_NAMESPACE}/*` | The package or version is not published — the gateway routes the scope server-side, so a missing client scope line is no longer a cause (legacy scope registry configs also still work) |
-| Public package missing versions | Blocked by `npm-rules.yaml` or still too new under `upstream-policy.yaml` — intentional |
+| Public package missing versions | Blocked by a `deny` rule in `policy.toml` or still too new under `upstream.min_age` — intentional |
 
 See also [operations.md](operations.md) for the operator-side view.

@@ -2,10 +2,10 @@
 # over GITEA_CUSTOM/templates by the Gitea subchart (gitea.extraVolumes +
 # gitea.extraContainerVolumeMounts in values.yaml).
 #
-# files/gitea-templates/ holds COPIES of gitea/custom/templates/ — Helm cannot
-# read outside the chart root. Keep them in sync when the overlay changes; the
-# key base__head_navbar.tmpl is re-pathed to base/head_navbar.tmpl by the
-# volume items (ConfigMap keys cannot contain '/').
+# files/gitea-templates/ holds SYMLINKS to gitea/custom/templates/ (Helm follows
+# them), so there is one source and nothing to keep in sync; the key
+# base__head_navbar.tmpl is re-pathed to base/head_navbar.tmpl by the volume
+# items (ConfigMap keys cannot contain '/').
 apiVersion: v1
 kind: ConfigMap
 metadata:

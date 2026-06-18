@@ -67,16 +67,7 @@ spec:
               port: http
             periodSeconds: 5
             failureThreshold: 60
-          livenessProbe:
-            httpGet:
-              path: /+status
-              port: http
-            periodSeconds: 10
-          readinessProbe:
-            httpGet:
-              path: /+status
-              port: http
-            periodSeconds: 10
+          {{- include "artea.httpProbes" (dict "path" "/+status") | nindent 10 }}
           {{- with .Values.devpi.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -86,18 +77,4 @@ spec:
           persistentVolumeClaim:
             claimName: {{ include "artea.fullname" "devpi-data" }}
 ---
-apiVersion: v1
-kind: Service
-metadata:
-  name: {{ include "artea.fullname" "devpi" }}
-  labels:
-    {{- include "artea.labels" (dict "ctx" $ "component" "devpi") | nindent 4 }}
-spec:
-  type: ClusterIP
-  ports:
-    - name: http
-      port: 3141
-      targetPort: http
-      protocol: TCP
-  selector:
-    {{- include "artea.selectorLabels" (dict "ctx" $ "component" "devpi") | nindent 4 }}
+{{ include "artea.service" (dict "ctx" $ "component" "devpi" "port" 3141) }}
