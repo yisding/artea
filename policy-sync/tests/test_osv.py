@@ -111,6 +111,29 @@ def test_curated_allow_overrides_osv_malicious_hit():
     assert queried_versions == ["2.0.0"]
 
 
+def test_curated_pypi_exact_allow_overrides_with_release_equality():
+    # A curated `==1.0` allow must override a MAL verdict on an upstream `1.0.0`:
+    # PEP 440 treats them equal, so the version is allowed and never queried.
+    osv = MockOsv()
+    osv.malicious["1.0.0"] = ["MAL-2026-1"]
+    osv.start()
+    try:
+        client = OsvClient(api_url=osv.url)
+        result = client.decide(policy(
+            '[[rules]]\n'
+            'ecosystem = "pypi"\n'
+            'name = "six"\n'
+            'versions = "==1.0"\n'
+            'action = "allow"\n'
+        ), "pypi", "six", ["1.0.0", "2.0.0"])
+    finally:
+        osv.stop()
+
+    assert [(v.version, v.blocked) for v in result.verdicts] == [("1.0.0", False), ("2.0.0", False)]
+    queried_versions = [q["version"] for q in osv.requests[0]["queries"]]
+    assert queried_versions == ["2.0.0"]
+
+
 def test_osv_outage_fails_open_but_uses_cached_malicious_verdict():
     osv = MockOsv()
     osv.malicious["1.0.0"] = ["MAL-2026-1"]

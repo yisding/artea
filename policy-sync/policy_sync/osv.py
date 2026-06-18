@@ -292,7 +292,7 @@ def _allow_override_applies(
             continue
         if rule.versions is None:
             return True
-        if adapter.is_exact(rule.versions) and adapter.exact_value(rule.versions) == version:
+        if adapter.is_exact(rule.versions) and adapter.exact_allows(rule.versions, version):
             return True
     return False
 

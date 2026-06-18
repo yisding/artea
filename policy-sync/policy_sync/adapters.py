@@ -115,6 +115,11 @@ class NpmAdapter:
         v = m.group(1)
         return v[1:] if v.startswith("v") else v
 
+    def exact_allows(self, expr: str, version: str) -> bool:
+        """Whether the exact pin ``expr`` matches ``version``. npm versions are
+        canonical ``X.Y.Z``, so equality is a string match on the pin."""
+        return self.exact_value(expr) == version
+
 
 # -------------------------------------------------------------------------- pypi
 
@@ -176,6 +181,27 @@ class PypiAdapter:
         if not m:
             raise PolicyError(f"{expr!r} is not an exact pypi version")
         return m.group(1)
+
+    def exact_allows(self, expr: str, version: str) -> bool:
+        """Whether the exact pin ``expr`` (an ``==X``) matches ``version`` under
+        PEP 440 release-equality, so ``==1.0`` allows an upstream ``1.0.0``.
+
+        Conservative: a version carrying an epoch/pre/post/dev/local segment —
+        where a bare release tuple cannot decide equality — falls back to exact
+        string equality, so this never reports a false match.
+        """
+        pinned = self.exact_value(expr)
+        if pinned == version:
+            return True
+        pinned_rel = self._release_tuple(pinned)
+        version_rel = self._release_tuple(version)
+        if pinned_rel is None or version_rel is None:
+            return False
+        width = max(len(pinned_rel), len(version_rel))
+        return (
+            pinned_rel + (0,) * (width - len(pinned_rel))
+            == version_rel + (0,) * (width - len(version_rel))
+        )
 
     def complement(self, expr: str) -> str:
         """Return the PEP 440 specifier that ALLOWS everything the deny range
