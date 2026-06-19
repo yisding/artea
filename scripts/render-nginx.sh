@@ -8,7 +8,7 @@
 #   render-nginx.sh <upstreamMode> [privateNamespace]
 #
 # <upstreamMode> = compose | k8s; [privateNamespace] defaults to "artea".
-# Requires helm and yq on PATH (the "Helm for both" model — Theme 2).
+# Requires helm and yq on PATH (the "Helm for both" model; see deploy/helm/artea/README.md).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

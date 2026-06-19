@@ -85,8 +85,8 @@ get_policy_file() { # <path in repo> -> raw content on stdout
 
 put_policy_file() { # <path in repo> <new content> <commit message> ; creates or updates
   # Upsert: update an existing file (PUT + sha) or create an absent one (POST).
-  # The unified scenarios author policy.toml when it is absent (legacy baseline)
-  # and drop it again after, so this must handle both create and update.
+  # Scenarios author policy.toml whether or not it is already present, so this
+  # must handle both create and update.
   local path=$1 content=$2 msg=$3 sha b64 method extra
   admin_api GET "/repos/${POLICY_REPO}/contents/${path}"
   case "$API_CODE" in
@@ -104,25 +104,6 @@ put_policy_file() { # <path in repo> <new content> <commit message> ; creates or
   admin_api "${method}" "/repos/${POLICY_REPO}/contents/${path}" \
     "{\"content\":\"${b64}\"${extra},\"message\":$(printf '%s' "$msg" | jq -Rs .)}"
   case "$API_CODE" in 2*) return 0 ;; *) echo "put_policy_file ${path} -> HTTP ${API_CODE}: ${API_BODY}"; return 1 ;; esac
-}
-
-delete_policy_file() { # <path in repo> <commit message> ; tolerates an absent file
-  # used by the unified scenarios to drop policy.toml and return the registry to
-  # legacy-3-file mode (when policy.toml is present it wins; deleting it re-arms
-  # the npm-rules.yaml/pypi-constraints.txt fallback the other scenarios rely on)
-  local path=$1 msg=$2 sha
-  admin_api GET "/repos/${POLICY_REPO}/contents/${path}"
-  case "$API_CODE" in
-    404) return 0 ;; # already gone
-    200) ;;
-    *) echo "delete_policy_file ${path}: GET -> HTTP ${API_CODE}"; return 1 ;;
-  esac
-  sha=$(echo "$API_BODY" | jq -r .sha)
-  [ -n "$sha" ] && [ "$sha" != null ] \
-    || { echo "delete_policy_file: no sha for ${path}"; return 1; }
-  admin_api DELETE "/repos/${POLICY_REPO}/contents/${path}" \
-    "{\"sha\":\"${sha}\",\"message\":$(printf '%s' "$msg" | jq -Rs .)}"
-  case "$API_CODE" in 2*) return 0 ;; *) echo "delete_policy_file ${path} -> HTTP ${API_CODE}: ${API_BODY}"; return 1 ;; esac
 }
 
 # ---- generic polling -------------------------------------------------------------
