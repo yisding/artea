@@ -64,7 +64,7 @@ jobs:
       matrix:
         include:
           - shard: main
-            scenarios: S1,S2,S3,S4,S5,S6,S7,S8,S9,S10,S11,S12,S13,S14,S16,S17
+            scenarios: S1,S2,S3,S4,S5,S6,S7,S8,S9,S10,S11,S12,S13,S14,S16,S17,S18,S19,S20
             policy_grace_secs: "60"
             policy_poll_ms: "10000"
             policy_fail_grace_ms: "60000"
