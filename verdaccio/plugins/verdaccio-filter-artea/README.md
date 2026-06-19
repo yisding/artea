@@ -101,8 +101,9 @@ Semantics:
   `2.0.0-beta`-style prereleases of blocked ranges — a blocklist should over-block.
 - Invalid `versions` semver ranges fail the whole policy load so the registry fails
   closed instead of silently weakening the block policy.
-- Other malformed entries (missing `name`, non-string scope) are skipped with a
-  warning; the rest of the file still applies.
+- Any other malformed entry (missing `name`, non-string scope, non-string
+  `versions`) likewise fails the whole policy load, so the registry fails closed
+  rather than silently dropping rules.
 - An empty file, or a file without `blocked`, is an empty policy.
 - OSV checks are request-time, not part of `npm-rules.yaml`: policy-sync decides
   whether `[osv] malicious_packages` is enabled and blocks only OSV `MAL-*`
