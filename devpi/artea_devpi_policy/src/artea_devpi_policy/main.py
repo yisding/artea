@@ -373,12 +373,6 @@ class ConstrainedStage:
             return False
         return True
 
-    def file_allowed(self, project: str, filename: str) -> bool:
-        if self.min_upstream_age_seconds <= 0:
-            return True
-        metadata = self._project_metadata(project)
-        return self._file_old_enough(metadata, filename)
-
     def _project_metadata(self, project: str) -> ProjectMetadata:
         try:
             return fetch_project_metadata(project, self.pypi_json_url)
@@ -429,7 +423,7 @@ def constrained_customizer(registry):
     if stage is None or getattr(stage, "customizer", None) is None:
         return None
     customizer = stage.customizer
-    if not hasattr(customizer, "file_allowed"):
+    if not hasattr(customizer, "link_allowed"):
         return None
     return customizer
 

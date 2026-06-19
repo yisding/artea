@@ -112,7 +112,9 @@ def test_simple_links_filter_applies_osv_malicious_verdict(monkeypatch):
     assert result == [True, False]
 
 
-def test_file_allowed_requires_upload_time(monkeypatch):
+def test_link_allowed_requires_verifiable_upload_time(monkeypatch):
+    # Age gate on, no version constraints: link_allowed must fail closed for a
+    # file whose upload time cannot be verified from mirror metadata.
     now = time.time()
     customizer = make_stage("P3D")
     metadata = ProjectMetadata(
@@ -122,8 +124,8 @@ def test_file_allowed_requires_upload_time(monkeypatch):
     )
     monkeypatch.setattr(customizer, "_project_metadata", lambda project: metadata)
 
-    assert customizer.file_allowed("six", "six-1.0.0-py3-none-any.whl") is True
-    assert customizer.file_allowed("six", "six-2.0.0-py3-none-any.whl") is False
+    assert customizer.link_allowed("six", FakeLink("1.0.0", "six-1.0.0-py3-none-any.whl")) is True
+    assert customizer.link_allowed("six", FakeLink("2.0.0", "six-2.0.0-py3-none-any.whl")) is False
 
 
 def test_link_allowed_applies_constraints_without_rendering_simple_page():
