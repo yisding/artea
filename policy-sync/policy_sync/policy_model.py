@@ -230,6 +230,7 @@ def _parse_rule(raw: object, index: int) -> Rule | None:
 
 
 _ALLOWED_TOP_LEVEL = {"schema", "defaults", "rules", "upstream", "osv"}
+_ALLOWED_UPSTREAM_KEYS = {"min_age"}
 _ALLOWED_OSV_KEYS = {"malicious_packages"}
 
 
@@ -261,10 +262,8 @@ def parse_policy(data: bytes) -> Policy:
     elif not isinstance(upstream, dict):
         raise PolicyError("'upstream' must be a table")
     else:
-        raw_min_age = upstream.get("min_age")
-        if raw_min_age is None:
-            raw_min_age = upstream.get("minimum_age")
-        min_age = _validate_min_age(raw_min_age)
+        _reject_unknown_keys(upstream, _ALLOWED_UPSTREAM_KEYS, "upstream")
+        min_age = _validate_min_age(upstream.get("min_age"))
 
     osv = doc.get("osv")
     if osv is None:
