@@ -60,7 +60,11 @@ function teamGroupName(team: unknown, privateNamespace: string): string | null {
     nonEmptyString(organization?.name) ??
     nonEmptyString(value.org_name) ??
     nonEmptyString(value.organization_name);
-  return orgName === privateNamespace ? `${privateNamespace}/${teamName}` : null;
+  // Gitea org names are case-insensitive; match the configured (lowercased)
+  // namespace case-insensitively, exactly as the org-membership group does, so a
+  // team whose org is stored as e.g. "Artea" still maps to its '<ns>/<team>'
+  // group. Optional chaining keeps the existing null tolerance (orgName: string|null).
+  return orgName?.toLowerCase() === privateNamespace ? `${privateNamespace}/${teamName}` : null;
 }
 
 /** 503 without depending on the deprecated @verdaccio/commons-api package. */
@@ -72,7 +76,6 @@ function backendUnavailable(): Error {
 }
 
 export default class AuthGitea implements Pick<pluginUtils.Auth<AuthGiteaConfig>, 'authenticate'> {
-  public version?: string;
   private readonly giteaUrl: string;
   private readonly privateNamespace: string;
   private readonly cacheTtlMs: number;
