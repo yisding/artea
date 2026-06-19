@@ -141,9 +141,11 @@ def test_unknown_osv_key_rejected():
         parse("schema = 1\n[osv]\nbogus = true\n")
 
 
-def test_min_age_alias_minimum_age():
-    p = parse('schema = 1\n[upstream]\nminimum_age = "PT12H"\n')
-    assert p.min_age == "PT12H"
+def test_unknown_upstream_key_rejected():
+    # The recency gate is security-relevant: a typo like `min_aeg` must fail the
+    # sync rather than silently leave min_age at the P0D default.
+    with pytest.raises(PolicyError, match="upstream: unknown key"):
+        parse('schema = 1\n[upstream]\nminimum_age = "PT12H"\n')
 
 
 def test_bad_min_age_rejected():

@@ -1,5 +1,4 @@
 import * as semver from 'semver';
-import type { Logger } from '@verdaccio/types';
 
 export interface CompiledPolicy {
   scopes: Set<string>; // '@scope' — every package in the scope is blocked
@@ -55,7 +54,7 @@ export function parseDurationMs(raw: unknown): number {
 }
 
 /** Validates and compiles the parsed YAML document. Throws on structural errors. */
-export function compilePolicy(doc: unknown, logger: Logger): CompiledPolicy {
+export function compilePolicy(doc: unknown): CompiledPolicy {
   const policy = emptyPolicy();
   if (doc == null) {
     return policy; // empty file = empty policy
@@ -69,8 +68,7 @@ export function compilePolicy(doc: unknown, logger: Logger): CompiledPolicy {
     if (typeof upstream !== 'object' || Array.isArray(upstream)) {
       throw new Error('"upstream" must be a mapping');
     }
-    const raw = (upstream as { min_age?: unknown; minimum_age?: unknown }).min_age
-      ?? (upstream as { minimum_age?: unknown }).minimum_age;
+    const raw = (upstream as { min_age?: unknown }).min_age;
     policy.minAgeMs = parseDurationMs(raw);
   }
   if (blocked == null) {

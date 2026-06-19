@@ -34,6 +34,15 @@ hand-maintained code/docs/config (excluding lockfiles), the deletion of
 more important than line count — the conversion of every "keep in sync by hand"
 relationship into a structural single source where drift becomes impossible.
 
+## Implementation status
+
+This plan has largely landed; it is retained as the design rationale, **not** an
+open backlog. Each theme below carries a **Status** note (Theme 2 already had
+one). The plan also **predates the OSV malicious-package layer** (runtime `POST
+/osv/querybatch`, ADR-0007) and does not describe it; the cross-language OSV wire
+shape is now pinned by `docs/policy-spec/osv-decision-vectors.json`, in the same
+spirit as Theme 3's vectors.
+
 ---
 
 ## Theme 1 — Delete the legacy three-file policy format end-to-end
@@ -60,6 +69,11 @@ TOML string-escaper near-duplicating `compiler.py:_npm_quote`. All of it vanishe
 **Theme total: ~−950 lines + 4 files deleted.** Net effect: one canonical
 authoring format, one seed file, and every policy sentence/scenario stops being
 written twice.
+
+**Status (landed):** the legacy three-file format, `migrate.py` + its test, the
+three legacy seed files, and the `make policy-migrate` target are all removed —
+`policy/` now holds only `policy.toml`. The legacy↔unified e2e clones were *not*
+collapsed: S5/S10 and S18/S19 remain distinct scenarios.
 
 ---
 
@@ -144,6 +158,12 @@ dangerous duplication in the system even though it's small in line count.
 
 **Theme total: ~LOC-neutral (+vectors, −Python dup), maximum correctness payoff.**
 
+**Status (partly landed):** `min-age-vectors.json` landed and is loaded by all
+three suites; `osv-decision-vectors.json` was added later for the OSV wire shape.
+The `age-gate`/`version-range` vector files and the Python-internal ISO-8601
+parser merge are **deferred** — the devpi plugin and policy-sync ship as separate
+packages with no shared import path.
+
 ---
 
 ## Theme 4 — Intra-file decomposition, dedup, and dead code (elegance)
@@ -199,6 +219,17 @@ compiler) into its own subpackage for boundary clarity.
 
 **Theme total: ~−450…600 lines.**
 
+**Status (mostly landed):** the `policy.ts` split (`policy-compile.ts` +
+`policy-loaders.ts`), the devpi `_constraint_decision`/`_filter_iter` extraction,
+the `lib.sh` assertion/JSON helpers, the `_helpers.tpl` Service/probe factoring,
+and the dead-code deletions (`gitea.py` fetchers, the duplicate `.generated/`
+`.gitignore` line, the vestigial plugin `version` field) landed.
+`CompiledPolicy.minAgeMs` was kept on purpose — the composite loader makes the
+upstream source own age. `@types/jsonwebtoken` was **kept**: despite no direct
+import, it is a load-bearing transitive type dep of `@verdaccio/types` (whose
+`configuration.ts` imports `jsonwebtoken`), so removing it breaks `tsc`. The
+`enrich.py` relocation is **deferred**.
+
 ---
 
 ## Theme 5 — Build/CI consolidation
@@ -212,10 +243,14 @@ compiler) into its own subpackage for boundary clarity.
   mapping; kind-e2e unrolls it as 4 copy-pasted `build-push-action` steps.
   Convert to a `strategy.matrix` (or a shared composite action) keyed on the same
   `{name, context, dockerfile}` list. ~−40…60.
-- Reconcile the scenario count: workflows/guides say S1–S17/S18 while
-  `ARCHITECTURE.md` defines S1–S21. State it once.
+- Reconcile the scenario count: workflows/guides had drifted to S1–S17/S18 while
+  the suite is S1–S20 (`e2e/run.sh`). Now reconciled to S1–S20 everywhere.
 
 **Theme total: ~−60…90 lines + 2 digest pins consolidated.**
+
+**Status (partly landed):** the CI image-build matrix is now a shared composite
+action and the scenario count is reconciled to S1–S20. The shared `artea-base`
+Docker stage is **deferred**.
 
 ---
 
@@ -230,7 +265,7 @@ compiler) into its own subpackage for boundary clarity.
    before any change to duration/age-gate/range logic.
 4. **Themes 4 & 5** — incremental elegance/dedup; safe to do piecemeal behind the
    existing test suites (`test_routing.py`, `filter.test.ts`, `http.test.ts`,
-   `auth.test.ts`, `test_artea_devpi_policy.py`, the S1–S21 e2e suite).
+   `auth.test.ts`, `test_artea_devpi_policy.py`, the S1–S20 e2e suite).
 
 Each change is covered by an existing test suite or is a pure deletion; the
 fail-closed and dependency-confusion guarantees in `ARCHITECTURE.md` are

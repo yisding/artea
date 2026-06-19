@@ -1,0 +1,19 @@
+{
+  "description": "Canonical wire shape for policy-sync's cluster-internal POST /osv/querybatch endpoint. This is a field-name/shape contract (not a compute lockstep like min-age-vectors.json) shared by the Python producer (policy-sync osv.response_payload) and the two consumers: the npm filter (verdaccio-filter-artea osv.ts) and the PyPI devpi plugin (artea_devpi_policy query_osv_blocked_versions). 'status'/'reason' are observability-only: the npm consumer logs a degraded status, the PyPI consumer ignores both. Each producer/consumer sends its own 'ecosystem' string ('npm' or 'pypi'); the value is deliberately not part of this shape contract.",
+  "request": {
+    "ecosystem": "npm",
+    "name": "left-pad",
+    "versions": ["1.3.0", "1.3.1"]
+  },
+  "response": {
+    "status": "ok",
+    "results": [
+      { "version": "1.3.0", "blocked": false, "ids": [] },
+      { "version": "1.3.1", "blocked": true, "ids": ["MAL-0000-0000"] }
+    ]
+  },
+  "expected": {
+    "blockedVersions": ["1.3.1"],
+    "blockedIds": { "1.3.1": ["MAL-0000-0000"] }
+  }
+}

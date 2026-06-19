@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Artea smoke checks — fast gateway-level verification that the stack wiring
-# works (subset of the S1-S17 e2e scenarios). Requires a bootstrapped stack;
+# works (subset of the S1-S20 e2e scenarios). Requires a bootstrapped stack;
 # uses the credentials bootstrap wrote. Portable across runtimes:
 #   BASE_URL          public gateway URL (beats the recorded GATEWAY_URL)
 #   CREDENTIALS_FILE  credentials path (default e2e/tmp/credentials.env)

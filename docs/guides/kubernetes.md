@@ -58,7 +58,7 @@ kubectl -n artea port-forward svc/artea-gateway 8080:80
 `global.baseUrl` (default `http://localhost:8080`) must match how clients
 reach the gateway — it drives Gitea's `ROOT_URL` and devpi's outside-url, so
 generated tarball/file URLs resolve back through the gateway. The e2e suite
-only knows `BASE_URL`, so S1–S17 run unchanged against compose or K8s.
+only knows `BASE_URL`, so S1–S20 run unchanged against compose or K8s.
 
 Client setup (`.npmrc`, pip index URL, PATs) is identical to compose:
 `docs/guides/clients-npm.md`, `docs/guides/clients-python.md`. For the first

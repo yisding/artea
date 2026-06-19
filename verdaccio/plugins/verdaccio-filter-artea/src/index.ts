@@ -124,7 +124,6 @@ function repairDistTags(pkg: Manifest, removed: Set<string>): void {
 export default class FilterArtea
   implements Pick<pluginUtils.ManifestFilter<FilterArteaConfig>, 'filter_metadata'>
 {
-  public version?: string;
   private readonly logger: Logger;
   private readonly policyLoader: PolicyLoader;
   private readonly npmRegistryUrl: string;
@@ -291,7 +290,12 @@ export default class FilterArtea
     return (await res.json()) as Manifest;
   }
 
-  /** Blocked names keep their packument shell but lose every version, so installs fail cleanly. */
+  /**
+   * Blocked names keep their packument shell but lose every version, so installs
+   * fail cleanly. This must zero versions and NEVER throw: Verdaccio swallows
+   * filter exceptions, so a throw here would fail OPEN (serving the unfiltered
+   * packument) rather than fail-closed.
+   */
   private blockAll(metadata: Manifest): Manifest {
     const clone = structuredClone(metadata);
     clone.versions = {};

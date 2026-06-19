@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Render one ConfigMap data file out of the Helm chart and write it to stdout —
 # the compose/test path for configs that are single-sourced as Helm templates
-# (the "Helm for both" model, docs/refactoring-plan.md Theme 2). Kubernetes
+# (the "Helm for both" model; see deploy/helm/artea/README.md). Kubernetes
 # consumes the same templates directly; rendering compose through Helm is what
 # makes the two unable to drift.
 #

@@ -14,7 +14,7 @@ Operator walkthrough (install, secrets, upgrades, local dev on colima):
 | Piece | Source |
 |-------|--------|
 | Gitea | official chart `oci://docker.gitea.com/charts/gitea` (pinned in `Chart.yaml`), stock rootless image, app.ini translated into `gitea.config` + tpl'd `additionalConfigFromEnvs` (`ROOT_URL` from `global.baseUrl`), `custom/` template overlay via ConfigMap + `extraVolumes` |
-| Verdaccio | official chart `https://charts.verdaccio.org` (pinned in `Chart.yaml`), stock image, our config via the chart's `configMap` value, plugins via init container (below) |
+| Verdaccio | official chart `https://charts.verdaccio.org` (pinned in `Chart.yaml`), stock image, our config via `existingConfigMap` pointing at the umbrella-rendered `artea-verdaccio-config` (single-sourced from `files/verdaccio/config.yaml`), plugins via init container (below) |
 | devpi, policy-sync, gateway, bootstrap | our templates in `templates/` |
 
 Run `helm dependency update` once after cloning (downloads the two subchart
@@ -47,7 +47,11 @@ to `artea`; `secrets.adminUsername` defaults to
 The official chart is used (not the in-house fallback Deployment foreseen by
 the architecture doc), because its values cover everything we need:
 
-- `configMap` accepts our full adapted `config.yaml` verbatim;
+- `existingConfigMap` mounts our full adapted `config.yaml` verbatim — the
+  umbrella renders it into the `artea-verdaccio-config` ConfigMap
+  (`templates/verdaccio-config.yaml`) from the single source
+  `files/verdaccio/config.yaml`, so the subchart's own `configMap` value stays
+  empty;
 - `extraInitContainers` (tpl-rendered) runs our assets image
   (`ghcr.io/yisding/artea-verdaccio-assets`, built by CI from
   `deploy/docker/verdaccio-assets/Dockerfile`) which copies the pre-built

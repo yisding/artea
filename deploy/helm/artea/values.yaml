@@ -170,7 +170,8 @@ gitea:
   # Mount the Artea custom/ overlay (de-gitted navbar + packages landing page)
   # over GITEA_CUSTOM/templates (the chart runs with GITEA_CUSTOM=/data/gitea).
   # The ConfigMap is rendered by templates/gitea-custom-templates.yaml from
-  # files/gitea-templates/ (copies of gitea/custom/templates/ — keep in sync).
+  # files/gitea-templates/ (symlinks to gitea/custom/templates/ — single source,
+  # nothing to keep in sync).
   extraVolumes:
     - name: artea-custom-templates
       configMap:

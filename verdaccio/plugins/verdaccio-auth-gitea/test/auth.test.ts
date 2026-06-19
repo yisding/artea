@@ -142,6 +142,21 @@ describe('verdaccio-auth-gitea', () => {
     expect(groups).toEqual(['alice', 'acme', 'acme/developers']);
   });
 
+  it('maps a team whose org casing differs from the namespace, and tolerates a team with no org', async () => {
+    gitea = new MockGitea();
+    gitea.tokens.set('alice', 'pat-alice');
+    gitea.orgs.set('alice', ['Artea']); // org membership stored with non-lowercase casing
+    gitea.teams.set('alice', [
+      { org: 'Artea', name: 'developers' }, // mixed-case org on the team must still map
+      { org: '', name: 'orphan' }, // no resolvable org: must yield no group, never throw
+    ]);
+    const plugin = makePlugin({ gitea_url: await gitea.start() });
+
+    const { err, groups } = await auth(plugin, 'alice', 'pat-alice');
+    expect(err).toBeNull();
+    expect(groups).toEqual(['alice', 'artea', 'artea/developers']);
+  });
+
   it('rejects an invalid PAT with (null, false)', async () => {
     gitea = new MockGitea();
     gitea.tokens.set('alice', 'pat-alice');

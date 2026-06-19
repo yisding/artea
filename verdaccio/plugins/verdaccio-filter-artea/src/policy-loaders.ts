@@ -15,8 +15,8 @@ export interface PolicyLoader {
 }
 
 /** Parses + compiles a raw policy document; throws on malformed YAML or invalid rules. */
-function parseYamlPolicy(raw: string, logger: Logger): CompiledPolicy {
-  return compilePolicy(yamlLoad(raw), logger);
+function parseYamlPolicy(raw: string): CompiledPolicy {
+  return compilePolicy(yamlLoad(raw));
 }
 
 /** Shared "loaded policy" success line, identical for the file and HTTP loaders. */
@@ -67,7 +67,7 @@ export class FilePolicyLoader implements PolicyLoader {
       return this.state;
     }
     try {
-      const policy = parseYamlPolicy(readFileSync(this.policyFile, 'utf8'), this.logger);
+      const policy = parseYamlPolicy(readFileSync(this.policyFile, 'utf8'));
       this.state = { ok: true, policy };
       logLoaded(this.logger, 'file', this.policyFile, policy);
     } catch (err) {
@@ -179,7 +179,7 @@ export class HttpPolicyLoader implements PolicyLoader {
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
       }
-      const policy = parseYamlPolicy(text, this.logger);
+      const policy = parseYamlPolicy(text);
       this.etag = res.headers.get('etag'); // after the parse: a bad body must be re-fetched
       this.state = { ok: true, policy };
       this.hasPolicy = true;
