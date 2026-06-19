@@ -359,5 +359,4 @@ requires **no schema change** and **no change to other engines**:
 
 This slots a "policy adapter" step into the architecture's existing new-format
 recipe (`docs/ARCHITECTURE.md`, "Scale-out design").
-</content>
-</invoke>
+

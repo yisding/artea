@@ -62,7 +62,7 @@ Owners — so no developer credential can bypass the PR path (e2e scenario S14).
   emits both per-engine dialects from one resolved model, so the alignment is
   now mechanical rather than maintained by hand. (When `policy.toml` is absent,
   the legacy fallback restores the by-convention coupling for existing
-  deployments.) e2e scenarios S5 and S10 (plus the unified variants S18–S21)
+  deployments.) e2e scenarios S5 and S10 (plus the unified variants S18–S19)
   guard the version-policy wiring, while unit tests cover the shared age-gate
   parsing and hot-path enforcement in Verdaccio and devpi.
 - policy-sync needs the `svc-policy` account, its PAT, and webhook plumbing —

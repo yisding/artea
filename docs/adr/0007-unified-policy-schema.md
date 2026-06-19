@@ -149,4 +149,3 @@ pairs that pin the npm validator without needing node at CI time.
 - A `source` field was introduced as provenance for automated feeds. The runtime
   OSV malicious-package layer uses the same allow-wins override model but queries
   OSV inline instead of compiling a mirrored OSV database into policy artifacts.
-</content>

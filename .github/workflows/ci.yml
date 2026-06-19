@@ -1,6 +1,6 @@
 # Fast checks for every PR and main push (target: well under 5 minutes).
 # Heavier pipelines live in images.yml (multi-arch GHCR builds) and
-# kind-e2e.yml (full S1-S17 suite against the helm chart in kind).
+# kind-e2e.yml (full S1-S20 suite against the helm chart in kind).
 # Actions are pinned to commit SHAs (R7 pin-everything; dependabot bumps them).
 name: ci
 

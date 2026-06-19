@@ -348,7 +348,7 @@ shape. R7 extends to deployment artifacts: **reuse official upstream charts**.
   directly.
 - **Local dev contract**: `colima start --kubernetes` (k3s), then
   `kubectl port-forward svc/<gateway> 8080:80` — the e2e suite only knows BASE_URL,
-  so S1–S18 run unchanged against compose or K8s.
+  so S1–S20 run unchanged against compose or K8s.
 - **CI**: GitHub Actions — GHCR image builds, plus a kind job that helm-installs the
   chart and runs the full e2e suite against it.
 

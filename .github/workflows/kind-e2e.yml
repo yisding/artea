@@ -1,4 +1,4 @@
-# Full S1-S17 e2e suite against the umbrella helm chart in kind clusters
+# Full S1-S20 e2e suite against the umbrella helm chart in kind clusters
 # (docs/ARCHITECTURE.md "Kubernetes deployment"): build the service images
 # locally, kind-load them, helm-install deploy/helm/artea, wait for the
 # bootstrap hook Job, then run e2e/run.sh through a gateway port-forward with
