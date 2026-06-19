@@ -14,3 +14,10 @@ shipping.
   `verdaccio-filter-artea` (`parseDurationMs`, TS → ms),
   `devpi` (`parse_iso_duration_seconds`, Py → seconds), and
   `policy-sync` (`policy_model._validate_min_age`, Py → validate only).
+- **`osv-decision-vectors.json`** — the `POST /osv/querybatch` request/response
+  wire shape. This is a field-name/shape contract (not a compute lockstep):
+  produced by `policy-sync` (`osv.response_payload`, Py) and parsed by both
+  `verdaccio-filter-artea` (`OsvDecisionClient`, TS) and `devpi`
+  (`query_osv_blocked_versions`, Py). `status`/`reason` are observability-only —
+  the npm consumer logs a degraded status, the PyPI consumer ignores them — so
+  that asymmetry is intentional, not drift.
