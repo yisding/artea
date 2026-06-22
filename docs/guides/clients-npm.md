@@ -2,7 +2,7 @@
 
 Artea exposes one URL for everything: `http://localhost:8080` (substitute your
 deployment's host). The private scope is `@${ARTEA_NAMESPACE}` (default
-`@artea`; use the value from your deployment's `.env`). npm clients configure a
+`@artea`; use the value from your deployment's `global.privateNamespace`). npm clients configure a
 **single registry**:
 
 | Purpose | URL | Backed by |

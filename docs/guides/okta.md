@@ -112,8 +112,9 @@ Note `DISABLE_REGISTRATION` must stay `false` — setting it `true` disables
 
 ## 4. Recommended hardening: disable password login
 
-Once SSO works (and after `make bootstrap` has run — the bootstrap scripts use
-the admin password over Basic auth), turn off password-based entry points:
+Once SSO works (and after the bootstrap hook Job has run — it runs automatically
+on `make dev` / `helm upgrade --install`, and uses the admin password over Basic
+auth), turn off password-based entry points:
 
 ```ini
 [service]
