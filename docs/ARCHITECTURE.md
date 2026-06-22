@@ -335,10 +335,10 @@ shape. R7 extends to deployment artifacts: **reuse official upstream charts**.
   for npm/upstream policy and also writes `pypi-constraints.txt` for
   debugging. PyPI enforcement state lives in devpi index config (`constraints`
   and `min_upstream_age`) after each successful sync.
-- **Bootstrap as a Helm hook Job**: same `scripts/bootstrap.sh` logic and idempotency
-  contract, with a token-sink abstraction — `env-file` mode (compose) vs `k8s-secret`
-  mode (patches the policy-sync Secret via the API under a namespace-scoped Role and
-  triggers a rollout). Runs post-install and post-upgrade.
+- **Bootstrap as a Helm hook Job**: `scripts/bootstrap.sh` runs in-cluster — it
+  patches the minted `svc-policy` token into the policy-sync Secret via the API
+  under a namespace-scoped Role and triggers a rollout. Idempotent; runs
+  post-install and post-upgrade.
 - **State**: gitea-data PVC is the only store of record; devpi/verdaccio cache PVCs
   are safe to delete (the fail-closed seed makes cache loss benign). Default
   `replicas: 1` everywhere except the stateless gateway.

@@ -1,19 +1,13 @@
-# check=skip=SecretsUsedInArgOrEnv
-# ^ false positive: TOKEN_SINK below is a sink-MODE selector ("k8s-secret" |
-# "env-file"), not a secret value — the rule only matches its name. The minted
-# svc-policy PAT is created at runtime and written to a k8s Secret, never baked
-# into an image layer; no real secret is ever set via ARG/ENV here.
 # Artea bootstrap image (ghcr.io/yisding/artea-bootstrap): runs
-# scripts/bootstrap.sh as a Helm hook Job with TOKEN_SINK=k8s-secret.
+# scripts/bootstrap.sh as a Helm hook Job (Kubernetes only).
 # Build from the REPO ROOT — the script seeds policy/policy.toml and the
 # server-side client setup guide:
 #   docker build -f scripts/Dockerfile.bootstrap -t ghcr.io/yisding/artea-bootstrap .
 #
 # Tool inventory = exactly what bootstrap.sh uses: bash + python3 (JSON
 # parsing, secrets) and coreutils (base64/sed/grep) come with the base,
-# curl (Gitea API) is installed, kubectl drives the k8s-secret sink.
-# No jq (the script parses JSON with python3), no docker (compose-only paths
-# are guarded behind TOKEN_SINK=env-file).
+# curl (Gitea API) is installed, kubectl patches the policy-sync Secret.
+# No jq (the script parses JSON with python3) and no docker.
 #
 # Base = python:3.14-slim, digest-pinned (ADR-0004; bump procedure in policy-sync/Dockerfile).
 FROM python:3.14-slim@sha256:d7a925f9eb9639a93e455b9f12c167569358818c0f62b51b88edbc8fcf34c421
@@ -47,11 +41,9 @@ COPY --chmod=755 scripts/bootstrap.sh ./scripts/bootstrap.sh
 RUN useradd --uid 1000 --create-home bootstrap
 USER bootstrap
 
-# Job env contract (chart sets these): TOKEN_SINK=k8s-secret, GITEA_URL,
-# SECRET_NAME, SECRET_KEY?, DEPLOYMENT_NAME, NAMESPACE, POLICY_SYNC_URL,
-# ARTEA_ADMIN_PASSWORD, DEV1_PASSWORD, POLICY_WEBHOOK_SECRET,
-# ARTEA_ALLOW_DEV_SECRETS?, EMIT_CREDENTIALS?, WRITE_CREDENTIALS_PATH?
-# (see scripts/bootstrap.sh header)
-ENV TOKEN_SINK=k8s-secret \
-    PYTHONUNBUFFERED=1
+# Job env contract (chart sets these): GITEA_URL, SECRET_NAME, SECRET_KEY?,
+# DEPLOYMENT_NAME, NAMESPACE, POLICY_SYNC_URL, ARTEA_ADMIN_PASSWORD,
+# DEV1_PASSWORD, POLICY_WEBHOOK_SECRET, ARTEA_ALLOW_DEV_SECRETS?,
+# EMIT_CREDENTIALS?, WRITE_CREDENTIALS_PATH? (see scripts/bootstrap.sh header)
+ENV PYTHONUNBUFFERED=1
 ENTRYPOINT ["/app/scripts/bootstrap.sh"]
