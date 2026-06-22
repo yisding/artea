@@ -17,8 +17,10 @@
 //   2. 200 -> /_enrich?upstream=gitea  (private wins; devpi never consulted)
 //   3. 404 -> /_enrich?upstream=devpi  (public fallback)
 //   4. /_enrich 404 on the gitea branch -> retry devpi (private vanished mid-flight)
-//   5. probe 5xx or enrich 5xx -> 502 (a Gitea outage must NOT silently fall
-//      through to public for a possibly-private name)
+//   5. probe 401/403 -> relayed (Gitea's authorization answer for an existing
+//      private package); probe 3xx/5xx or enrich 5xx -> 502 (a Gitea outage or
+//      surprise must NOT silently fall through to public for a possibly-private
+//      name)
 
 function responseBody(reply) {
     if (reply.responseText !== undefined) {
@@ -70,12 +72,13 @@ function enrichRoute(r) {
             return;
         }
         if (probe.status < 200 || probe.status >= 300) {
-            // Anything that is not a 200 (hit) or 404 (miss -> devpi, handled
-            // above) — 5xx outage, auth surprise, or an unexpected 3xx — must NOT
-            // fall through to public for a name that might be private. Per the
-            // module contract (200->gitea, 404->devpi, else->502) surface it as a
-            // gateway error.
-            r.return(502);
+            // Not a 200 (hit) or 404 (miss -> devpi, both handled above). Relay a
+            // 401/403 — that is Gitea's real authorization answer for an existing
+            // private package, the same status the non-JSON /pypi/simple/ path
+            // returns. Everything else (3xx redirect, 5xx outage, unexpected) is a
+            // gateway error and must NOT fall through to public for a possibly-
+            // private name.
+            r.return((probe.status === 401 || probe.status === 403) ? probe.status : 502);
             return;
         }
         // Gitea 200: enrich the private package.
