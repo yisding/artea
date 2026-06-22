@@ -1,7 +1,8 @@
 {{/* ARTEA OVERRIDE of templates/base/head_navbar.tmpl (upstream v1.26.2).
      Changes vs upstream, each marked with an ARTEA comment:
        1. "Explore" (/explore/repos) links replaced with "Packages" (/<namespace>/-/packages).
-       2. The "+" create dropdown (new repo / migrate / new org) removed.
+       2. A "Client setup" link points to the bootstrap-seeded registry guide.
+       3. The "+" create dropdown (new repo / migrate / new org) removed.
      Everything else is byte-identical to upstream to keep upgrade diffs small.
      Re-verify against upstream on every image bump (see gitea/UPSTREAM). */}}
 <nav id="navbar" aria-label="{{ctx.Locale.Tr "aria.navbar"}}">
@@ -34,9 +35,12 @@
 			{{end}}
 			{{/* ARTEA: was "Explore" -> /explore/repos; a registry navigates by packages */}}
 			<a class="item" href="{{AppSubUrl}}/__ARTEA_NAMESPACE__/-/packages">{{ctx.Locale.Tr "packages.title"}}</a>
+			{{/* ARTEA: deployed-server setup guide, seeded by scripts/bootstrap.sh */}}
+			<a class="item" href="{{AppSubUrl}}/__ARTEA_NAMESPACE__/registry-policy/src/branch/main/CLIENT-SETUP.md">Client setup</a>
 		{{else}}
 			{{/* ARTEA: was two "Explore" variants (orgs landing page / repos) */}}
 			<a class="item" href="{{AppSubUrl}}/__ARTEA_NAMESPACE__/-/packages">{{ctx.Locale.Tr "packages.title"}}</a>
+			<a class="item" href="{{AppSubUrl}}/__ARTEA_NAMESPACE__/registry-policy/src/branch/main/CLIENT-SETUP.md">Client setup</a>
 		{{end}}
 
 		{{template "custom/extra_links" .}}
