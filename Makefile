@@ -31,16 +31,18 @@ images: plugins ## build devpi, policy-sync, bootstrap and verdaccio-assets imag
 	docker build -t $(IMAGE_PREFIX)/artea-verdaccio-assets:$(IMAGE_TAG) \
 		-f deploy/docker/verdaccio-assets/Dockerfile verdaccio/plugins
 
-# Turnkey local dev on Colima's built-in k3s (docs/guides/local-dev.md):
-# ensure k8s is up, build the images, deploy the chart, then port-forward the
-# gateway. The bootstrap hook Job runs inside k8s-deploy.
+# Turnkey local dev on Colima's built-in k3s (docs/guides/local-dev.md): ensure
+# the colima k8s context exists, build the images, deploy the chart, then
+# port-forward the gateway. The context is pinned explicitly and `make dev` fails
+# if it is missing, so a stray kubeconfig never aims the local-dev chart +
+# placeholder secrets at a shared cluster. The bootstrap hook Job runs in k8s-deploy.
 dev: ## turnkey local stack on Colima k3s: colima up + images + deploy + port-forward
-	@if ! colima status 2>/dev/null | grep -qi running; then \
-		echo "Colima is not running — starting it with Kubernetes (k3s)."; \
+	@if ! kubectl config get-contexts -o name 2>/dev/null | grep -qx colima; then \
+		echo "No 'colima' kubectl context — starting Colima with Kubernetes (k3s)."; \
 		echo "  (for a fuller stack: colima start --kubernetes --cpu 4 --memory 8)"; \
 		colima start --kubernetes; \
 	fi
-	@kubectl config use-context colima >/dev/null 2>&1 || true
+	kubectl config use-context colima
 	$(MAKE) images
 	$(MAKE) k8s-deploy
 	@echo "Stack deployed. Port-forwarding the gateway to http://localhost:8080"
@@ -50,6 +52,9 @@ dev: ## turnkey local stack on Colima k3s: colima up + images + deploy + port-fo
 e2e: k8s-e2e ## smoke + S1-S20 against the cluster (alias for k8s-e2e)
 
 k8s-deploy: ## helm install/upgrade the chart (bootstrap runs as a chart hook Job)
+	# verdaccio dep is an https chart repo (the gitea dep is OCI, from Chart.lock);
+	# register it so `helm dependency build` works on a fresh Helm home
+	helm repo add verdaccio https://charts.verdaccio.org >/dev/null 2>&1 || true
 	helm dependency build $(HELM_CHART)
 	helm upgrade --install $(HELM_RELEASE) $(HELM_CHART) \
 		--namespace $(K8S_NAMESPACE) --create-namespace \
