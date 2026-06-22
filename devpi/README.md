@@ -19,16 +19,18 @@ What this container is **not**:
 
 - **No private packages.** Wheels uploaded by users live in Gitea, never here.
 - **No auth.** devpi runs wide open; the gateway enforces auth on every devpi-bound
-  path via `auth_request` against Gitea. **Never expose port 3141 to the host or
-  publish it in compose** — it must only be reachable on the internal docker network
-  by the `gateway` container. (`--restrict-modify root` is passed as defense in depth
+  path via `auth_request` against Gitea. **Never expose port 3141 outside the
+  cluster** — it must only be reachable in-cluster by the gateway (no Service of
+  type other than ClusterIP, no Ingress). (`--restrict-modify root` is passed as defense in depth
   so an anonymous reacher cannot create users/indexes, but it is not the auth model.)
-- **Not a store of record.** The whole server dir is a disposable cache: it is always
-  safe to `docker compose down && docker volume rm <project>_devpi-data` (or
-  `make clean`). The next boot re-runs `devpi-init` and recreates both indexes.
-  After a wipe, `root/constrained` is seeded **fail-closed** (`*` = block
-  everything, e2e S15) until policy-sync's startup sync, webhook, or poll
-  replaces the constraints and upstream age with the real policy.
+- **Not a store of record.** The whole server dir is a disposable cache (the
+  `artea-devpi-data` PVC): it is always safe to delete the PVC and let the chart
+  recreate it (`kubectl -n artea delete pvc artea-devpi-data` then
+  `kubectl -n artea rollout restart deploy/artea-devpi`). The next boot re-runs
+  `devpi-init` and recreates both indexes. After a wipe, `root/constrained` is
+  seeded **fail-closed** (`*` = block everything, e2e S15) until policy-sync's
+  startup sync, webhook, or poll replaces the constraints and upstream age with
+  the real policy.
 
 ## URL shapes (contract for the gateway author)
 
@@ -123,14 +125,14 @@ OSV lookup failures fail open for uncached versions.
 | Item | Value |
 |------|-------|
 | Server/cache dir | `/devpi/server` (`DEVPISERVER_SERVERDIR`, set in the image) |
-| Compose mount | named volume `devpi-data` → `/devpi/server` |
-| Ownership | uid 1000 (`devpi` user); use a named volume, not a host bind-mount, so docker seeds ownership from the image |
+| Volume | the `artea-devpi-data` PVC → `/devpi/server` |
+| Ownership | uid 1000 (`devpi` user); the chart's PVC is initialized with the right ownership |
 
 ## Environment variables
 
 | Var | Default | Purpose |
 |-----|---------|---------|
-| `DEVPI_ROOT_PASSWORD` | *(required)* | sets the root password at first init; used as HTTP Basic auth by `ensure_index.py` and by policy-sync; from `.env`. Rotating it after init requires changing the root password on the server too, or just wiping the volume |
+| `DEVPI_ROOT_PASSWORD` | *(required)* | sets the root password at first init; used as HTTP Basic auth by `ensure_index.py` and by policy-sync (from the chart's `artea` Secret). Rotating it after init requires changing the root password on the server too, or just wiping the volume |
 | `DEVPI_OUTSIDE_URL` | `http://localhost:8080` | public base URL baked into generated links |
 | `DEVPI_PORT` | `3141` | listen port (contract value; only override in tests) |
 | `DEVPI_STARTUP_TIMEOUT` | `60` | seconds to wait for the server before the entrypoint gives up |
@@ -139,26 +141,10 @@ OSV lookup failures fail open for uncached versions.
 
 ## Version pins
 
-Pinned via build args (defaults in the `Dockerfile`, overridden from `.env` by
-compose so all pins live there):
+Pinned via build args; the `Dockerfile` is the single source of truth:
 
 ```
 DEVPI_SERVER_VERSION=6.20.2
-```
-
-Compose wiring:
-
-```yaml
-devpi:
-  build:
-    context: ./devpi
-    args:
-      DEVPI_SERVER_VERSION: ${DEVPI_SERVER_VERSION}
-  environment:
-    DEVPI_ROOT_PASSWORD: ${DEVPI_ROOT_PASSWORD}
-  volumes:
-    - devpi-data:/devpi/server
-  # no `ports:` — internal only, reached via the gateway
 ```
 
 ## Tests

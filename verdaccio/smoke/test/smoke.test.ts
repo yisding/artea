@@ -1,7 +1,9 @@
-// Boots real verdaccio 6 in-process with our single-source config (rendered for
-// compose, container paths swapped for temp/local ones) and the built plugins,
-// asserts the auth + deny contract over HTTP, then exits. Requires `pnpm build`
-// in ../plugins first, plus helm + yq on PATH to render the config.
+// Boots real verdaccio 6 in-process with our single-source config (rendered
+// out of the Helm chart, container paths swapped for temp/local ones and the
+// HTTP policy_url swapped for a local policy_file so the test needs no running
+// policy-sync) and the built plugins, asserts the auth + deny contract over
+// HTTP, then exits. Requires `pnpm build` in ../plugins first, plus helm + yq
+// on PATH to render the config.
 import { createServer, type Server as HttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -17,8 +19,8 @@ const RENDER_SCRIPT = resolve(REPO_ROOT, 'scripts', 'render-chart-file.sh');
 const PLUGINS_DIR = resolve(__dirname, '..', '..', 'plugins');
 const TEST_NAMESPACE = 'acme';
 
-// The Verdaccio config is single-sourced as a Helm template; render its compose
-// variant here (helm + yq required — skip the suite when either is missing).
+// The Verdaccio config is single-sourced as a Helm template; render it out of
+// the chart here (helm + yq required — skip the suite when either is missing).
 function hasRenderTools(): boolean {
   try {
     execFileSync('sh', ['-c', 'command -v helm >/dev/null && command -v yq >/dev/null'], { stdio: 'ignore' });
@@ -28,17 +30,14 @@ function hasRenderTools(): boolean {
   }
 }
 
-function renderComposeConfig(): string {
+// Render files/verdaccio/config.yaml out of the chart's verdaccio-config
+// ConfigMap (scripts/render-chart-file.sh); values-local.yaml supplies dev
+// placeholders so the render succeeds offline.
+function renderConfig(): string {
   return execFileSync(
     RENDER_SCRIPT,
-    [
-      'templates/verdaccio-config.yaml',
-      'config.yaml',
-      '--set',
-      'verdaccio.configMode=compose',
-      '--set',
-      `global.privateNamespace=${TEST_NAMESPACE}`,
-    ],
+    ['templates/verdaccio-config.yaml', 'config.yaml',
+     '--set', `global.privateNamespace=${TEST_NAMESPACE}`],
     { cwd: REPO_ROOT, encoding: 'utf8' },
   );
 }
@@ -72,9 +71,9 @@ describe.skipIf(!hasRenderTools())('verdaccio 6 boots with our config and plugin
     await new Promise<void>((r) => gitea.listen(0, '127.0.0.1', r));
     const giteaUrl = `http://127.0.0.1:${(gitea.address() as AddressInfo).port}`;
 
-    // render the single-source config (compose variant) so the smoke test
-    // validates the real keys verdaccio loads
-    const rendered = renderComposeConfig();
+    // render the single-source config so the smoke test validates the real keys
+    // verdaccio loads
+    const rendered = renderConfig();
     const config = yamlLoad(rendered) as Record<string, any>;
     expect(config.url_prefix).toBe('/npm/');
     expect(config.auth['auth-gitea']).toBeDefined();
@@ -83,17 +82,24 @@ describe.skipIf(!hasRenderTools())('verdaccio 6 boots with our config and plugin
     expect(config.packages[`@${TEST_NAMESPACE}/*`].proxy).toBeUndefined(); // private scope must never proxy
     expect(config.packages['**'].proxy).toBe('npmjs');
 
-    // container paths -> local ones
+    // container paths -> local ones; swap the HTTP policy_url the chart wires to
+    // policy-sync for a local policy_file so the in-process test needs no server
     config.storage = join(tmp, 'storage');
     config.plugins = PLUGINS_DIR;
     config.auth['auth-gitea'].gitea_url = giteaUrl;
-    config.filters['filter-artea'].policy_file = join(tmp, 'npm-rules.yaml');
-    config.filters['filter-artea'].upstream_policy_file = join(tmp, 'upstream-policy.yaml');
-    config.middlewares['filter-artea'].policy_file = join(tmp, 'npm-rules.yaml');
-    config.middlewares['filter-artea'].upstream_policy_file = join(tmp, 'upstream-policy.yaml');
+    for (const role of ['filters', 'middlewares'] as const) {
+      const plugin = config[role]['filter-artea'];
+      delete plugin.policy_url;
+      delete plugin.upstream_policy_url;
+      delete plugin.poll_interval_ms;
+      delete plugin.fail_grace_ms;
+      plugin.policy_file = join(tmp, 'npm-rules.yaml');
+      plugin.upstream_policy_file = join(tmp, 'upstream-policy.yaml');
+    }
     writeFileSync(join(tmp, 'npm-rules.yaml'), 'blocked:\n  packages:\n    - left-pad\n');
     writeFileSync(join(tmp, 'upstream-policy.yaml'), 'upstream:\n  min_age: P0D\n');
-    delete config.listen;
+    // the chart config has no `listen` (the official image binds 4873); the test
+    // binds the returned server itself via runServer(...).listen(0) below
     // bundled audit middleware does not resolve under pnpm's isolated node_modules
     delete config.middlewares.audit;
     config.log = { type: 'stdout', format: 'json', level: 'fatal' };

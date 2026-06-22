@@ -57,13 +57,14 @@ the architecture doc), because its values cover everything we need:
   `deploy/docker/verdaccio-assets/Dockerfile`) which copies the pre-built
   plugin workspace into an emptyDir;
 - `persistence.volumes`/`persistence.mounts` mount that emptyDir read-only at
-  `/verdaccio/plugins`, exactly like compose's bind mount.
+  `/verdaccio/plugins`.
 
 The verdaccio *image* is stock (R7); only the plugin bits ride in via the init
-container. K8s config differences vs `verdaccio/config.yaml` (compose):
-`listen` omitted (chart-owned), and the filter plugin uses `policy_url` plus
-`upstream_policy_url` against policy-sync instead of local `policy_file` paths —
-policy is delivered over HTTP, there is no shared volume.
+container. The config is single-sourced from `files/verdaccio/config.yaml` (no
+config-mode switch): `listen` is omitted (chart-owned), and the filter plugin
+uses `policy_url` plus `upstream_policy_url` against policy-sync rather than
+local `policy_file` paths — policy is delivered over HTTP, there is no shared
+volume.
 
 ## Secrets
 
@@ -131,10 +132,10 @@ structurally impossible (no guard script needed):
 | `files/gitea-templates/base__head_navbar.tmpl` | `gitea/custom/templates/base/head_navbar.tmpl.template` |
 
 `files/gateway/nginx.conf` is itself the SINGLE SOURCE for the gateway routing
-config: Helm renders it directly here, and the compose stack renders its variant
-through Helm (`scripts/render-nginx.sh`). The `gateway.upstreamMode` switch
-(`k8s` default vs `compose`) is the only target-specific part; there is no
-separate compose copy to keep in sync.
+config: it is a Helm template, rendered directly into the gateway ConfigMap.
+There is no separate copy to keep in sync — the local routing unit test renders
+this same chart template (`helm template ... | yq`) so the test and the
+deployed config never drift.
 
 Install the chart from this directory (as the docs do); `helm package` would not
 bundle the targets of out-of-tree symlinks.

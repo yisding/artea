@@ -56,7 +56,7 @@ One public entrypoint (the gateway). Everything else is internal.
 | Shared policy volume | named volume `policy-data`, mounted at `/policy` in verdaccio and policy-sync |
 | Bootstrap admin | `ARTEA_ADMIN_USER` (default `${ARTEA_NAMESPACE}-admin` when unset), password from `.env` (`ARTEA_ADMIN_PASSWORD`) |
 | Env file | `.env` at repo root (`.env.example` committed); all version pins, secrets, and namespace settings live here |
-| Runtime configs | rendered from `*.template` files into `.generated/` by `make render-configs` / `make up` |
+| Runtime configs | single-sourced as Helm templates in `deploy/helm/artea/`, rendered into ConfigMaps by Helm (gateway `nginx.conf`, verdaccio `config.yaml`; Gitea config via `gitea.gitea.config` in `values.yaml`) |
 | devpi indexes | `root/pypi` (mirror of pypi.org), `root/constrained` (type=constrained, bases=root/pypi) |
 
 ### Gitea endpoint paths (verified against upstream source)
@@ -282,7 +282,8 @@ the admin allowlist, ≥1 required approval), and developers are members of a
 ## Upstream isolation (R7) — the no-fork rule
 
 1. **Gitea runs the stock upstream Docker image.** All customization is runtime
-   overlay: `gitea/app.ini.template` (rendered mounted config) and
+   overlay: `deploy/helm/artea/values.yaml` `gitea.gitea.config` (the
+   chart-managed Gitea config) and
    `gitea/custom/` templates (Gitea's supported
    `custom/` directory: template/asset overrides). No source patches in v1.
 2. **Verdaccio and devpi are consumed as released artifacts.** Our code is plugins

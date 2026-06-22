@@ -13,14 +13,14 @@
 # revoked.
 #
 # Token sink (TOKEN_SINK):
-#   env-file   (default) compose flow: the PAT lands in .env and policy-sync
-#              is recreated via docker compose. Admin actions use the Gitea
-#              CLI in-container; .env is required; kubectl is never touched.
-#   k8s-secret in-cluster flow (Helm hook Job): the PAT is patched into the
-#              Secret SECRET_NAME (key SECRET_KEY, default POLICY_SYNC_TOKEN)
+#   k8s-secret (default) in-cluster flow (Helm hook Job): the PAT is patched into
+#              the Secret SECRET_NAME (key SECRET_KEY, default POLICY_SYNC_TOKEN)
 #              and DEPLOYMENT_NAME is rollout-restarted, both via kubectl in
 #              NAMESPACE (empty = context default). Admin actions use the
 #              Gitea HTTP API (the chart provisions the admin user).
+#   env-file   legacy local flow, UNUSED since Docker Compose was removed: the
+#              PAT lands in .env; admin actions use the Gitea CLI in-container.
+#              Dead code pending removal — nothing supported invokes it now.
 #              Set EMIT_CREDENTIALS=true for e2e/dev to print credentials to
 #              stdout between BEGIN/END markers (the harness extracts them
 #              from Job logs) and, if WRITE_CREDENTIALS_PATH is set and
@@ -40,7 +40,7 @@ log() { echo "[bootstrap] $*"; }
 die() { echo "[bootstrap] ERROR: $*" >&2; exit 1; }
 truthy() { case "${1:-}" in 1 | true | TRUE | yes | YES | on | ON) return 0 ;; *) return 1 ;; esac; }
 
-TOKEN_SINK="${TOKEN_SINK:-env-file}"
+TOKEN_SINK="${TOKEN_SINK:-k8s-secret}"
 case "${TOKEN_SINK}" in env-file | k8s-secret) ;; *) die "TOKEN_SINK must be 'env-file' or 'k8s-secret', got '${TOKEN_SINK}'" ;; esac
 in_k8s() { [ "${TOKEN_SINK}" = k8s-secret ]; }
 
@@ -152,9 +152,6 @@ if ! truthy "${ARTEA_ALLOW_DEV_SECRETS:-false}"; then
   done
   unset _secret
 fi
-
-# compose-only: file-mounted gitea secrets; the chart manages these in k8s
-in_k8s || ./gitea/scripts/gen-secrets.sh
 
 # ---- helpers -----------------------------------------------------------------
 gitea_cli() { docker compose exec -T -u git gitea gitea "$@"; } # env-file mode only

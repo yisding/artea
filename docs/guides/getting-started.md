@@ -4,8 +4,10 @@ This guide gets a local Artea registry running, signs in with the bootstrap
 accounts, and publishes one private package. Use it when you want the shortest
 path from clone to a working npm/PyPI registry.
 
-For Kubernetes, read this once for the product flow, then use
-[kubernetes.md](kubernetes.md) for the cluster-specific install steps.
+Artea runs on Kubernetes only; for local dev that means Colima's built-in k3s.
+Read this once for the product flow, then use [local-dev.md](local-dev.md) for
+the Colima quickstart and [kubernetes.md](kubernetes.md) for the full
+cluster-specific install steps.
 
 ## What you get
 
@@ -22,7 +24,10 @@ can be added later for human sign-in.
 
 ## Prerequisites
 
-- Docker with Compose v2.
+- [Colima](https://github.com/abiosoft/colima) and the Docker CLI.
+  `colima start --kubernetes` gives you a local k3s cluster that shares
+  Colima's image store, so locally-built images are visible without a registry.
+- `helm` ≥ 3.14 and `kubectl`.
 - `make`.
 - `pnpm`, because the Verdaccio plugins are plain TypeScript packages.
 - npm if you want to run the npm example.
@@ -31,30 +36,26 @@ can be added later for human sign-in.
 ## 1. Start the local stack
 
 ```sh
-cp .env.example .env
-make up
-make bootstrap
-make smoke
+colima start --kubernetes
+make dev
 ```
 
-For local throwaway use, `.env.example` intentionally allows the `change-me-*`
-placeholders. Before any shared or long-lived deployment, replace every
-placeholder secret and set:
+`make dev` builds the four Artea images (`:local`), `helm upgrade --install`s
+the chart with `values-local.yaml`, and port-forwards the gateway to
+`http://localhost:8080`. The chart generates the Gitea secrets, renders the
+runtime configs into ConfigMaps, and runs the idempotent bootstrap hook Job
+that creates the admin, namespace org, policy repo, webhook, teams, demo user
+(`dev1`), and PATs.
 
-```sh
-ARTEA_ALLOW_DEV_SECRETS=false
-```
+For local throwaway use, `values-local.yaml` sets
+`secrets.allowDevPlaceholders: true`, which accepts the `change-me-*`
+placeholder secrets. Any non-throwaway deployment must instead set real
+`secrets:` values (see [kubernetes.md](kubernetes.md)).
 
-`make up` renders runtime configs, generates Gitea secret files, builds the
-Verdaccio plugins, builds the local images, and starts the stack. `make
-bootstrap` is idempotent; it creates the admin, namespace org, policy repo,
-webhook, teams, demo user, and PATs.
-
-Local bootstrap credentials are written here:
-
-```sh
-e2e/tmp/credentials.env
-```
+The bootstrap Job emits a framed credentials block in its logs. `make e2e`
+extracts it to `e2e/tmp/credentials.env`; to load credentials without running
+the full suite, run `scripts/k8s-e2e.sh` (which performs the same extraction)
+or read them from `kubectl -n artea logs job/artea-bootstrap` directly.
 
 Load them in a shell:
 
@@ -180,16 +181,16 @@ Client PATs must include:
 Use `username:PAT` for npm, pip, twine, uv, poetry, and curl. Do not use the
 account password for package clients.
 
-## 6. Deploy beyond local Compose
+## 6. Production Kubernetes
 
-For Kubernetes:
+`make dev` targets local Colima k3s; for a shared cluster:
 
 ```sh
 make k8s-deploy
 kubectl -n artea port-forward svc/artea-gateway 8080:80
 ```
 
-Local Kubernetes needs locally built Artea images; the full flow is in
+The full flow — secrets, image digests, Ingress, upgrades — is in
 [kubernetes.md](kubernetes.md). Production installs should set
 `global.baseUrl` to the real HTTPS gateway URL and expose only the gateway
 Ingress.
@@ -201,17 +202,20 @@ Before any non-throwaway deployment:
 - Back up Gitea data; it is the store of record for users, PATs, policy, and
   private package artifacts.
 - Decide whether users are manually admin-managed or created through Okta/OIDC.
-- Run `make e2e` for Compose or `make k8s-e2e` for local Kubernetes.
+- Run `make e2e`.
 
 ## Useful commands
 
 ```sh
-make logs       # follow all compose service logs
-make down       # stop containers, keep all volumes
-make clean      # wipe disposable caches, keep Gitea data
-make backup     # cold backup of Gitea data
-make destroy    # delete all local state, including users and packages
+make dev        # build images, deploy to local k3s, port-forward the gateway
+make e2e        # smoke + S1-S20 against the cluster
+make k8s-down   # uninstall the chart (PVCs survive)
+kubectl -n artea logs -f deploy/artea-gateway   # follow a component's logs
 ```
+
+To wipe everything, delete the namespace: `kubectl delete ns artea`. The
+`artea-gitea-data` PVC is the store of record for users, PATs, policy, and
+private package artifacts — back it up before deleting anything.
 
 Next guides:
 

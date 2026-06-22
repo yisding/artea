@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
 # Artea smoke checks — fast gateway-level verification that the stack wiring
-# works (subset of the S1-S20 e2e scenarios). Requires a bootstrapped stack;
-# uses the credentials bootstrap wrote. Portable across runtimes:
+# works (subset of the S1-S20 e2e scenarios). Requires a bootstrapped cluster;
+# uses the credentials bootstrap wrote.
 #   BASE_URL          public gateway URL (beats the recorded GATEWAY_URL)
 #   CREDENTIALS_FILE  credentials path (default e2e/tmp/credentials.env)
-#   RUNTIME           compose (default) | k8s — how the internal-only
-#                     policy-sync healthz probe is exec'd
+# The internal-only policy-sync /healthz probe is exec'd via kubectl.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-RUNTIME="${RUNTIME:-compose}"
 CREDENTIALS_FILE="${CREDENTIALS_FILE:-e2e/tmp/credentials.env}"
 case "${CREDENTIALS_FILE}" in /*) ;; *) CREDENTIALS_FILE="./${CREDENTIALS_FILE}" ;; esac
 [ -f "${CREDENTIALS_FILE}" ] || { echo "ERROR: ${CREDENTIALS_FILE} missing — run make bootstrap"; exit 1; }
@@ -68,15 +66,11 @@ check "devpi file path w/o auth is denied" 401 \
 check "gitea pypi simple 404s for unpublished name (auth'd)" 404 \
   "$(code -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/api/packages/${ARTEA_NAMESPACE}/pypi/simple/six/")"
 
-# 5. policy-sync health (internal-only; via docker/kubectl exec)
+# 5. policy-sync health (internal-only; via kubectl exec)
 PS_HEALTH_PY="import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8920/healthz', timeout=3)); print('ok' if d.get('status')=='ok' and d.get('last_sync_ok') else 'bad')"
-if [ "${RUNTIME}" = k8s ]; then
-  kc=(kubectl)
-  [ -n "${K8S_NAMESPACE}" ] && kc=(kubectl -n "${K8S_NAMESPACE}")
-  ps_health=$("${kc[@]}" exec "deploy/${K8S_POLICY_SYNC_DEPLOY}" -- python -c "${PS_HEALTH_PY}")
-else
-  ps_health=$(docker compose exec -T policy-sync python -c "${PS_HEALTH_PY}")
-fi
+kc=(kubectl)
+[ -n "${K8S_NAMESPACE}" ] && kc=(kubectl -n "${K8S_NAMESPACE}")
+ps_health=$("${kc[@]}" exec "deploy/${K8S_POLICY_SYNC_DEPLOY}" -- python -c "${PS_HEALTH_PY}")
 check "policy-sync /healthz reports synced" ok "${ps_health}"
 
 echo

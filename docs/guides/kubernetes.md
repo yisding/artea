@@ -1,7 +1,7 @@
 # Kubernetes: installing Artea with the Helm chart
 
-The compose stack is the dev/reference deployment; Kubernetes is the
-production shape (`docs/ARCHITECTURE.md`, "Kubernetes deployment"). The
+Kubernetes is the only runtime for Artea (`docs/ARCHITECTURE.md`, "Kubernetes
+deployment"); local dev runs the same chart on Colima's built-in k3s. The
 umbrella chart lives at `deploy/helm/artea` — official Gitea + Verdaccio
 charts as dependencies, our own templates only for devpi, policy-sync, the
 gateway and the bootstrap Job. Chart-level details (fixed names, secrets
@@ -58,9 +58,10 @@ kubectl -n artea port-forward svc/artea-gateway 8080:80
 `global.baseUrl` (default `http://localhost:8080`) must match how clients
 reach the gateway — it drives Gitea's `ROOT_URL` and devpi's outside-url, so
 generated tarball/file URLs resolve back through the gateway. The e2e suite
-only knows `BASE_URL`, so S1–S20 run unchanged against compose or K8s.
+only knows `BASE_URL`, so S1–S20 run unchanged against any cluster (local
+Colima k3s or production).
 
-Client setup (`.npmrc`, pip index URL, PATs) is identical to compose:
+Client setup (`.npmrc`, pip index URL, PATs) is the same everywhere:
 `docs/guides/clients-npm.md`, `docs/guides/clients-python.md`. For the first
 package publish flow, follow [getting-started.md](getting-started.md) after
 the port-forward is running.
@@ -73,7 +74,8 @@ create users manually or through Okta/OIDC, add package publishers to the
 ## Secrets
 
 Set real values for every key under `secrets:` (the defaults are dev
-placeholders, mirroring `.env.example`). The private package namespace defaults
+placeholders, accepted only when `secrets.allowDevPlaceholders: true` as in
+`values-local.yaml`). The private package namespace defaults
 to `artea`; override `global.privateNamespace` to use another Gitea org / npm
 scope. When `secrets.adminUsername` is omitted or empty, it defaults to
 `<global.privateNamespace>-admin`. Do not reuse the dev placeholders outside
@@ -108,8 +110,7 @@ low-privilege `svc-policy` PAT in Gitea and patches it into the
 `artea-policy-sync` Secret (its Role allows get/patch on exactly that Secret
 plus rollout-restart of the policy-sync Deployment). `helm upgrade` preserves
 the in-cluster token; re-running bootstrap rotates it only when invalid or
-over-privileged — the same idempotency contract as `make bootstrap` in
-compose.
+over-privileged — the same idempotency contract on every install/upgrade.
 
 For production, expose only the gateway via the optional Ingress (TLS + host
 routing only — the routing logic stays in the gateway, by architecture rule).
@@ -135,24 +136,24 @@ URL, and either TLS or this explicit external-TLS declaration.
 
 ## State
 
-`artea-gitea-data` is the only store of record — back it up (same content as
-the compose `gitea-data` volume; `docs/guides/operations.md`). The
+`artea-gitea-data` is the only store of record — back it up
+(`docs/guides/operations.md`). The
 verdaccio/devpi PVCs are disposable pull-through caches: deleting them is
 safe; a fresh devpi volume serves nothing until policy-sync's next sync
 (fail-closed), and Verdaccio re-fetches from npmjs on demand.
 
 ## Upgrades and upstream bumps (R7)
 
-Same no-fork story as compose (`docs/guides/operations.md`), with the chart as
+Same no-fork story (`docs/guides/operations.md`), with the chart as
 the pin location:
 
 1. **Upstream chart bump**: edit the dependency version in
    `deploy/helm/artea/Chart.yaml`, run `helm dependency update`, review the
    subchart changelog for values changes, commit `Chart.lock`.
 2. **Upstream image bump within a chart**: `gitea.image.tag` /
-   `verdaccio.image.tag` in `values.yaml` (keep in sync with the compose pins
-   in `.env` / `gitea/UPSTREAM`; re-verify the `files/gitea-templates/`
-   overlay against the new Gitea templates — they are version-coupled).
+   `verdaccio.image.tag` in `values.yaml` track the pins in `gitea/UPSTREAM`;
+   re-verify the `files/gitea-templates/` overlay against the new Gitea
+   templates — they are version-coupled.
 3. **Our images**: CI pushes mutable tags (for example `:main`) and immutable
    digests. `values-local.yaml` intentionally uses `:local` with
    `pullPolicy: Never` for colima/k3s development. Production release values

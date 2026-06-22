@@ -1,96 +1,68 @@
 # Artea development targets. `make help` lists them.
 SHELL := /bin/bash
-COMPOSE := docker compose
 PROJECT := artea
-# throwaway container for volume backup/restore (pinned tag, never latest)
-UTIL_IMAGE ?= alpine:3.22
-BACKUP_DIR := backups
 
-.PHONY: help render-configs secrets plugins up down logs bootstrap smoke e2e clean destroy backup restore \
-	k8s-deploy k8s-e2e k8s-down
+.PHONY: help plugins images dev e2e k8s-deploy k8s-e2e k8s-down
 
 # kubernetes flow (chart by deploy/helm/artea; see docs/ARCHITECTURE.md)
 HELM_RELEASE ?= artea
 HELM_CHART ?= deploy/helm/artea
 K8S_NAMESPACE ?= artea
 HELM_VALUES ?= deploy/helm/artea/values-local.yaml
+# local images consumed by values-local.yaml (tag :local, pullPolicy Never)
+IMAGE_PREFIX ?= ghcr.io/yisding
+IMAGE_TAG ?= local
 
 help: ## list available targets
-	@grep -E '^[a-z0-9-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "%-10s %s\n", $$1, $$2}'
+	@grep -E '^[a-z0-9-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "%-12s %s\n", $$1, $$2}'
 
-.env:
-	@echo "ERROR: .env is missing — cp .env.example .env and change the secrets"; exit 1
-
-secrets: ## generate gitea/secrets/ (idempotent; required before first up)
-	@./gitea/scripts/gen-secrets.sh
-
-render-configs: .env ## render namespace-aware runtime configs into .generated/
-	@./scripts/render-configs.sh
-
-plugins: ## install + build the Verdaccio plugins (required before first up)
+plugins: ## install + build the Verdaccio plugins (required before building images)
 	cd verdaccio/plugins && pnpm install --frozen-lockfile && pnpm build
 
-up: .env render-configs secrets plugins ## render configs, build plugins/images, start the full stack
-	$(COMPOSE) up -d --build --wait --wait-timeout 300
+# Build the four Artea service images for local k3s. The {name, context,
+# dockerfile} triples mirror .github/workflows/kind-e2e.yml; with Colima's docker
+# runtime the k3s node shares the docker image store, so no load step is needed.
+# verdaccio-assets is special: its context is the *built* plugin workspace, so it
+# depends on `plugins` above.
+images: plugins ## build devpi, policy-sync, bootstrap and verdaccio-assets images (:local)
+	docker build -t $(IMAGE_PREFIX)/artea-devpi:$(IMAGE_TAG) -f devpi/Dockerfile devpi
+	docker build -t $(IMAGE_PREFIX)/artea-policy-sync:$(IMAGE_TAG) -f policy-sync/Dockerfile policy-sync
+	docker build -t $(IMAGE_PREFIX)/artea-bootstrap:$(IMAGE_TAG) -f scripts/Dockerfile.bootstrap .
+	docker build -t $(IMAGE_PREFIX)/artea-verdaccio-assets:$(IMAGE_TAG) \
+		-f deploy/docker/verdaccio-assets/Dockerfile verdaccio/plugins
 
-down: ## stop the stack (volumes are preserved)
-	$(COMPOSE) down
+# Turnkey local dev on Colima's built-in k3s (docs/guides/local-dev.md): ensure
+# the colima k8s context exists, build the images, deploy the chart, then
+# port-forward the gateway. The context is pinned explicitly and `make dev` fails
+# if it is missing, so a stray kubeconfig never aims the local-dev chart +
+# placeholder secrets at a shared cluster. The bootstrap hook Job runs in k8s-deploy.
+dev: ## turnkey local stack on Colima k3s: colima up + images + deploy + port-forward
+	@if ! kubectl config get-contexts -o name 2>/dev/null | grep -qx colima; then \
+		echo "No 'colima' kubectl context — starting Colima with Kubernetes (k3s)."; \
+		echo "  (for a fuller stack: colima start --kubernetes --cpu 4 --memory 8)"; \
+		colima start --kubernetes; \
+	fi
+	kubectl config use-context colima
+	$(MAKE) images
+	$(MAKE) k8s-deploy
+	@echo "Stack deployed. Port-forwarding the gateway to http://localhost:8080"
+	@echo "(Ctrl-C to stop; rerun 'make e2e' in another shell to drive the suite.)"
+	kubectl -n $(K8S_NAMESPACE) port-forward svc/artea-gateway 8080:80
 
-logs: ## follow logs of all services
-	$(COMPOSE) logs -f --tail=100
-
-bootstrap: .env render-configs ## idempotent S1: admin, org, policy repo + webhook, users, PATs
-	./scripts/bootstrap.sh
-
-smoke: ## gateway-level smoke checks (requires up + bootstrap)
-	./scripts/smoke.sh
-
-e2e: smoke ## end-to-end scenario suite (requires up + bootstrap)
-	./e2e/run.sh
+e2e: k8s-e2e ## smoke + S1-S20 against the cluster (alias for k8s-e2e)
 
 k8s-deploy: ## helm install/upgrade the chart (bootstrap runs as a chart hook Job)
+	# verdaccio dep is an https chart repo (the gitea dep is OCI, from Chart.lock);
+	# register it so `helm dependency build` works on a fresh Helm home
+	helm repo add verdaccio https://charts.verdaccio.org >/dev/null 2>&1 || true
 	helm dependency build $(HELM_CHART)
 	helm upgrade --install $(HELM_RELEASE) $(HELM_CHART) \
 		--namespace $(K8S_NAMESPACE) --create-namespace \
 		$(if $(wildcard $(HELM_VALUES)),--values $(HELM_VALUES),) \
 		--wait --timeout 10m
 
-k8s-e2e: ## smoke + S1-S17 against the cluster (port-forward, RUNTIME=k8s)
+k8s-e2e: ## smoke + S1-S20 against the cluster (port-forward, RUNTIME=k8s)
 	K8S_NAMESPACE=$(K8S_NAMESPACE) ./scripts/k8s-e2e.sh
 
 k8s-down: ## uninstall the chart (PVCs survive; delete the namespace to wipe)
 	helm uninstall $(HELM_RELEASE) --namespace $(K8S_NAMESPACE)
-
-# clean wipes only what refills itself; gitea-data (users, private packages,
-# PATs — the store of record) survives. Full wipe = `make destroy`.
-clean: ## stop the stack and wipe the disposable caches (gitea-data preserved)
-	$(COMPOSE) down --remove-orphans
-	docker volume rm -f $(PROJECT)_devpi-data $(PROJECT)_verdaccio-storage $(PROJECT)_policy-data
-	rm -rf e2e/tmp
-
-destroy: ## DANGER: delete ALL state including gitea-data (interactive confirm)
-	@echo "This permanently deletes ALL Artea state, including gitea-data"
-	@echo "(users, private packages, PATs). 'make backup' first if in doubt."
-	@read -r -p "Type the project name ($(PROJECT)) to confirm: " answer; \
-		[ "$$answer" = "$(PROJECT)" ] || { echo "aborted"; exit 1; }
-	$(COMPOSE) down -v --remove-orphans
-	rm -rf e2e/tmp
-
-backup: ## cold-backup gitea-data to ./backups/ (stops gitea briefly)
-	@mkdir -p $(BACKUP_DIR)
-	$(COMPOSE) stop gitea
-	docker run --rm -v $(PROJECT)_gitea-data:/data:ro -v "$(CURDIR)/$(BACKUP_DIR)":/backup $(UTIL_IMAGE) \
-		tar czf "/backup/gitea-data-$$(date +%Y%m%d-%H%M%S).tar.gz" -C /data .
-	$(COMPOSE) start gitea
-	@ls -t $(BACKUP_DIR)/gitea-data-*.tar.gz | head -1
-
-restore: ## overwrite gitea-data from BACKUP=backups/gitea-data-<ts>.tar.gz
-	@[ -n "$(BACKUP)" ] && [ -f "$(BACKUP)" ] || \
-		{ echo "usage: make restore BACKUP=backups/gitea-data-<timestamp>.tar.gz"; exit 1; }
-	@read -r -p "Overwrite gitea-data with $(BACKUP)? Type the project name ($(PROJECT)) to confirm: " answer; \
-		[ "$$answer" = "$(PROJECT)" ] || { echo "aborted"; exit 1; }
-	$(COMPOSE) stop gitea
-	docker run --rm -v $(PROJECT)_gitea-data:/data -v "$(abspath $(BACKUP))":/backup.tar.gz:ro $(UTIL_IMAGE) \
-		sh -c 'find /data -mindepth 1 -delete && tar xzf /backup.tar.gz -C /data'
-	$(COMPOSE) start gitea
-	@echo "restored $(BACKUP); caches refill on demand (slower first installs)"

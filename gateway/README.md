@@ -1,30 +1,19 @@
 # gateway — nginx single public entrypoint
 
-Stock `nginx` image (pin the exact tag in `.env`, e.g. `NGINX_VERSION=1.29.4`),
-config plus one small njs file — no source, no custom image. The njs module
-(`ngx_http_js_module.so`) ships in the stock image under `/etc/nginx/modules`
-and is loaded with `load_module`; it exists only for PEP 503 name
-normalization (`njs/pep503.js`). Compose wiring:
-
-```yaml
-gateway:
-  image: nginx:${NGINX_VERSION}
-  container_name: gateway
-  ports:
-    - "8080:80"
-  volumes:
-    - ./.generated/gateway/nginx.conf:/etc/nginx/nginx.conf:ro
-    - ./gateway/njs:/etc/nginx/njs:ro
-```
+Stock `nginx` image (tag pinned in `deploy/helm/artea/values.yaml`
+`gateway.image`), config plus one small njs file — no source, no custom image.
+The njs module (`ngx_http_js_module.so`) ships in the stock image under
+`/etc/nginx/modules` and is loaded with `load_module`; it exists only for
+PEP 503 name normalization (`njs/pep503.js`).
 
 The nginx.conf is single-sourced as a Helm template
-(`deploy/helm/artea/files/gateway/nginx.conf`); `make render-configs` renders its
-compose variant (via `scripts/render-nginx.sh`, which needs `helm` + `yq`) into
-`.generated/gateway/nginx.conf` using `ARTEA_NAMESPACE` from `.env`.
+(`deploy/helm/artea/files/gateway/nginx.conf`); Helm renders it into the gateway
+ConfigMap. The routing test renders the same template out of the chart with
+`helm template ... | yq` (needs `helm` + `yq` on PATH).
 
-The config relies on Docker's embedded DNS (`resolver 127.0.0.11`) and resolves
-upstream names per-request, so nginx tolerates container re-creation. Compose
-still waits for the hot-path upstreams before marking the gateway healthy.
+nginx resolves the upstream Service names once at startup via its `upstream{}`
+blocks (K8s Service ClusterIPs are stable for a Service's lifetime); the
+gateway's readiness probe is `/-/artea-gateway/health`.
 
 ## Routing table
 
@@ -36,7 +25,7 @@ still waits for the hot-path upstreams before marking the gateway healthy.
 | `/pypi/simple/` (bare full-index page) | `devpi:3141` → `/root/constrained/+simple/` directly (Gitea has no list-all route) | gateway `auth_request` (same guard) |
 | `/root/pypi/+(f\|e)/**` (devpi file/external-link URLs; devpi may emit `%2Bf`) | `devpi:3141` (path unchanged) | same njs guard, then an internal Artea devpi policy endpoint confirms the mirror file is allowed by the current constrained-index policy; stale blocked file URLs return 403 |
 | `/root/**` (everything else, including raw devpi simple pages) | none | hidden with 404 so clients cannot bypass constraints or the Gitea-first lookup |
-| `/-/artea-gateway/health` | none (gateway-local liveness, for compose healthchecks) | none |
+| `/-/artea-gateway/health` | none (gateway-local liveness, for the k8s liveness/readiness probes) | none |
 | `/api/packages/${ARTEA_NAMESPACE}/npm/**`, `/api/packages/${ARTEA_NAMESPACE}/pypi/**` | `gitea:3000` (raw URI, byte-for-byte) | same gateway guard first, then Gitea enforces package-specific read/write permissions |
 | `/api/packages/**` for any other owner or format | none | hidden with 404; v1 exposes only the configured single org and npm/PyPI |
 | `/**` (everything else: UI, `/api/v1/...`) | `gitea:3000` (raw URI, byte-for-byte) | Gitea enforces its own auth; no gateway guard |
@@ -305,12 +294,11 @@ config `load_module`s it; nginx.org Linux packages provide
 python3 gateway/test/test_routing.py
 ```
 
-With docker (what the integrator should run; the stock image ships njs):
+To render the config straight out of the chart (the same source the gateway
+ConfigMap ships) for inspection or `nginx -t`:
 
 ```sh
-make render-configs
-docker run --rm \
-  -v "$PWD/.generated/gateway/nginx.conf:/etc/nginx/nginx.conf:ro" \
-  -v "$PWD/gateway/njs:/etc/nginx/njs:ro" \
-  nginx:${NGINX_VERSION} nginx -t
+# extract the rendered nginx.conf from the gateway ConfigMap
+helm template artea deploy/helm/artea --show-only templates/gateway.yaml \
+  | yq '. | select(.kind == "ConfigMap")'
 ```
