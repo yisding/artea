@@ -4,8 +4,7 @@
 # teams/users, branch protection, svc-policy PAT. Idempotent: runs after every
 # install AND upgrade; safe to re-run at any time.
 #
-# ENV CONTRACT (consumed by bootstrap.sh's k8s-secret token-sink mode):
-#   TOKEN_SINK=k8s-secret    write the minted svc-policy PAT into a Secret
+# ENV CONTRACT (consumed by scripts/bootstrap.sh):
 #   SECRET_NAME              Secret to patch (key POLICY_SYNC_TOKEN)
 #   DEPLOYMENT_NAME          Deployment to rollout-restart after the patch
 #   GATEWAY_URL              public-path base for API calls (in-cluster gateway)
@@ -43,8 +42,6 @@ spec:
           image: {{ include "artea.image" .Values.bootstrap.image | quote }}
           imagePullPolicy: {{ .Values.bootstrap.image.pullPolicy }}
           env:
-            - name: TOKEN_SINK
-              value: k8s-secret
             - name: SECRET_NAME
               value: {{ include "artea.fullname" "policy-sync" | quote }}
             - name: DEPLOYMENT_NAME

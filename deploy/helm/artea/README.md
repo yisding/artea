@@ -75,9 +75,9 @@ volume.
   bootstrap Job.
 - `artea-secrets`: `DEV1_PASSWORD`, `DEVPI_ROOT_PASSWORD`,
   `POLICY_WEBHOOK_SECRET`.
-- `artea-policy-sync`: `POLICY_SYNC_TOKEN` — owned by the bootstrap Job
-  (`TOKEN_SINK=k8s-secret`): it mints a low-privilege `svc-policy` PAT, patches
-  this Secret and rollout-restarts the policy-sync Deployment. `helm upgrade`
+- `artea-policy-sync`: `POLICY_SYNC_TOKEN` — owned by the bootstrap Job: it
+  mints a low-privilege `svc-policy` PAT, patches this Secret and
+  rollout-restarts the policy-sync Deployment. `helm upgrade`
   preserves the in-cluster value (template `lookup`); on first install it holds
   `bootstrap-pending` and policy-sync idles until the hook completes.
 
@@ -88,8 +88,8 @@ Bring-your-own-Secret support is not implemented yet; see the open items in
 
 ## Bootstrap Job env contract
 
-Defined in `templates/bootstrap-job.yaml` (consumed by `scripts/bootstrap.sh`
-k8s mode): `TOKEN_SINK=k8s-secret`, `SECRET_NAME=artea-policy-sync`,
+Defined in `templates/bootstrap-job.yaml` (consumed by `scripts/bootstrap.sh`):
+`SECRET_NAME=artea-policy-sync`,
 `DEPLOYMENT_NAME=artea-policy-sync`, `GATEWAY_URL=http://artea-gateway`,
 `ARTEA_PUBLIC_URL=<global.baseUrl>`, `GITEA_URL=http://artea-gitea-http:3000`,
 `POLICY_SYNC_URL=http://artea-policy-sync:8920`,
