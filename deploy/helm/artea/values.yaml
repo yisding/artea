@@ -56,14 +56,9 @@ gateway:
   service:
     type: ClusterIP
     port: 80
-  # Upstream-resolution mode for the single-source nginx.conf. "k8s" (default)
-  # emits startup-resolved upstream{} blocks; "compose" emits a resolver +
-  # per-request set $..._upstream and is set only by scripts/render-configs.sh
-  # when it renders the compose copy. Leave "k8s" for every Kubernetes install.
-  upstreamMode: k8s
   # Cluster DNS names baked into nginx.conf (files/gateway/nginx.conf). nginx
-  # resolves them at startup; K8s Service ClusterIPs are stable, so per-request
-  # re-resolution (the docker-compose pattern) is not needed.
+  # resolves them once at startup via upstream{} blocks; K8s Service ClusterIPs
+  # are stable, so per-request re-resolution is not needed.
   upstreams:
     gitea: artea-gitea-http:3000
     verdaccio: artea-verdaccio:4873
@@ -327,7 +322,7 @@ verdaccio:
         - name: plugins
           mountPath: /target
   persistence:
-    # Disposable npm pull-through cache (verdaccio-storage in compose).
+    # Disposable npm pull-through cache.
     enabled: true
     size: 8Gi
     volumes:
@@ -340,10 +335,8 @@ verdaccio:
   # The Verdaccio config is single-sourced from files/verdaccio/config.yaml and
   # delivered via the umbrella ConfigMap artea-verdaccio-config (templates/
   # verdaccio-config.yaml); existingConfigMap below points the subchart's mount
-  # at it. configMode selects that file's target-specific parts ("k8s" default;
-  # scripts/render-configs.sh sets "compose" for the compose render). No
-  # htpasswd: auth is the auth-gitea plugin (secrets.htpasswd stays empty).
-  configMode: k8s
+  # at it. No htpasswd: auth is the auth-gitea plugin (secrets.htpasswd stays
+  # empty).
   existingConfigMap: artea-verdaccio-config
   # The subchart still renders its own (now unused) ConfigMap from this key;
   # keep it empty rather than duplicating the single source above.

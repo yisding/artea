@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 # Render one ConfigMap data file out of the Helm chart and write it to stdout —
-# the compose/test path for configs that are single-sourced as Helm templates
-# (the "Helm for both" model; see deploy/helm/artea/README.md). Kubernetes
-# consumes the same templates directly; rendering compose through Helm is what
-# makes the two unable to drift.
+# the local-test path for configs single-sourced as Helm templates, so tests
+# validate the exact keys the cluster's pods load (see deploy/helm/artea/README.md).
 #
 #   render-chart-file.sh <show-only-template> <configmap-data-key> [extra helm --set flags...]
 #

@@ -1,8 +1,8 @@
 {{- if .Values.bootstrap.enabled }}
-# Bootstrap as a Helm hook Job (e2e S1): same idempotency contract as
-# scripts/bootstrap.sh in compose — admin PAT, org artea, policy repo seeded,
-# webhook wired, teams/users, branch protection, svc-policy PAT. Runs after
-# every install AND upgrade; safe to re-run at any time.
+# Bootstrap as a Helm hook Job (e2e S1): runs scripts/bootstrap.sh in
+# k8s-secret mode — admin PAT, org artea, policy repo seeded, webhook wired,
+# teams/users, branch protection, svc-policy PAT. Idempotent: runs after every
+# install AND upgrade; safe to re-run at any time.
 #
 # ENV CONTRACT (consumed by bootstrap.sh's k8s-secret token-sink mode):
 #   TOKEN_SINK=k8s-secret    write the minted svc-policy PAT into a Secret

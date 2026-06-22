@@ -69,7 +69,7 @@ https://<your-okta-domain>/oauth2/default/.well-known/openid-configuration
 The same source can be created non-interactively (handy for scripted setups):
 
 ```sh
-docker compose exec -u git gitea \
+kubectl exec -n artea deploy/artea-gitea -c gitea -- \
   gitea admin auth add-oauth \
     --name okta \
     --provider openidConnect \

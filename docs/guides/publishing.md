@@ -95,7 +95,7 @@ token REST API requires Basic auth).
 ever setting a password:
 
 ```sh
-docker compose exec -u git gitea \
+kubectl exec -n artea deploy/artea-gitea -c gitea -- \
   gitea admin user generate-access-token \
     --username ci-bot --token-name ci-publish \
     --scopes write:package,read:user,read:organization --raw

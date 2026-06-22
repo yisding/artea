@@ -2,6 +2,12 @@
 
 Status: accepted (v1)
 
+Amended by the Docker Compose removal: compose is gone; Kubernetes/Helm is the
+only runtime (local dev on Colima's built-in k3s). The Gitea config no longer
+lives in `gitea/app.ini.template` (deleted) — it is single-sourced in the Helm
+chart values (`deploy/helm/artea/values.yaml` `gitea.gitea.config`), still a
+config overlay on the stock image. The no-fork principle below is unchanged.
+
 ## Context
 
 Artea is built on three actively developed upstreams (Gitea, Verdaccio,
@@ -14,10 +20,10 @@ a high security-fix cadence we cannot afford to lag behind.
 No forking, no vendoring, no source patches in v1. Customization happens only
 through supported extension surfaces:
 
-1. **Gitea**: stock upstream Docker image; behavior via mounted
-   config rendered from `gitea/app.ini.template`, appearance via Gitea's
-   supported `custom/` overlay directory (`gitea/custom/` templates rendered
-   into `.generated/`).
+1. **Gitea**: stock upstream Docker image; behavior via the chart-managed
+   config (`deploy/helm/artea/values.yaml` `gitea.gitea.config`), appearance via
+   Gitea's supported `custom/` overlay directory (`gitea/custom/` templates
+   delivered through the `artea-gitea-custom-templates` ConfigMap).
 2. **Verdaccio / devpi**: consumed as released artifacts; our code is plugins
    against their stable plugin APIs (`verdaccio/plugins/*`;
    `devpi/artea_devpi_policy`). The Artea devpi plugin is derived from the
@@ -31,7 +37,7 @@ through supported extension surfaces:
    `deploy/docker/verdaccio-assets/Dockerfile`) digest-pin their base image
    (`FROM name:tag@sha256:...` — the tag alone is floating; the digest is not).
    Upgrades = bump pin (or re-resolve the digest, see the operations guide),
-   `make up`, `make e2e`.
+   `make dev`, `make e2e`.
 
 ## Consequences
 

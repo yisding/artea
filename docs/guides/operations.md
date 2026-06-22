@@ -171,7 +171,7 @@ downgraded); the error is logged and `/healthz` reports `last_sync_ok: false`.
 **Verifying a sync.** Check policy-sync health for `last_sync_ok`:
 
 ```sh
-docker compose exec policy-sync python -c \
+kubectl -n artea exec deploy/artea-policy-sync -- python -c \
   "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8920/healthz').read())"
 ```
 
@@ -205,9 +205,9 @@ poll, compiling `policy.toml` into `npm-rules.yaml` (picked up by Verdaccio
 within the mtime-reload window) and `upstream-policy.yaml`, writing
 `pypi-constraints.txt` for debugging, and replacing the seeded `*` constraints
 plus `min_upstream_age` in devpi with the real policy. To force immediate recovery:
-`docker compose restart policy-sync`
+`kubectl -n artea rollout restart deploy/artea-policy-sync`
 (its startup sync re-applies both files), then check
-`docker compose exec policy-sync python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8920/healthz').read())"`
+`kubectl -n artea exec deploy/artea-policy-sync -- python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8920/healthz').read())"`
 for `last_sync_ok: true`.
 
 One non-self-healing case: if the policy-sync container logs
@@ -239,14 +239,14 @@ Remember that Okta deactivation does not delete Gitea PATs — see
 
 | Symptom | Likely cause | Fix / check |
 |---------|--------------|-------------|
-| Everything returns 502 | A backend container is down | `docker compose ps`, `docker compose logs gateway <service>` |
+| Everything returns 502 | A backend pod/Deployment is down | `kubectl -n artea get pods`, `kubectl -n artea logs deploy/artea-gateway`, `kubectl -n artea logs deploy/artea-<service>` |
 | Package proxy requests return 401 or 403 with a valid-looking token | Token revoked, missing `read:user`/`read:organization`/package scope, non-member of the configured namespace org, or Gitea unreachable from verdaccio/gateway | `curl -u user:PAT http://localhost:8080/api/v1/user`; then `curl -u user:PAT http://localhost:8080/api/v1/orgs/${ARTEA_NAMESPACE}/members/user` (204 means org guard can pass); package-scope probes should return 200 with a JSON package list: `curl -u user:PAT "http://localhost:8080/api/v1/packages/${ARTEA_NAMESPACE}/?type=pypi&limit=1"`; check Gitea logs |
 | `npm install @${ARTEA_NAMESPACE}/x` 404s | Package/version not published — the gateway routes `@${ARTEA_NAMESPACE}/*` to Gitea server-side, so missing client scope config is no longer a cause (legacy scope-registry configs still work) | Check the configured namespace org's package list in Gitea; client setup in [clients-npm.md](clients-npm.md) |
 | `npm publish` rejected | Read-only cache (unscoped publish), missing `write:package` / `read:user` / `read:organization`, or no org write permission | Scope the package `@${ARTEA_NAMESPACE}/*`; check token scope and org membership |
 | Public npm package has missing versions | A `deny` rule in `policy.toml`, or the shared `upstream.min_age` | Intentional; edit `policy.toml` in the policy repo via PR (see [Policy authoring](#policy-authoring)) |
-| Policy change has no effect | Webhook not delivered, policy-sync down, or `policy.toml` failed to compile (sync kept last-known-good) | Repo settings → Webhooks → recent deliveries on `${ARTEA_NAMESPACE}/registry-policy`; `docker compose logs policy-sync` (a compile error in `policy.toml` is logged and fails that sync, leaving the previous policy in effect); check `/healthz` for `last_sync_ok`; verify the compiled `/policy/npm-rules.yaml`, `/policy/upstream-policy.yaml`, and `/policy/pypi-constraints.txt` changed as expected; the slow-poll fallback will also catch up eventually |
+| Policy change has no effect | Webhook not delivered, policy-sync down, or `policy.toml` failed to compile (sync kept last-known-good) | Repo settings → Webhooks → recent deliveries on `${ARTEA_NAMESPACE}/registry-policy`; `kubectl -n artea logs deploy/artea-policy-sync` (a compile error in `policy.toml` is logged and fails that sync, leaving the previous policy in effect); check `/healthz` for `last_sync_ok`; verify the compiled `/policy/npm-rules.yaml`, `/policy/upstream-policy.yaml`, and `/policy/pypi-constraints.txt` changed as expected; the slow-poll fallback will also catch up eventually |
 | `pip install <private>` resolves a public version | Gateway 404-fallback misrouting (or a client `extra-index-url` bypass) | Treat as a security incident if client config is clean: verify the gateway serves Gitea's 200 for `/pypi/simple/<name>/` and only falls back on 404 |
-| `pip install <public>` 404s | devpi mirror cold/unreachable, name blocked by `pypi-constraints.txt`, still too new under `upstream-policy.yaml`, or a freshly recreated cache still fail-closed (`*` seed) | `docker compose logs devpi` and `policy-sync`; check the policy files in the policy repo; check policy-sync `/healthz` for `last_sync_ok` |
+| `pip install <public>` 404s | devpi mirror cold/unreachable, name blocked by `pypi-constraints.txt`, still too new under `upstream-policy.yaml`, or a freshly recreated cache still fail-closed (`*` seed) | `kubectl -n artea logs deploy/artea-devpi` and `kubectl -n artea logs deploy/artea-policy-sync`; check the policy files in the policy repo; check policy-sync `/healthz` for `last_sync_ok` |
 | npm/pip download URLs point at the wrong host | Gitea `ROOT_URL` misconfigured | Must be exactly `http://localhost:8080/` (the public gateway URL) so generated file URLs resolve through the gateway |
 | Revoked PAT still works on installs | 30 s positive-auth caches in the gateway and Verdaccio; worst-case remains within 60 s | Expected; see above |
 | Pull-through is slow / disk is filling | Cache volumes grow unbounded | Safe to wipe: `make clean && make up && make bootstrap` (caches refill; PyPI comes back fail-closed until policy-sync syncs) |

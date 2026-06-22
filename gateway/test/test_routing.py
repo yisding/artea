@@ -7,11 +7,11 @@
 #   python3 gateway/test/test_routing.py
 #
 # The config is single-sourced as a Helm template (deploy/helm/artea/files/
-# gateway/nginx.conf); this test renders its compose variant via
-# scripts/render-nginx.sh, so helm + yq must also be on PATH. The only edits
+# gateway/nginx.conf); this test renders it straight out of the chart with
+# `helm template ... | yq`, so helm + yq must also be on PATH. The only edits
 # made to the rendered config are filesystem paths, the listen port, and the
-# four upstream host:port values (hostnames only resolve inside docker compose).
-# All routing/rewrite/auth logic is exercised unmodified.
+# four upstream host:port values (the chart's cluster Service names, swapped for
+# loopback stubs). All routing/rewrite/auth logic is exercised unmodified.
 
 import base64
 import http.client
@@ -26,7 +26,7 @@ import time
 import unittest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-RENDER_NGINX = REPO_ROOT / "scripts" / "render-nginx.sh"
+RENDER_CHART_FILE = REPO_ROOT / "scripts" / "render-chart-file.sh"
 NJS_DIR = REPO_ROOT / "gateway" / "njs"
 TEST_NAMESPACE = "acme"
 
@@ -245,14 +245,15 @@ class GatewayTest(unittest.TestCase):
             threading.Thread(target=up.serve_forever, daemon=True).start()
 
         cls.port = free_port()
-        # The nginx.conf is single-sourced as a Helm template; render the compose
-        # variant (resolver + per-request $..._upstream) for the test namespace.
+        # The nginx.conf is single-sourced as a Helm template; render it out of
+        # the chart for the test namespace (scripts/render-chart-file.sh).
         render = subprocess.run(
-            [str(RENDER_NGINX), "compose", TEST_NAMESPACE],
+            [str(RENDER_CHART_FILE), "templates/gateway.yaml", "nginx.conf",
+             "--set", f"global.privateNamespace={TEST_NAMESPACE}"],
             capture_output=True, text=True,
         )
         if render.returncode != 0:
-            raise RuntimeError(f"render-nginx.sh failed:\n{render.stderr}")
+            raise RuntimeError(f"render-chart-file.sh failed:\n{render.stderr}")
         conf = render.stdout
         # nginx's compiled-in temp dirs (client_body, proxy, ...) often live in
         # root-owned /var/cache/nginx; point them into the test tmpdir so the
@@ -265,10 +266,12 @@ class GatewayTest(unittest.TestCase):
             "load_module modules/ngx_http_js_module.so;": load_module,
             "http {": "http {\n" + temp_dirs,
             "/etc/nginx/njs": str(NJS_DIR),
-            "gitea:3000": "127.0.0.1:%d" % cls.upstreams["gitea"].server_port,
-            "verdaccio:4873": "127.0.0.1:%d" % cls.upstreams["verdaccio"].server_port,
-            "devpi:3141": "127.0.0.1:%d" % cls.upstreams["devpi"].server_port,
-            "policy-sync:8920": "127.0.0.1:%d" % cls.upstreams["policy-sync"].server_port,
+            # the chart's cluster Service names (gateway.upstreams.*), swapped
+            # for the loopback stub upstreams
+            "artea-gitea-http:3000": "127.0.0.1:%d" % cls.upstreams["gitea"].server_port,
+            "artea-verdaccio:4873": "127.0.0.1:%d" % cls.upstreams["verdaccio"].server_port,
+            "artea-devpi:3141": "127.0.0.1:%d" % cls.upstreams["devpi"].server_port,
+            "artea-policy-sync:8920": "127.0.0.1:%d" % cls.upstreams["policy-sync"].server_port,
             "/var/log/nginx": str(tmp / "logs"),
             "/var/cache/nginx": str(tmp / "cache"),
             "/var/run/nginx.pid": str(tmp / "nginx.pid"),

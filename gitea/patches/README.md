@@ -2,7 +2,8 @@
 
 Artea runs the **stock upstream `gitea/gitea` image with zero source patches**
 (hard rule R7 in `docs/ARCHITECTURE.md`). All v1 customization is runtime overlay:
-config/templates rendered from `gitea/app.ini.template` and `gitea/custom/`.
+config from the Helm chart values (`deploy/helm/artea/values.yaml`
+`gitea.gitea.config`) and templates from `gitea/custom/`.
 This directory exists so that the day a source
 patch becomes unavoidable, there is already an agreed mechanism — and so that "just
 fork it" never looks like the easy path.

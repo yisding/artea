@@ -7,70 +7,44 @@ directory is runtime overlay — no source patches (R7).
 
 ```
 gitea/
-├── app.ini.template         # full config template, rendered into .generated/
-├── custom/templates/        # template overrides, rendered into .generated/
+├── custom/templates/        # template overrides, delivered via ConfigMap
 ├── patches/                 # quilt-style source-patch escape hatch (EMPTY in v1)
-├── scripts/gen-secrets.sh   # generates secrets/ before first start
-├── secrets/                 # generated, gitignored: secret_key, internal_token
 └── UPSTREAM                 # image pin + bump procedure
 ```
 
-## How the compose service must consume this overlay
+The effective Gitea config now lives in the Helm chart values
+(`deploy/helm/artea/values.yaml`, key `gitea.gitea.config`) — a full semantic
+translation of the old `app.ini`. The official Gitea subchart owns secrets and
+filesystem paths; this directory only carries the template overlay and the
+(empty) patch queue.
 
-The stock root image has `GITEA_CUSTOM=/data/gitea`, reads its config from
-`/data/gitea/conf/app.ini`, and stores all state under the `/data` volume.
+## How Kubernetes consumes this overlay
 
-| Host path | Container path | Mode |
-|---|---|---|
-| `./.generated/gitea/app.ini` | `/data/gitea/conf/app.ini` | `ro` |
-| `./.generated/gitea/templates` | `/data/gitea/templates` | `ro` |
-| `./gitea/secrets/secret_key` | `/data/gitea/secret_key` | `ro` |
-| `./gitea/secrets/internal_token` | `/data/gitea/internal_token` | `ro` |
-| `./gitea/secrets/jwt_secret` | `/data/gitea/jwt_secret` | `ro` |
-| named volume `gitea-data` | `/data` | rw |
+The official Gitea subchart runs the stock rootless image (`gitea/gitea`, exact
+pin; see `UPSTREAM`) as the `artea-gitea` Deployment (container `gitea`) in
+namespace `artea`. Port 3000 is **never exposed** — only the gateway is, and SSH
+is disabled in config. The Artea `custom/` overlay is delivered by the
+`artea-gitea-custom-templates` ConfigMap, mounted over `/data/gitea/templates`.
+The effective config comes from `gitea.gitea.config` in
+`deploy/helm/artea/values.yaml`; secrets are chart-generated (see "Secrets").
 
-- Image: `gitea/gitea:${GITEA_VERSION}` (exact pin; see `UPSTREAM`). Container
-  name `gitea`, internal port 3000, **never published** — only the gateway is.
-- Port 22/SSH: do not publish (SSH is disabled in `app.ini`; the image's internal
-  sshd is irrelevant without a published port).
-- Healthcheck: `GET http://localhost:3000/api/healthz` (registered before the
-  auth middleware, so it works despite `REQUIRE_SIGNIN_VIEW = true`).
-- **Before first start**: run `gitea/scripts/gen-secrets.sh` (wire into
-  `make bootstrap`). Gitea fails fast if the two secret files are missing — that
-  is intentional (see "Secrets" below).
+### Config injection: chart-managed `gitea.gitea.config`
 
-### Config injection: mounted app.ini, NOT `GITEA__*` env vars
-
-The image's entrypoint supports `GITEA__section__key=value` env vars, but it
-implements them by **rewriting the config file in place**
-(`environment-to-ini` → `gitea config edit-ini --in-place --apply-env`). With
-our rendered app.ini bind-mounted from `.generated/`, that would either fail
-(read-only mount) or write values — including secrets — back into generated
-runtime config. So the contract is:
-
-- mount `.generated/gitea/app.ini` read-only at `/data/gitea/conf/app.ini`;
-- set **no** `GITEA__*` environment variables on the `gitea` service (with none
-  set, the entrypoint's rewrite is a no-op and the `ro` mount is safe);
-- the full effective config stays reviewable in version control.
+The chart manages config via `gitea.gitea.config`, from which it generates the
+in-image `app.ini`. A few values are layered on top as templated
+`additionalConfigFromEnvs` overrides — `ROOT_URL` / `DOMAIN` / `LANDING_PAGE`
+derived from `global.baseUrl`. See `deploy/helm/artea/values.yaml`.
 
 ### Secrets
 
-`[security]` uses `SECRET_KEY_URI` / `INTERNAL_TOKEN_URI` and `[oauth2]` uses
-`JWT_SECRET_URI` (`file:` scheme) instead of inline values. Why: with
-`INSTALL_LOCK = true` and any of these unset, Gitea generates the value **and
-writes it into app.ini**, which conflicts with the read-only mount — and inline
-secrets in a committed file are wrong anyway. (`JWT_SECRET` is generated even
-with oauth2 disabled: it doubles as Gitea's general token signing secret, and
-its file must hold RawURL-base64 of exactly 32 bytes.)
-`scripts/gen-secrets.sh` creates `secrets/secret_key`, `secrets/internal_token`
-and `secrets/jwt_secret` (gitignored, idempotent — kept once generated, since
-rotating `SECRET_KEY` invalidates sessions and stored 2FA secrets). Note: this is the one secret pair
-not living in `.env`; compose cannot mount an env var as a file, and these are
-machine-generated rather than operator-chosen, so files are the honest shape.
+The Gitea subchart generates `SECRET_KEY`, `INTERNAL_TOKEN`, and `JWT_SECRET`;
+the bootstrap admin credential comes from the `artea-admin` chart Secret.
+Rotating `SECRET_KEY` invalidates existing sessions and stored 2FA secrets, so
+the chart keeps it stable once generated.
 
 ## What is hidden / disabled, and how
 
-### Via config (`app.ini.template`) — preferred, zero upgrade drift
+### Via config (`gitea.gitea.config` in values.yaml) — preferred, zero upgrade drift
 
 - **Web installer** — `INSTALL_LOCK = true`.
 - **Self-registration** — `DISABLE_REGISTRATION = true`, registration button off.
@@ -130,8 +104,9 @@ to a shadowed file are masked until re-merged. Re-verify on every bump
 
 ## SSO (Okta/OIDC) caveat — read before wiring auth
 
-Per the architecture, accounts are "SSO/admin-managed only" and `app.ini` ships
-with `DISABLE_REGISTRATION = true`. Gitea counts *first login via OIDC* as a
+Per the architecture, accounts are "SSO/admin-managed only" and the chart config
+(`gitea.gitea.config`) ships with `DISABLE_REGISTRATION = true`. Gitea counts
+*first login via OIDC* as a
 registration, so with this setting Okta users must be pre-created by an admin.
 If first-login auto-provisioning is wanted, change `[service]` to:
 
@@ -144,10 +119,11 @@ which still forbids self-service password signup. Decision belongs to
 `docs/guides/okta.md`; the shipped default is the stricter one.
 
 The OIDC auth source itself is data, not config — bootstrap adds it via
-`gitea admin auth add-oauth` or the admin UI.
+`kubectl exec -n artea deploy/artea-gitea -c gitea -- gitea admin auth add-oauth`
+or the admin UI.
 
 ## Upgrades
 
 See `UPSTREAM` for the pinned tag and the full bump procedure (bump pin →
-re-verify template overlay → re-verify config keys → `make up` → `make e2e`).
+re-verify template overlay → re-verify config keys → `make dev` → `make e2e`).
 `patches/` stays empty in v1; its README defines the rules for the day it is not.

@@ -1,26 +1,16 @@
-{{- $compose := eq (default "k8s" .Values.verdaccio.configMode) "compose" -}}
 # Verdaccio config for Artea — read-only npm pull-through cache behind the
-# gateway. SINGLE SOURCE for both deployment targets, rendered through Helm:
-# Kubernetes mounts it via the artea-verdaccio-config ConfigMap; the compose
-# stack renders it through scripts/render-configs.sh. The only target-specific
-# parts are switched on .Values.verdaccio.configMode ("k8s" default vs
-# "compose"): the listen line, the Gitea host, and how the filter-artea plugin
-# receives the policy —
-#   - k8s: policy_url over HTTP from policy-sync (no shared RWX volume); the
-#     plugin polls with ETag, keeps last-known-good in memory, and fails closed
-#     after a grace window.
-#   - compose: policy_file on the /policy volume written by policy-sync.
+# gateway. Single source, rendered through Helm: Kubernetes mounts it via the
+# artea-verdaccio-config ConfigMap. The filter-artea plugin receives the policy
+# over HTTP via policy_url from policy-sync (no shared RWX volume); the plugin
+# polls with ETag, keeps last-known-good in memory, and fails closed after a
+# grace window.
 
-# storage data dir (k8s: chart-managed PVC; compose: named volume)
+# storage data dir (chart-managed PVC)
 storage: /verdaccio/storage/data
 
-# plugin dir; the loader resolves <dir>/verdaccio-<name> (k8s: emptyDir filled by
-# the copy-plugins init container; compose: bind mount of ./verdaccio/plugins)
+# plugin dir; the loader resolves <dir>/verdaccio-<name> (emptyDir filled by the
+# copy-plugins init container)
 plugins: /verdaccio/plugins
-{{- if $compose }}
-
-listen: 0.0.0.0:4873
-{{- end }}
 
 # gateway serves us at <baseUrl>/npm/ and strips the prefix; url_prefix
 # makes generated tarball/metadata URLs resolve back through it
@@ -35,23 +25,17 @@ auth:
   # replaces htpasswd entirely: validates user:PAT against Gitea and maps
   # configured namespace org/team membership to groups
   auth-gitea:
-    gitea_url: {{ if $compose }}http://gitea:3000{{ else }}http://artea-gitea-http:3000{{ end }}
+    gitea_url: http://artea-gitea-http:3000
     private_namespace: '{{ include "artea.privateNamespace" . }}'
 
 filters:
   # missing/unparsable policy FAILS CLOSED (public packages rejected)
   filter-artea:
-{{- if $compose }}
-    policy_file: /policy/npm-rules.yaml
-    upstream_policy_file: /policy/upstream-policy.yaml
-    osv_url: http://policy-sync:8920/osv/querybatch
-{{- else }}
     policy_url: http://artea-policy-sync:8920/policy/npm-rules.yaml
     upstream_policy_url: http://artea-policy-sync:8920/policy/upstream-policy.yaml
     osv_url: http://artea-policy-sync:8920/osv/querybatch
     poll_interval_ms: {{ .Values.verdaccio.arteaPolicy.pollIntervalMs }}
     fail_grace_ms: {{ .Values.verdaccio.arteaPolicy.failGraceMs }}
-{{- end }}
 
 uplinks:
   npmjs:
@@ -87,17 +71,11 @@ middlewares:
   # middleware 403s direct tarball downloads of blocked versions (S13) and
   # 503s them while the policy is unavailable (fail-closed, S15)
   filter-artea:
-{{- if $compose }}
-    policy_file: /policy/npm-rules.yaml
-    upstream_policy_file: /policy/upstream-policy.yaml
-    osv_url: http://policy-sync:8920/osv/querybatch
-{{- else }}
     policy_url: http://artea-policy-sync:8920/policy/npm-rules.yaml
     upstream_policy_url: http://artea-policy-sync:8920/policy/upstream-policy.yaml
     osv_url: http://artea-policy-sync:8920/osv/querybatch
     poll_interval_ms: {{ .Values.verdaccio.arteaPolicy.pollIntervalMs }}
     fail_grace_ms: {{ .Values.verdaccio.arteaPolicy.failGraceMs }}
-{{- end }}
 
 server:
   keepAliveTimeout: 60
