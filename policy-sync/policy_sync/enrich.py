@@ -509,14 +509,17 @@ def _gitea_version_meta(
         headers["Authorization"] = authorization
 
     iso: str | None = None
+    created_at_ok = False
     try:
         data = json.loads(_get(base, headers))
         created_at = data.get("created_at") if isinstance(data, dict) else None
         iso = normalize_to_iso_z(created_at) if isinstance(created_at, str) else None
+        created_at_ok = True
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
         log.warning("gitea version created_at unavailable for %s/%s %s: %s", namespace, name, version, e)
 
     sizes: dict[str, int] = {}
+    sizes_ok = False
     try:
         files_data = json.loads(_get(base + "/files", headers))
         if isinstance(files_data, list):
@@ -527,10 +530,15 @@ def _gitea_version_meta(
                 sz = item.get("size")
                 if isinstance(fn, str) and isinstance(sz, int) and sz >= 0:
                     sizes[fn] = sz
+        sizes_ok = True
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
         log.warning("gitea version files unavailable for %s/%s %s: %s", namespace, name, version, e)
 
-    _created_at_cache.put(cache_key, (iso or "", sizes))
+    # Only pin the result for the long TTL when BOTH sub-fetches succeeded. On a
+    # partial failure (transient 5xx/timeout/OSError) return the degraded result
+    # without caching so the next request retries and picks up recovery.
+    if created_at_ok and sizes_ok:
+        _created_at_cache.put(cache_key, (iso or "", sizes))
     return iso, sizes
 
 

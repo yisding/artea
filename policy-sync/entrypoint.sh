@@ -18,12 +18,4 @@ if [ "$(id -u)" = "0" ]; then
   exec setpriv --reuid policysync --regid policysync --init-groups "$@"
 fi
 
-# started with a user override (compose `user:`): cannot self-repair ownership
-if [ -d "${POLICY_DIR}" ] && [ ! -w "${POLICY_DIR}" ]; then
-  echo "ERROR: ${POLICY_DIR} is not writable by uid $(id -u)." >&2
-  echo "Fix the volume ownership, e.g.:" >&2
-  echo "  docker run --rm -v artea_policy-data:/policy --user root \\" >&2
-  echo "    <this image> chown -R policysync:policysync /policy" >&2
-  exit 1
-fi
 exec "$@"

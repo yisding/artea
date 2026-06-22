@@ -5,7 +5,7 @@
 #      (requires bootstrap.emitCredentials=true; falls back to a previously
 #      extracted file when the Job is gone)
 #   2. port-forward the gateway Service to localhost in the background
-#   3. run scripts/smoke.sh + e2e/run.sh with BASE_URL + RUNTIME=k8s
+#   3. run scripts/smoke.sh + e2e/run.sh with BASE_URL
 #   4. tear the port-forward down on exit
 # Overridable: K8S_NAMESPACE, GATEWAY_SVC, BOOTSTRAP_JOB, LOCAL_PORT,
 # CREDENTIALS_FILE, and the K8S_* names the suite uses. Defaults follow the
@@ -53,7 +53,7 @@ PF_PID=$!
 trap 'kill "${PF_PID}" 2>/dev/null || true' EXIT
 BASE_URL="http://localhost:${LOCAL_PORT}"
 for i in $(seq 1 30); do
-  curl -fsS -o /dev/null "${BASE_URL}/-/artea-gateway/health" 2>/dev/null && break
+  curl -fsS --max-time 3 -o /dev/null "${BASE_URL}/-/artea-gateway/health" 2>/dev/null && break
   kill -0 "${PF_PID}" 2>/dev/null || die "port-forward to svc/${GATEWAY_SVC} exited — is the chart deployed? (make k8s-deploy)"
   [ "$i" -eq 30 ] && die "gateway not reachable via ${BASE_URL} after 30s"
   sleep 1
@@ -61,7 +61,7 @@ done
 log "gateway reachable at ${BASE_URL} (port-forward pid ${PF_PID})"
 
 # ---- run the suite against the cluster ------------------------------------------
-export BASE_URL RUNTIME=k8s CREDENTIALS_FILE K8S_NAMESPACE
+export BASE_URL CREDENTIALS_FILE K8S_NAMESPACE
 export K8S_POLICY_SYNC_DEPLOY="${K8S_POLICY_SYNC_DEPLOY:-artea-policy-sync}"
 export K8S_DEVPI_DEPLOY="${K8S_DEVPI_DEPLOY:-artea-devpi}"
 export K8S_DEVPI_PVC="${K8S_DEVPI_PVC:-artea-devpi-data}"

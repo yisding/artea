@@ -55,7 +55,7 @@ check "pypi simple for unpublished name falls through to public mirror" 200 \
 # file links inside the fallthrough page must stay on the gateway origin via
 # devpi's public mirror file route.
 links=$(curl -s -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/six/" \
-  | grep -c "href=\"${GATEWAY_URL}/root/pypi/" || true)
+  | grep -cF "href=\"${GATEWAY_URL}/root/pypi/" || true)
 check "devpi simple page links route via gateway /root/" yes "$([ "${links}" -gt 0 ] && echo yes || echo no)"
 check "raw devpi simple route is hidden" 404 \
   "$(code -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/root/pypi/+simple/six/")"

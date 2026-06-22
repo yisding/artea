@@ -70,9 +70,12 @@ function enrichRoute(r) {
             return;
         }
         if (probe.status < 200 || probe.status >= 300) {
-            // Gitea outage (5xx) or auth surprise: do NOT fall through to public
-            // for a name that might be private. Surface as a gateway error.
-            r.return(probe.status >= 500 ? 502 : probe.status);
+            // Anything that is not a 200 (hit) or 404 (miss -> devpi, handled
+            // above) — 5xx outage, auth surprise, or an unexpected 3xx — must NOT
+            // fall through to public for a name that might be private. Per the
+            // module contract (200->gitea, 404->devpi, else->502) surface it as a
+            // gateway error.
+            r.return(502);
             return;
         }
         // Gitea 200: enrich the private package.
