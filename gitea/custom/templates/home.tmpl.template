@@ -16,6 +16,7 @@
 			</div>
 			<div class="tw-mt-8">
 				<a class="ui primary button" href="{{AppSubUrl}}/__ARTEA_NAMESPACE__/-/packages">{{svg "octicon-package" 16 "tw-mr-2"}}{{ctx.Locale.Tr "packages.title"}}</a>
+				<a class="ui button" href="{{AppSubUrl}}/__ARTEA_NAMESPACE__/registry-policy/src/branch/main/CLIENT-SETUP.md">{{svg "octicon-terminal" 16 "tw-mr-2"}}Client setup</a>
 			</div>
 		</div>
 	</div>

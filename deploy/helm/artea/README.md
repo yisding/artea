@@ -34,7 +34,7 @@ verdaccio config and the gateway nginx.conf, and other tooling relies on them:
 | devpi | `artea-devpi:3141` | PVC `artea-devpi-data` is a disposable cache (fail-closed re-seed) |
 | policy-sync | `artea-policy-sync:8920` | webhook receiver + `GET /policy/npm-rules.yaml` and `/policy/upstream-policy.yaml` |
 | secrets | `artea-admin`, `artea-secrets`, `artea-policy-sync` | see below |
-| bootstrap | Job/SA/Role/RoleBinding `artea-bootstrap` | post-install/post-upgrade hook |
+| bootstrap | Job/SA/Role/RoleBinding `artea-bootstrap` | post-install/post-upgrade hook; seeds/updates generated `CLIENT-SETUP.md` in the policy repo with `global.baseUrl` |
 
 Package namespace is separate from Kubernetes object naming:
 `global.privateNamespace` controls the Gitea organization, npm scope, package
@@ -91,7 +91,7 @@ Bring-your-own-Secret support is not implemented yet; see the open items in
 Defined in `templates/bootstrap-job.yaml` (consumed by `scripts/bootstrap.sh`
 k8s mode): `TOKEN_SINK=k8s-secret`, `SECRET_NAME=artea-policy-sync`,
 `DEPLOYMENT_NAME=artea-policy-sync`, `GATEWAY_URL=http://artea-gateway`,
-`GITEA_URL=http://artea-gitea-http:3000`,
+`ARTEA_PUBLIC_URL=<global.baseUrl>`, `GITEA_URL=http://artea-gitea-http:3000`,
 `POLICY_SYNC_URL=http://artea-policy-sync:8920`,
 `POLICY_SYNC_HOOK_URL=http://artea-policy-sync:8920/hooks/policy`, optional
 `EMIT_CREDENTIALS=true` for e2e/dev log extraction, plus `ARTEA_ADMIN_USER`,
