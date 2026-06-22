@@ -99,16 +99,23 @@ Everything else is disposable and must **not** be in the backup set:
 - compiled policy: served over HTTP from policy-sync, which rewrites it from the
   policy repo on startup and on every push webhook.
 
-Procedure (the simplest reliable backup is `gitea dump` inside the Gitea pod,
-which captures the repos, DB, and package store as one archive):
+Procedure — for a **consistent** backup, quiesce Gitea first (it is a
+Deployment), snapshot the PVC, then scale back up:
+
+```sh
+kubectl -n artea scale deploy/artea-gitea --replicas=0
+# snapshot the artea-gitea-data PVC with your CSI/cloud tooling, then:
+kubectl -n artea scale deploy/artea-gitea --replicas=1
+```
+
+`gitea dump` is a convenient **hot** alternative (one archive of repos, DB, and
+package store), but on a busy instance it can capture an inconsistent DB/file
+moment — take it during a quiet window, or quiesce writes first:
 
 ```sh
 kubectl -n artea exec deploy/artea-gitea -c gitea -- \
   gitea dump -c /data/gitea/conf/app.ini -f - > artea-gitea-dump-$(date +%s).zip
 ```
-
-(For a cold filesystem-level copy, scale Gitea to 0, snapshot the
-`artea-gitea-data` PVC with your CSI/cloud tooling, then scale back up.)
 
 After a restore, caches rebuild themselves; the first installs are slower
 while the pull-through caches warm up, and the PyPI cache comes back
@@ -252,5 +259,5 @@ Remember that Okta deactivation does not delete Gitea PATs — see
 | `pip install <public>` 404s | devpi mirror cold/unreachable, name blocked by `pypi-constraints.txt`, still too new under `upstream-policy.yaml`, or a freshly recreated cache still fail-closed (`*` seed) | `kubectl -n artea logs deploy/artea-devpi` and `kubectl -n artea logs deploy/artea-policy-sync`; check the policy files in the policy repo; check policy-sync `/healthz` for `last_sync_ok` |
 | npm/pip download URLs point at the wrong host | Gitea `ROOT_URL` misconfigured | Must be exactly `http://localhost:8080/` (the public gateway URL) so generated file URLs resolve through the gateway |
 | Revoked PAT still works on installs | 30 s positive-auth caches in the gateway and Verdaccio; worst-case remains within 60 s | Expected; see above |
-| Pull-through is slow / disk is filling | Cache PVCs grow unbounded | Safe to wipe the disposable cache PVCs (`kubectl -n artea delete pvc <devpi/verdaccio claim>`, then `kubectl -n artea rollout restart deploy/artea-devpi deploy/artea-verdaccio`); caches refill and PyPI comes back fail-closed until policy-sync syncs |
+| Pull-through is slow / disk is filling | Cache PVCs grow unbounded | Safe to wipe — but the devpi/verdaccio data PVCs are chart-rendered objects, so recreate them by re-applying the chart, not by restarting pods (a deleted PVC leaves the pod Pending). Scale the Deployment to 0, delete the PVC, then `make k8s-deploy`: `kubectl -n artea scale deploy/artea-devpi --replicas=0 && kubectl -n artea delete pvc artea-devpi-data && make k8s-deploy` (recreates the PVC and rolls the pod). Caches refill; PyPI comes back fail-closed until policy-sync syncs |
 | `twine upload` 409 Conflict | Re-uploading an already-uploaded file | Bump the version; Gitea package files are immutable |
