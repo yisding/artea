@@ -106,8 +106,8 @@ to a shadowed file are masked until re-merged. Re-verify on every bump
 
 | File | Why |
 |---|---|
-| `base/head_navbar.tmpl.template` | Replace "Explore" (`/explore/repos`) with "Packages" (`/${ARTEA_NAMESPACE}/-/packages`); remove the "+" create dropdown (new repo / migration / new org). Neither is hideable via config. Issues/PRs/milestones links are left to upstream logic since config already controls them. |
-| `home.tmpl.template` | Upstream renders a Gitea marketing page. Replaced with a minimal packages-centric hero. Normally unreachable with our `LANDING_PAGE`; kept as a safety net. Note: its tagline is English-only (upstream localizes via locale keys we cannot extend cleanly). |
+| `base/head_navbar.tmpl.template` | Replace "Explore" (`/explore/repos`) with "Packages" (`/${ARTEA_NAMESPACE}/-/packages`); add a "Client setup" link to the bootstrap-seeded registry guide; remove the "+" create dropdown (new repo / migration / new org). Neither is hideable via config. Issues/PRs/milestones links are left to upstream logic since config already controls them. |
+| `home.tmpl.template` | Upstream renders a Gitea marketing page. Replaced with a minimal packages-centric hero with package and client-setup links. Normally unreachable with our `LANDING_PAGE`; kept as a safety net. Note: its tagline is English-only (upstream localizes via locale keys we cannot extend cleanly). |
 
 ### Not hidden — impossible or not worth it without source patches
 

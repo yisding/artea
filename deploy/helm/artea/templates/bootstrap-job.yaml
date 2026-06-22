@@ -9,6 +9,7 @@
 #   SECRET_NAME              Secret to patch (key POLICY_SYNC_TOKEN)
 #   DEPLOYMENT_NAME          Deployment to rollout-restart after the patch
 #   GATEWAY_URL              public-path base for API calls (in-cluster gateway)
+#   ARTEA_PUBLIC_URL         public browser/client gateway URL for seeded guides
 #   GITEA_URL                direct Gitea URL (bypasses the gateway)
 #   POLICY_SYNC_URL          policy-sync base URL (health/sync wait)
 #   POLICY_SYNC_HOOK_URL     push-webhook target wired into Gitea
@@ -50,6 +51,8 @@ spec:
               value: {{ include "artea.fullname" "policy-sync" | quote }}
             - name: GATEWAY_URL
               value: {{ include "artea.gatewayUrl" . | quote }}
+            - name: ARTEA_PUBLIC_URL
+              value: {{ trimSuffix "/" .Values.global.baseUrl | quote }}
             - name: GITEA_URL
               value: {{ include "artea.giteaUrl" . | quote }}
             - name: POLICY_SYNC_URL

@@ -5,7 +5,8 @@
 # into an image layer; no real secret is ever set via ARG/ENV here.
 # Artea bootstrap image (ghcr.io/yisding/artea-bootstrap): runs
 # scripts/bootstrap.sh as a Helm hook Job with TOKEN_SINK=k8s-secret.
-# Build from the REPO ROOT — the script seeds policy/policy.toml:
+# Build from the REPO ROOT — the script seeds policy/policy.toml and the
+# server-side client setup guide:
 #   docker build -f scripts/Dockerfile.bootstrap -t ghcr.io/yisding/artea-bootstrap .
 #
 # Tool inventory = exactly what bootstrap.sh uses: bash + python3 (JSON
