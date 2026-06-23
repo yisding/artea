@@ -226,10 +226,13 @@ jobs:
             args+=(-f "$CHART_DIR/values-local.yaml")
           fi
           args+=(-f "$RUNNER_TEMP/ci-values.yaml")
-          # helm blocks on the post-install bootstrap hook Job as well
+          # helm blocks on the post-install bootstrap hook Job as well. The
+          # stack normally goes Ready in ~90s; 5m leaves ~3x headroom for a slow
+          # registry pull while surfacing a stuck/broken install (e.g. an
+          # unpullable image) in half the time the old 10m took.
           helm upgrade --install "$RELEASE" "$CHART_DIR" \
             --namespace "$NAMESPACE" --create-namespace \
-            "${args[@]}" --wait --timeout 10m
+            "${args[@]}" --wait --timeout 5m
 
       - name: wait for the bootstrap hook Job
         id: bootstrap
