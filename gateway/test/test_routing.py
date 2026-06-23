@@ -159,6 +159,17 @@ class UpstreamHandler(http.server.BaseHTTPRequestHandler):
             if self.path.startswith(f"/api/packages/{TEST_NAMESPACE}/pypi/simple/big-private"):
                 self._reply(200, "gitea-simple big-private " + BIG_BODY_PAD)
                 return
+            # Fail-closed probe outcomes (PEP 700 JSON path, pep700.js L74-82):
+            # a Gitea outage (5xx) on the simple-probe must surface as a gateway
+            # 502 and must NOT fall through to the public mirror for a possibly-
+            # private name (dependency-confusion guard); an authorization answer
+            # (403) for an existing private package must be relayed verbatim.
+            if self.path.startswith(f"/api/packages/{TEST_NAMESPACE}/pypi/simple/probe-5xx"):
+                self._reply(500, "gitea boom")
+                return
+            if self.path.startswith(f"/api/packages/{TEST_NAMESPACE}/pypi/simple/probe-forbidden"):
+                self._reply(403, "forbidden by gitea")
+                return
             if self.path.startswith(f"/api/packages/{TEST_NAMESPACE}/pypi/simple/"):
                 if auth not in (GOOD_AUTH, GOOD_TOKEN_AUTH):
                     self._reply(401, "unauthorized")
@@ -626,6 +637,40 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(status, 404)
         self.assertTrue([p for p in self.seen("policy-sync")
                          if "upstream=devpi" in p and "absent-everywhere" in p])
+
+    def test_pypi_json_gitea_probe_5xx_fails_closed_to_502(self):
+        # Fail-closed (pep700.js L74/L81): a Gitea outage on the simple-probe
+        # (5xx) is neither a 200 (private hit) nor a 404 (public fallthrough).
+        # For a name that might be private, falling through to the public mirror
+        # would be a dependency-confusion leak, so the orchestrator returns a
+        # gateway 502 and NEVER consults devpi or the policy-sync public branch.
+        ps_before = len(self.upstreams["policy-sync"].requests)
+        status, _, _ = self._raw("GET", "/pypi/simple/probe-5xx/",
+                                 auth=GOOD_AUTH, accept=self.JSON_ACCEPT)
+        self.assertEqual(status, 502)
+        # the probe really hit Gitea (precedence ran) ...
+        self.assertIn(f"/api/packages/{TEST_NAMESPACE}/pypi/simple/probe-5xx/",
+                      self.seen("gitea"))
+        # ... but the possibly-private name never reached the public mirror or
+        # any policy-sync enrich (no silent public fallthrough on a Gitea 5xx).
+        self.assertFalse([p for p in self.seen("devpi") if "probe-5xx" in p])
+        self.assertFalse([p for p in self.seen("policy-sync") if "probe-5xx" in p])
+        self.assertEqual(len(self.upstreams["policy-sync"].requests), ps_before)
+
+    def test_pypi_json_gitea_probe_403_relayed_not_public(self):
+        # Fail-closed (pep700.js L81): a 403 from the simple-probe is Gitea's
+        # real authorization answer for an existing private package and must be
+        # relayed verbatim — not masked as a 502, and never softened into a
+        # 200/public fallthrough that would leak a private name to devpi.
+        ps_before = len(self.upstreams["policy-sync"].requests)
+        status, _, _ = self._raw("GET", "/pypi/simple/probe-forbidden/",
+                                 auth=GOOD_AUTH, accept=self.JSON_ACCEPT)
+        self.assertEqual(status, 403)
+        self.assertIn(f"/api/packages/{TEST_NAMESPACE}/pypi/simple/probe-forbidden/",
+                      self.seen("gitea"))
+        self.assertFalse([p for p in self.seen("devpi") if "probe-forbidden" in p])
+        self.assertFalse([p for p in self.seen("policy-sync") if "probe-forbidden" in p])
+        self.assertEqual(len(self.upstreams["policy-sync"].requests), ps_before)
 
     def test_pypi_non_json_accept_unchanged_gitea_first_fallthrough(self):
         # Regression guard: WITHOUT the JSON Accept header the existing
