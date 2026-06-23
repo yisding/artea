@@ -40,7 +40,10 @@ Package namespace is separate from Kubernetes object naming:
 `global.privateNamespace` controls the Gitea organization, npm scope, package
 API owner, policy repo owner, and Gitea package-list landing page. It defaults
 to `artea`; `secrets.adminUsername` defaults to
-`<global.privateNamespace>-admin` when left empty.
+`<global.privateNamespace>-admin` when left empty. This chart input is the same
+value the runtime calls `ARTEA_NAMESPACE` (and that the docs and `credentials.env`
+use under that name) — see `docs/ARCHITECTURE.md` ("Fixed contracts") for the
+authoritative one-name-per-thing mapping.
 
 ## Verdaccio: official chart, with an init-container plugin delivery
 

@@ -344,9 +344,11 @@ open https://registry.example.com
 Then follow [getting-started.md](getting-started.md) for the first publish, and
 [clients-npm.md](clients-npm.md) / [clients-python.md](clients-python.md) for
 client config — they're identical to the local Colima setup; only the base URL
-changes from `http://localhost:8080` to `https://registry.example.com`. For real users, sign
-in as the admin and create accounts manually or via [Okta/OIDC](okta.md); add
-package publishers to the `developers` team and have them mint PATs in Gitea.
+changes from `http://localhost:8080` to `https://registry.example.com`. For real
+users, follow [getting-started.md → Add real users](getting-started.md#5-add-real-users)
+(sign in as the admin, create accounts manually or via [Okta/OIDC](okta.md), add
+package publishers to the `developers` team, and mint PATs with the required
+scopes).
 
 ## State and backups
 

@@ -110,7 +110,7 @@ path, leaving every other request byte-for-byte unchanged:
   API), bumps `meta.api-version` to `1.1`, adds top-level `versions[]`, and
   returns v1.1 JSON. The reply is cached 30s keyed on `upstream|name|Authorization`
   (credential in the key so a private view never leaks across users) in a
-  **dedicated `pypi_enrich` cache zone** — never the small `registry_auth`/
+  **dedicated `pypi_enrich` cache zone** — never the small
   `artea_auth` zone, so large Simple-API bodies cannot evict auth entries and
   inflate the S12 revocation latency that auth caching is sized for.
 - Availability vs. metadata are decoupled. The base index list is what makes a
@@ -197,7 +197,7 @@ gateway guard itself (budget is 60 s, scenario S12). Trade-offs, accepted and
 documented:
 
 - Cached entries (header value + small auth response metadata) live on disk
-  inside the container's ephemeral layer at `/var/cache/nginx/registry_auth` —
+  inside the container's ephemeral layer at `/var/cache/nginx/artea_auth` —
   never on a volume. Restarting the container clears them. The much larger
   PEP 700 enriched Simple-API bodies use a separate `pypi_enrich` zone
   (`/var/cache/nginx/pypi_enrich`), so they cannot evict these auth entries; the

@@ -1,22 +1,10 @@
 import * as semver from 'semver';
 import type { pluginUtils } from '@verdaccio/core';
 import type { Logger, Manifest } from '@verdaccio/types';
-import { type PolicyLoader, SEMVER_OPTS, createPolicyLoader, isNameBlocked, isVersionBlocked } from './policy';
+import { type PolicyLoader, type PolicySourceConfig, SEMVER_OPTS, createPolicyLoader, isNameBlocked, isVersionBlocked } from './policy';
 import { OsvDecisionClient } from './osv';
 
-export interface FilterArteaConfig {
-  /** Path to the policy file (compose: the shared /policy volume). Mutually exclusive with policy_url. */
-  policy_file?: string;
-  /** policy-sync HTTP endpoint to poll (K8s: no shared volume). Mutually exclusive with policy_file. */
-  policy_url?: string;
-  /** Shared upstream package policy path (compose). Mutually exclusive with upstream_policy_url. */
-  upstream_policy_file?: string;
-  /** Shared upstream package policy URL (K8s). Mutually exclusive with upstream_policy_file. */
-  upstream_policy_url?: string;
-  /** policy_url mode only: poll period in ms (default 10000). */
-  poll_interval_ms?: number;
-  /** policy_url mode only: how long polls may keep failing before fail-closed (default 60000). */
-  fail_grace_ms?: number;
+export interface FilterArteaConfig extends PolicySourceConfig {
   /** Registry metadata source for cold direct tarball age checks. */
   npm_registry_url?: string;
   /** policy-sync OSV decision endpoint. Omit to disable inline OSV malicious-package filtering. */

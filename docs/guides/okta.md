@@ -145,9 +145,9 @@ SSO users have no Gitea password, so package tooling cannot authenticate as
 them with username/password — and that is by design. The flow is:
 
 1. Sign in to `http://localhost:8080` with Okta.
-2. Avatar → **Settings** → **Applications** → generate a token with the
-   **user** and **organization** permissions (`read:user`, `read:organization`)
-   plus the **package** permission (`read:package` or `write:package`).
+2. Avatar → **Settings** → **Applications** → generate a token with the scopes
+   listed in [publishing.md → Token scopes](publishing.md#token-scopes) (the
+   **package** permission plus `read:user` and `read:organization`).
 3. Put the token in `.npmrc` / `~/.netrc` / `.pypirc` as described in
    [clients-npm.md](clients-npm.md) and [clients-python.md](clients-python.md).
 

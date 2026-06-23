@@ -17,6 +17,7 @@ REJECTS and fail-close the whole ecosystem. These tests close that gap:
 """
 
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -139,8 +140,6 @@ def test_emitted_npm_yaml_accepted_by_filter():
             "process.stdout.write('ok');\n" % str(policy_js)
         )
         env = {"NODE_PATH": str(_PLUGIN_NODE_MODULES)}
-        import os
-
         run_env = {**os.environ, **env}
         result = subprocess.run(
             [_NODE, str(driver)],
@@ -169,8 +168,6 @@ def test_emitted_npm_reason_round_trips_exactly():
     npm_yaml = _compile(text).npm_yaml
 
     with tempfile.TemporaryDirectory() as d:
-        import os
-
         driver = Path(d) / "rt.cjs"
         driver.write_text(
             "const yaml = require('js-yaml');\n"
@@ -296,8 +293,6 @@ def test_npm_accept_set_is_real_semver_subset():
     range it rejects must be null under real semver too (confirming the subset is
     tight, not merely safe). Uses the plugin's own bundled semver; no source/lock
     is touched."""
-    import os
-
     with tempfile.TemporaryDirectory() as d:
         driver = Path(d) / "semver_check.cjs"
         driver.write_text(

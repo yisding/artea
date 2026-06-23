@@ -23,20 +23,17 @@ cd "$(dirname "$0")/.." || exit 1
 
 # shellcheck disable=SC1091
 source e2e/lib.sh
+# shellcheck source=e2e/env.sh
+source e2e/env.sh
 
 for tool in curl jq npm python3 git kubectl; do
   command -v "$tool" >/dev/null || die "required tool '${tool}' not found"
 done
 
-CREDENTIALS_FILE="${CREDENTIALS_FILE:-e2e/tmp/credentials.env}"
-case "${CREDENTIALS_FILE}" in /*) ;; *) CREDENTIALS_FILE="./${CREDENTIALS_FILE}" ;; esac
+resolve_credentials_file
 [ -f "${CREDENTIALS_FILE}" ] || die "${CREDENTIALS_FILE} missing — run 'make e2e' first"
-# shellcheck disable=SC1090
-source "${CREDENTIALS_FILE}"
-# explicit BASE_URL beats the GATEWAY_URL recorded at bootstrap time
-GATEWAY_URL="${BASE_URL:-${GATEWAY_URL:-http://localhost:8080}}"
+load_credentials
 GATEWAY_HOSTPORT="${GATEWAY_URL#http://}"
-ARTEA_NAMESPACE="${ARTEA_NAMESPACE:-artea}"
 POLICY_REPO="${POLICY_REPO:-${ARTEA_NAMESPACE}/registry-policy}"
 ARTEA_ADMIN_USER="${ARTEA_ADMIN_USER:-${ARTEA_NAMESPACE}-admin}"
 # webhook target as seen by Gitea (S1 asserts the wiring bootstrap created);
@@ -567,7 +564,7 @@ s14_branch_protection() {
   local token auth_header clone="${WORK}/s14-policy-clone" out sha b64
   token=$(mint_dev1_token "${S14_TOKEN_NAME}" '["write:repository","read:user"]') \
     || { echo "minting dev1 repo-scoped token failed"; return 1; }
-  auth_header=$(printf 'dev1:%s' "$token" | base64 | tr -d '\n')
+  auth_header=$(printf 'dev1:%s' "$token" | json_b64)
 
   # a real git push to main as dev1 must hit the protected-branch pre-receive hook
   git -c "http.extraHeader=Authorization: Basic ${auth_header}" \

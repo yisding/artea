@@ -8,14 +8,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-CREDENTIALS_FILE="${CREDENTIALS_FILE:-e2e/tmp/credentials.env}"
-case "${CREDENTIALS_FILE}" in /*) ;; *) CREDENTIALS_FILE="./${CREDENTIALS_FILE}" ;; esac
+# shellcheck source=e2e/env.sh
+source e2e/env.sh
+resolve_credentials_file
 [ -f "${CREDENTIALS_FILE}" ] || { echo "ERROR: ${CREDENTIALS_FILE} missing — run make bootstrap"; exit 1; }
-# shellcheck disable=SC1090
-source "${CREDENTIALS_FILE}"
-# explicit BASE_URL beats the GATEWAY_URL recorded at bootstrap time
-GATEWAY_URL="${BASE_URL:-${GATEWAY_URL:-http://localhost:8080}}"
-ARTEA_NAMESPACE="${ARTEA_NAMESPACE:-artea}"
+load_credentials
 # k8s runtime knobs (must match the chart; scripts/k8s-e2e.sh exports them)
 K8S_NAMESPACE="${K8S_NAMESPACE:-}"
 K8S_POLICY_SYNC_DEPLOY="${K8S_POLICY_SYNC_DEPLOY:-artea-policy-sync}"

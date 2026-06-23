@@ -6,27 +6,27 @@ join/parse/fail-closed logic is exercised end to end without network access.
 
 import json
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
 from policy_sync import enrich
+from tests._stub import StubServer, _StubHandler
+from tests._stub import reply as _reply
 
 
 # ---- in-process stub upstream ---------------------------------------------------
 
-class _Stub:
+class _Stub(StubServer):
     """A tiny router: register (method, path-prefix) -> handler(self) callbacks."""
 
     def __init__(self):
         self.routes: list[tuple[str, str, object]] = []
-        self.requests: list[dict] = []
+        super().__init__()
+
+    def _build_handler(self):
         stub = self
 
-        class Handler(BaseHTTPRequestHandler):
-            def log_message(self, format, *a):  # match BaseHTTPRequestHandler
-                pass
-
+        class Handler(_StubHandler):
             def do_GET(self):  # noqa: N802
                 stub.requests.append({
                     "path": self.path,
@@ -39,34 +39,10 @@ class _Stub:
                         return
                 self.send_error(404)
 
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.httpd.daemon_threads = True
-        self.thread = threading.Thread(
-            target=lambda: self.httpd.serve_forever(poll_interval=0.01), daemon=True
-        )
+        return Handler
 
     def route(self, prefix, fn):
         self.routes.append(("GET", prefix, fn))
-
-    @property
-    def url(self):
-        return f"http://127.0.0.1:{self.httpd.server_address[1]}"
-
-    def start(self):
-        self.thread.start()
-
-    def stop(self):
-        self.httpd.shutdown()
-        self.httpd.server_close()
-
-
-def _reply(handler, code, body, content_type="application/json"):
-    data = body.encode() if isinstance(body, str) else body
-    handler.send_response(code)
-    handler.send_header("Content-Type", content_type)
-    handler.send_header("Content-Length", str(len(data)))
-    handler.end_headers()
-    handler.wfile.write(data)
 
 
 @pytest.fixture(autouse=True)

@@ -7,7 +7,7 @@ import urllib.request
 
 import pytest
 
-from policy_sync.server import SyncState, make_http_server
+from policy_sync.server import PolicySyncHTTPServer, SyncState
 from policy_sync.store import PolicyStore, etag_for
 from tests.conftest import TEST_SECRET
 
@@ -27,7 +27,7 @@ def service(tmp_path, cfg):
     state = SyncState()
     store = PolicyStore(fallback_path=str(tmp_path / "npm-rules.yaml"))
     upstream_store = PolicyStore(fallback_path=str(tmp_path / "upstream-policy.yaml"))
-    httpd = make_http_server("127.0.0.1", 0, TEST_SECRET, lambda: triggers.append(1), state, store, upstream_store)
+    httpd = PolicySyncHTTPServer(("127.0.0.1", 0), TEST_SECRET, lambda: triggers.append(1), state, store, upstream_store)
     thread = threading.Thread(target=lambda: httpd.serve_forever(poll_interval=0.01), daemon=True)
     thread.start()
     url = f"http://127.0.0.1:{httpd.server_address[1]}"

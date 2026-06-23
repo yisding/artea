@@ -171,12 +171,10 @@ Bootstrap creates `dev1` for smoke tests and demos. For real users:
    publish access.
 4. Have the user create a PAT in **Settings -> Applications**.
 
-Client PATs must include:
-
-| Use | Required scopes |
-|-----|-----------------|
-| Install only | `read:package`, `read:user`, `read:organization` |
-| Publish and install | `write:package`, `read:user`, `read:organization` |
+Client PATs need the package scope plus `read:user` and `read:organization`:
+`read:package` for install-only tokens, `write:package` to also publish. See
+[publishing.md → Token scopes](publishing.md#token-scopes) for the full table
+and the reasoning.
 
 Use `username:PAT` for npm, pip, twine, uv, poetry, and curl. Do not use the
 account password for package clients.

@@ -1,27 +1,31 @@
 import json
 import threading
 import urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import pytest
 
 from policy_sync.osv import OsvClient
 from policy_sync.policy_model import parse_policy
-from policy_sync.server import SyncState, make_http_server
+from policy_sync.server import PolicySyncHTTPServer, SyncState
 from policy_sync.store import ParsedPolicyStore, PolicyStore
+from tests._stub import StubServer, _StubHandler, reply
 from tests.conftest import TEST_SECRET
 
 
-class MockOsv:
+class MockOsv(StubServer):
     def __init__(self):
         self.malicious: dict[str, list[str]] = {}
         self.vulnerable: set[str] = set()
         self.fail = False
-        self.requests: list[dict] = []
+        super().__init__()
+
+    def _build_handler(self):
         mock = self
 
-        class Handler(BaseHTTPRequestHandler):
+        class Handler(_StubHandler):
             def do_POST(self):
                 body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
-                mock.requests.append(json.loads(body))
+                mock.requests.append(json.loads(body))  # MockOsv captures parsed payload
                 if mock.fail:
                     self.send_error(500)
                     return
@@ -36,30 +40,9 @@ class MockOsv:
                     if version in mock.vulnerable:
                         vulns.append({"id": "GHSA-xxxx-yyyy-zzzz", "modified": "2026-01-01T00:00:00Z"})
                     results.append({"vulns": vulns} if vulns else {})
-                payload = json.dumps({"results": results}).encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(payload)))
-                self.end_headers()
-                self.wfile.write(payload)
+                reply(self, 200, json.dumps({"results": results}).encode())
 
-            def log_message(self, format, *args):
-                pass
-
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.httpd.daemon_threads = True
-        self.thread = threading.Thread(target=lambda: self.httpd.serve_forever(poll_interval=0.01), daemon=True)
-
-    @property
-    def url(self) -> str:
-        return f"http://127.0.0.1:{self.httpd.server_address[1]}"
-
-    def start(self):
-        self.thread.start()
-
-    def stop(self):
-        self.httpd.shutdown()
-        self.httpd.server_close()
+        return Handler
 
 
 def policy(text: str = ""):
@@ -134,6 +117,32 @@ def test_curated_pypi_exact_allow_overrides_with_release_equality():
     assert queried_versions == ["2.0.0"]
 
 
+def test_decide_accepts_osv_pypi_ecosystem_alias():
+    # The OSV-cased "PyPI" alias must be accepted just like the internal "pypi"
+    # and resolve to the same adapter/verdicts (single accepted-input mapping).
+    osv = MockOsv()
+    osv.malicious["1.0.0"] = ["MAL-2026-1"]
+    osv.start()
+    try:
+        client = OsvClient(api_url=osv.url)
+        result = client.decide(policy(), "PyPI", "six", ["1.0.0", "2.0.0"])
+    finally:
+        osv.stop()
+
+    assert result.status == "ok"
+    assert [(v.version, v.blocked) for v in result.verdicts] == [("1.0.0", True), ("2.0.0", False)]
+    # the querybatch must use OSV's "PyPI" ecosystem casing
+    assert osv.requests[0]["queries"][0]["package"]["ecosystem"] == "PyPI"
+
+
+def test_decide_rejects_unknown_ecosystem():
+    from policy_sync.policy_model import PolicyError
+
+    client = OsvClient(api_url="http://127.0.0.1:1")  # never contacted
+    with pytest.raises(PolicyError):
+        client.decide(policy(), "cargo", "serde", ["1.0.0"])
+
+
 def test_osv_outage_fails_open_but_uses_cached_malicious_verdict():
     osv = MockOsv()
     osv.malicious["1.0.0"] = ["MAL-2026-1"]
@@ -157,9 +166,8 @@ def test_osv_querybatch_endpoint_returns_verdicts():
     osv.start()
     parsed_store = ParsedPolicyStore()
     parsed_store.set(policy())
-    httpd = make_http_server(
-        "127.0.0.1",
-        0,
+    httpd = PolicySyncHTTPServer(
+        ("127.0.0.1", 0),
         TEST_SECRET,
         lambda: None,
         SyncState(),

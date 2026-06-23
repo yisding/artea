@@ -1,14 +1,16 @@
 # ADR-0004: Upstream isolation — the no-fork rule
 
 Status: accepted (v1)
+Amended-by: the Docker Compose removal (Kubernetes/Helm is the only runtime)
+Amended-by: ADR-0009 (PKCE patch — the `gitea/patches/` queue is no longer empty)
 
-Amended by the Docker Compose removal: compose is gone; Kubernetes/Helm is the
+The Docker Compose removal: compose is gone; Kubernetes/Helm is the
 only runtime (local dev on Colima's built-in k3s). The Gitea config no longer
 lives in `gitea/app.ini.template` (deleted) — it is single-sourced in the Helm
 chart values (`deploy/helm/artea/values.yaml` `gitea.gitea.config`), still a
 config overlay on the stock image. The no-fork principle below is unchanged.
 
-Amended by ADR-0009: the `gitea/patches/` queue is no longer empty — it carries
+ADR-0009: the `gitea/patches/` queue is no longer empty — it carries
 one source patch (PKCE on OIDC login sources), and Artea now **provides a build
 of a patched Gitea image** (`gitea/build-image.sh`, published as
 `ghcr.io/yisding/artea-gitea`). It stays opt-in: the stock image remains the

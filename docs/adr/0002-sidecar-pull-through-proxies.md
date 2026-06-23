@@ -1,7 +1,8 @@
 # ADR-0002: Sidecar pull-through proxies with gateway-enforced precedence
 
-Status: accepted (v1); amended 2026-06-10 — npm scope routing moved from the
-client to the gateway (see Amendment below; backward compatible)
+Status: accepted (v1)
+Amended-by: 2026-06-10 — npm scope routing moved from the client to the gateway
+(see Amendment below; backward compatible)
 
 ## Context
 

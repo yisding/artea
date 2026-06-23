@@ -6,7 +6,8 @@ registries — an open-source alternative to Artifactory. v1 supports **npm (JS/
 (Maven, RPM, Debian, containers, ...) can be added without rework.
 
 This document is the canonical design contract. All components must conform to it.
-If implementation reality forces a deviation, document it in `docs/adr/`.
+If implementation reality forces a deviation, document it in `docs/adr/` (see the
+[ADR index](adr/README.md) for the full list and how the records relate).
 
 ## Hard requirements
 
@@ -51,13 +52,20 @@ One public entrypoint (the gateway). Everything else is internal.
 | Verdaccio container/port | `verdaccio`, 4873 (stock `verdaccio/verdaccio:6` image, exact tag pinned) |
 | devpi container/port | `devpi`, 3141 (our `devpi/Dockerfile`: python-slim + devpi-server + Artea devpi policy plugin) |
 | policy-sync container/port | `policy-sync`, 8920 (our `policy-sync/` Python service) |
-| Private namespace org | `ARTEA_NAMESPACE` (default `artea`; Gitea organization and npm scope `@${ARTEA_NAMESPACE}`) |
+| Private namespace org | `ARTEA_NAMESPACE` (= chart input `global.privateNamespace`; default `artea`; Gitea organization and npm scope `@${ARTEA_NAMESPACE}`) |
 | Policy repo | Gitea repo `${ARTEA_NAMESPACE}/registry-policy`; canonical authoring file `policy.toml` (ADR-0007), compiled by policy-sync into the per-engine artifacts `npm-rules.yaml`, `upstream-policy.yaml`, `pypi-constraints.txt` |
 | Policy delivery | compiled policy is served over HTTP by policy-sync (`GET /policy/npm-rules.yaml`, `GET /policy/upstream-policy.yaml`); Verdaccio polls those URLs (no shared volume) |
 | Bootstrap admin | `ARTEA_ADMIN_USER` (default `${ARTEA_NAMESPACE}-admin` when unset), password from Helm `secrets.adminPassword` |
 | Config source | version pins, secrets, and namespace settings live in `deploy/helm/artea/values.yaml` (Gitea image pin kept in sync with `gitea/UPSTREAM`); secrets come from `secrets.*` values (dev placeholders in `values-local.yaml` gated by `allowDevPlaceholders`; real installs via `-f my-secrets.yaml`) |
 | Runtime configs | single-sourced as Helm templates in `deploy/helm/artea/`, rendered into ConfigMaps by Helm (gateway `nginx.conf`, verdaccio `config.yaml`; Gitea config via `gitea.gitea.config` in `values.yaml`) |
 | devpi indexes | `root/pypi` (mirror of pypi.org), `root/constrained` (type=constrained, bases=root/pypi) |
+
+The private namespace has one identity under two names: the Helm chart input
+`global.privateNamespace` sets the `ARTEA_NAMESPACE` runtime env (surfaced in
+`credentials.env`), and that single value is the Gitea organization, the npm
+scope `@${ARTEA_NAMESPACE}`, the package-API owner, and the policy-repo owner.
+Throughout this doc and the runtime configs the value is referred to as
+`ARTEA_NAMESPACE`; the chart README documents it as `global.privateNamespace`.
 
 ### Gitea endpoint paths (verified against upstream source)
 

@@ -314,7 +314,7 @@ verdaccio:
     failGraceMs: 60000
   extraInitContainers:
     - name: copy-plugins
-      image: '{{ .Values.pluginAssets.image.repository }}{{ if .Values.pluginAssets.image.digest }}@{{ .Values.pluginAssets.image.digest }}{{ else }}:{{ .Values.pluginAssets.image.tag }}{{ end }}'
+      image: '{{ include "artea.image" .Values.pluginAssets.image }}'
       imagePullPolicy: '{{ .Values.pluginAssets.image.pullPolicy }}'
       # cp -a keeps the pnpm-relative symlinks inside the tree intact; chmod
       # guarantees readability for the verdaccio uid (10001).

@@ -67,9 +67,11 @@ package publish flow, follow [getting-started.md](getting-started.md) after
 the port-forward is running.
 
 With `values-local.yaml`, the bootstrap Job emits a framed credentials block in
-its logs for local testing. For real installs, sign in as the configured admin,
-create users manually or through Okta/OIDC, add package publishers to the
-`developers` team, and have them create PATs in Gitea.
+its logs for local testing. For real installs, follow
+[getting-started.md → Add real users](getting-started.md#5-add-real-users) to
+sign in as the admin, create users (manually or through Okta/OIDC), add package
+publishers to the `developers` team, and have them mint PATs (including the
+required scopes table).
 
 ## Secrets
 

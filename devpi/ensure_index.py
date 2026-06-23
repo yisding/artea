@@ -35,6 +35,9 @@ def log(msg):
 
 
 def has_expected_base(value):
+    # Parallel to _has_expected_base in policy-sync/policy_sync/devpi.py: the two
+    # images cannot import each other, so this guards the same R3 base invariant
+    # in both. Keep the two copies in sync.
     return value == "root/pypi" or value == ["root/pypi"]
 
 

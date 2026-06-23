@@ -1,10 +1,7 @@
 import type { Logger } from '@verdaccio/types';
 
-export interface OsvVerdict {
-  version: string;
-  blocked: boolean;
-  ids: string[];
-}
+// wire shape of a single OSV decision entry (untrusted until validated in parseResponse):
+// { version: string; blocked: boolean; ids: string[] }
 
 interface OsvResponse {
   status?: unknown;
@@ -20,7 +17,7 @@ export class OsvDecisionClient {
   private readonly logger: Logger;
 
   public constructor(url: string, logger: Logger, timeoutMs = DEFAULT_OSV_TIMEOUT_MS) {
-    if (timeoutMs <= 0) {
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
       throw new Error('filter-artea: osv_timeout_ms must be positive');
     }
     this.url = url;
@@ -75,7 +72,7 @@ function parseResponse(body: OsvResponse): Map<string, string[]> {
     if (entry === null || typeof entry !== 'object') {
       throw new Error('invalid OSV decision entry');
     }
-    const { version, blocked, ids } = entry as OsvVerdict;
+    const { version, blocked, ids } = entry as Record<string, unknown>;
     if (typeof version !== 'string' || typeof blocked !== 'boolean' || !Array.isArray(ids)) {
       throw new Error('invalid OSV decision entry');
     }

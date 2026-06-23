@@ -82,9 +82,13 @@ class PolicySyncHandler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
-    def _respond_raw(self, code: int, body: bytes, content_type: str) -> None:
+    def _respond_raw(
+        self, code: int, body: bytes, content_type: str, extra_headers: dict[str, str] | None = None
+    ) -> None:
         self.send_response(code)
         self.send_header("Content-Type", content_type)
+        for header, value in (extra_headers or {}).items():
+            self.send_header(header, value)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if self.command != "HEAD":
@@ -172,10 +176,9 @@ class PolicySyncHandler(BaseHTTPRequestHandler):
         self._respond_raw(200, body, enrich.SIMPLE_JSON_ACCEPT)
 
     def do_HEAD(self) -> None:  # noqa: N802
-        # The response writers (_respond / _respond_raw / _serve_policy) all
-        # suppress the body when self.command == "HEAD", so a HEAD is just a GET
-        # whose body is dropped — route it through do_GET rather than duplicate
-        # the path table.
+        # The response writers (_respond / _respond_raw) both suppress the body
+        # when self.command == "HEAD", so a HEAD is just a GET whose body is
+        # dropped — route it through do_GET rather than duplicate the path table.
         self.do_GET()
 
     def _serve_policy(self, store: PolicyStore, label: str) -> None:
@@ -190,13 +193,7 @@ class PolicySyncHandler(BaseHTTPRequestHandler):
             self.send_header("ETag", etag)
             self.end_headers()
             return
-        self.send_response(200)
-        self.send_header("Content-Type", "application/yaml")
-        self.send_header("ETag", etag)
-        self.send_header("Content-Length", str(len(content)))
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(content)
+        self._respond_raw(200, content, "application/yaml", {"ETag": etag})
 
     def do_POST(self) -> None:  # noqa: N802
         if self.path == OSV_ENDPOINT:
@@ -290,31 +287,6 @@ class PolicySyncHTTPServer(ThreadingHTTPServer):
         self.cfg = cfg
 
 
-def make_http_server(
-    host: str,
-    port: int,
-    webhook_secret: str,
-    trigger_sync,
-    state: SyncState,
-    store: PolicyStore,
-    upstream_store: PolicyStore,
-    parsed_policy_store: ParsedPolicyStore | None = None,
-    osv_client: osv.OsvClient | None = None,
-    cfg: Config | None = None,
-) -> PolicySyncHTTPServer:
-    return PolicySyncHTTPServer(
-        (host, port),
-        webhook_secret,
-        trigger_sync,
-        state,
-        store,
-        upstream_store,
-        parsed_policy_store,
-        osv_client,
-        cfg,
-    )
-
-
 def run_sync_worker(syncer: Syncer, state: SyncState, wake: threading.Event, poll_interval: float, stop: threading.Event) -> None:
     """Startup sync, then re-sync on webhook wake-ups or every poll_interval."""
     while not stop.is_set():
@@ -359,9 +331,8 @@ def main() -> None:
     )
     worker.start()
 
-    httpd = make_http_server(
-        "0.0.0.0",
-        LISTEN_PORT,
+    httpd = PolicySyncHTTPServer(
+        ("0.0.0.0", LISTEN_PORT),
         cfg.webhook_secret,
         wake.set,
         state,
