@@ -98,6 +98,33 @@ def _classify(
     return out
 
 
+# ------------------------------------------------- shared emit helpers (both)
+
+
+def _copy_deny_buckets(
+    eco: _EcosystemRules,
+) -> tuple[dict[str, str | None], dict[str, list[tuple[str, str | None]]]]:
+    """Deep-copy the whole-package and range deny buckets so an emitter can mutate
+    them (apply allow-wins) without touching the classified rules. Shared by the
+    npm and pypi emitters, which both start from this exact copy."""
+    whole = dict(eco.whole_denies)
+    ranges = {n: list(rs) for n, rs in eco.range_denies.items()}
+    return whole, ranges
+
+
+def _reject_range_carving(
+    name: str, ranges: dict[str, list[tuple[str, str | None]]], ecosystem: str
+) -> None:
+    """An exact-version allow against a version-range deny is range-vs-range, not
+    yet supported by either engine. Centralized so npm/pypi cannot diverge on the
+    rejection message."""
+    if name in ranges:
+        raise PolicyError(
+            f"{ecosystem}: an allow against a version-range deny (range carving) "
+            f"is not supported yet (package '{name}')"
+        )
+
+
 # ----------------------------------------------------------------- npm emission
 
 
@@ -151,10 +178,7 @@ def _resolve_npm(eco: _EcosystemRules, adapter: NpmAdapter) -> tuple[list[str], 
     # whole-namespace allow drops a matching scope deny entirely.
     scopes -= eco.namespace_allows
 
-    whole = dict(eco.whole_denies)
-    ranges: dict[str, list[tuple[str, str | None]]] = {
-        n: list(rs) for n, rs in eco.range_denies.items()
-    }
+    whole, ranges = _copy_deny_buckets(eco)
 
     # whole-package allow: drop every deny for that exact package.
     for name in eco.whole_allows:
@@ -173,11 +197,7 @@ def _resolve_npm(eco: _EcosystemRules, adapter: NpmAdapter) -> tuple[list[str], 
     # exact-version allow: carve the point out of a whole-package deny via the
     # semver complement. Against a range deny it is range-vs-range -> reject.
     for name, versions in eco.exact_allows.items():
-        if name in ranges:
-            raise PolicyError(
-                f"npm: an allow against a version-range deny (range carving) "
-                f"is not supported yet (package '{name}')"
-            )
+        _reject_range_carving(name, ranges, "npm")
         if name in whole:
             reason = whole.pop(name)
             for v in sorted(versions):
@@ -347,10 +367,7 @@ def _emit_pypi_allows(
 def _emit_pypi(eco: _EcosystemRules, adapter: PypiAdapter, default_action: Action) -> str:
     default_deny = default_action is Action.DENY
 
-    whole = dict(eco.whole_denies)
-    ranges: dict[str, list[tuple[str, str | None]]] = {
-        n: list(rs) for n, rs in eco.range_denies.items()
-    }
+    whole, ranges = _copy_deny_buckets(eco)
 
     # whole-package allow: drop denies for that package; under default-deny the
     # bare name must be listed above '*' so it still passes.
@@ -380,11 +397,7 @@ def _emit_pypi(eco: _EcosystemRules, adapter: PypiAdapter, default_action: Actio
             # is already listed as a bare passthrough; emitting '==v' too would be
             # a duplicate project line devpi rejects.
             continue
-        if name in ranges:
-            raise PolicyError(
-                f"pypi: an allow against a version-range deny (range carving) "
-                f"is not supported yet (package '{name}')"
-            )
+        _reject_range_carving(name, ranges, "pypi")
         emit_exact = name in whole or default_deny
         whole.pop(name, None)
         if not emit_exact:

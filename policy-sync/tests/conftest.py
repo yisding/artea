@@ -1,14 +1,14 @@
 import base64
 import json
 import re
-import threading
 from pathlib import Path
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
 from policy_sync.adapters import _PEP440_SET_RE, _PYPI_NAME_RE
 from policy_sync.config import Config
+from policy_sync.sync import Syncer
+from tests._stub import StubServer, _StubHandler, reply
 
 
 # A stdlib reimplementation of devpi's parse_constraints contract
@@ -54,17 +54,43 @@ TEST_SECRET = "test-webhook-secret"
 TEST_REPO = "artea/registry-policy"
 TEST_DEVPI_PASSWORD = "devpi-pass"
 
+# event-stream (whole npm deny) + urllib3>=2 (pypi range deny) + P3D age gate.
+# Compiles to: npm blocked list containing event-stream, pypi "urllib3<2\n",
+# upstream min_age "P3D". Shared by test_sync.py and test_sync_unified.py.
+UNIFIED = b"""
+schema = 1
+[upstream]
+min_age = "P3D"
+[[rules]]
+ecosystem = "npm"
+name = "event-stream"
+action = "deny"
+[[rules]]
+ecosystem = "pypi"
+name = "urllib3"
+versions = ">=2"
+action = "deny"
+"""
 
-class MockGitea:
+
+def make_syncer(cfg, store=None, upstream_store=None):
+    sleeps = []
+    syncer = Syncer(cfg, sleep=sleeps.append, store=store, upstream_store=upstream_store)
+    return syncer, sleeps
+
+
+class MockGitea(StubServer):
     """Minimal in-process Gitea that serves the raw-content API."""
 
     def __init__(self):
         self.files: dict[str, bytes] = {}
-        self.requests: list[dict] = []
         self.fail_remaining = 0  # respond 500 to the next N requests
+        super().__init__()
+
+    def _build_handler(self):
         mock = self
 
-        class Handler(BaseHTTPRequestHandler):
+        class Handler(_StubHandler):
             def do_GET(self):
                 mock.requests.append({
                     "path": self.path,
@@ -91,24 +117,7 @@ class MockGitea:
                 self.end_headers()
                 self.wfile.write(body)
 
-            def log_message(self, format, *args):  # match BaseHTTPRequestHandler
-                pass
-
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.httpd.daemon_threads = True
-        # short poll so shutdown() in teardown returns quickly
-        self.thread = threading.Thread(target=lambda: self.httpd.serve_forever(poll_interval=0.01), daemon=True)
-
-    @property
-    def url(self) -> str:
-        return f"http://127.0.0.1:{self.httpd.server_address[1]}"
-
-    def start(self):
-        self.thread.start()
-
-    def stop(self):
-        self.httpd.shutdown()
-        self.httpd.server_close()
+        return Handler
 
 
 @pytest.fixture
@@ -119,17 +128,19 @@ def mock_gitea():
     server.stop()
 
 
-class MockDevpi:
+class MockDevpi(StubServer):
     """Minimal in-process devpi serving the root/constrained index JSON API."""
 
     def __init__(self):
         # shape of the Artea constrained index config (subset)
         self.config: dict = {"type": "constrained", "bases": ["root/pypi"], "constraints": [], "min_upstream_age": "P0D"}
-        self.requests: list[dict] = []
         self.fail_remaining = 0  # respond 500 to the next N requests
+        super().__init__()
+
+    def _build_handler(self):
         mock = self
 
-        class Handler(BaseHTTPRequestHandler):
+        class Handler(_StubHandler):
             def _record(self, body=None):
                 mock.requests.append({
                     "method": self.command,
@@ -139,12 +150,7 @@ class MockDevpi:
                 })
 
             def _json(self, code, payload):
-                data = json.dumps(payload).encode()
-                self.send_response(code)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
+                reply(self, code, json.dumps(payload).encode())
 
             def do_GET(self):
                 self._record()
@@ -182,27 +188,11 @@ class MockDevpi:
                 mock.config = new_config
                 self._json(200, {"type": "indexconfig", "result": dict(mock.config)})
 
-            def log_message(self, format, *args):  # match BaseHTTPRequestHandler
-                pass
-
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.httpd.daemon_threads = True
-        self.thread = threading.Thread(target=lambda: self.httpd.serve_forever(poll_interval=0.01), daemon=True)
-
-    @property
-    def url(self) -> str:
-        return f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        return Handler
 
     @property
     def patches(self) -> list[dict]:
         return [r for r in self.requests if r["method"] == "PATCH"]
-
-    def start(self):
-        self.thread.start()
-
-    def stop(self):
-        self.httpd.shutdown()
-        self.httpd.server_close()
 
 
 @pytest.fixture

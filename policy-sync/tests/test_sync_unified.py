@@ -1,28 +1,7 @@
 from pathlib import Path
 
 from policy_sync.store import PolicyStore
-from policy_sync.sync import Syncer
-
-UNIFIED = b"""
-schema = 1
-[upstream]
-min_age = "P3D"
-[[rules]]
-ecosystem = "npm"
-name = "event-stream"
-action = "deny"
-[[rules]]
-ecosystem = "pypi"
-name = "urllib3"
-versions = ">=2"
-action = "deny"
-"""
-
-
-def make_syncer(cfg, store=None, upstream_store=None):
-    sleeps = []
-    syncer = Syncer(cfg, sleep=sleeps.append, store=store, upstream_store=upstream_store)
-    return syncer, sleeps
+from tests.conftest import UNIFIED, make_syncer
 
 
 def _requested_paths(mock_gitea):
@@ -156,3 +135,4 @@ def test_unified_resync_idempotent(cfg, mock_gitea, mock_devpi):
     assert syncer.sync_once() is True
     assert npm_path.stat().st_mtime_ns == mtime  # byte-stable emit, no mtime bump
     assert len(mock_devpi.patches) == patches  # no devpi churn
+

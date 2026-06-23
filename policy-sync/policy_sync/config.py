@@ -7,6 +7,13 @@ no-op service); transient upstream outages are handled at sync time instead.
 import os
 from dataclasses import dataclass
 
+# Authoritative defaults for the two public-API base URLs, referenced by both the
+# dataclass field defaults and the env.get fallbacks below (and osv.py's
+# OsvClient.api_url) so the runtime and test-covered copies cannot drift. Kept
+# slash-free so the .rstrip("/") on the env fallbacks stays a no-op.
+DEFAULT_PYPI_JSON_URL = "https://pypi.org/pypi"
+DEFAULT_OSV_API_URL = "https://api.osv.dev"
+
 
 class ConfigError(Exception):
     pass
@@ -27,8 +34,8 @@ class Config:
     # PyPI Simple-API enrichment (PEP 700) reads these; defaults keep existing
     # Config(...) construction sites (tests) working without changes.
     namespace: str = "artea"
-    pypi_json_url: str = "https://pypi.org/pypi"
-    osv_api_url: str = "https://api.osv.dev"
+    pypi_json_url: str = DEFAULT_PYPI_JSON_URL
+    osv_api_url: str = DEFAULT_OSV_API_URL
     osv_timeout_seconds: float = 5.0
     osv_positive_ttl_seconds: float = 3600.0
     osv_negative_ttl_seconds: float = 900.0
@@ -91,8 +98,8 @@ class Config:
             namespace=namespace,
             # PyPI JSON API base for PEP 700 upload-time enrichment of public
             # (devpi pull-through) packages; same source the devpi age gate uses.
-            pypi_json_url=env.get("PYPI_JSON_URL", "https://pypi.org/pypi").rstrip("/"),
-            osv_api_url=env.get("OSV_API_URL", "https://api.osv.dev").rstrip("/"),
+            pypi_json_url=env.get("PYPI_JSON_URL", DEFAULT_PYPI_JSON_URL).rstrip("/"),
+            osv_api_url=env.get("OSV_API_URL", DEFAULT_OSV_API_URL).rstrip("/"),
             osv_timeout_seconds=osv_timeout,
             osv_positive_ttl_seconds=osv_positive_ttl,
             osv_negative_ttl_seconds=osv_negative_ttl,

@@ -90,6 +90,7 @@ _NPM_EXACT_RE = re.compile(
 
 class NpmAdapter:
     ecosystem = "npm"
+    osv_ecosystem = "npm"  # OSV.dev ecosystem casing for querybatch (osv.py)
 
     def normalize_name(self, name: str) -> str:
         return name.strip().lower()
@@ -156,6 +157,7 @@ _PEP440_EXACT_RE = re.compile(rf"^\s*==\s*({_PEP440_CORE})\s*$")
 
 class PypiAdapter:
     ecosystem = "pypi"
+    osv_ecosystem = "PyPI"  # OSV.dev ecosystem casing for querybatch (osv.py)
 
     def normalize_name(self, name: str) -> str:
         normalized = re.sub(r"[-_.]+", "-", name.strip()).lower()

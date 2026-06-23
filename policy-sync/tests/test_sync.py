@@ -7,31 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from policy_sync.store import PolicyStore
-from policy_sync.sync import Syncer
-
-# event-stream (whole npm deny) + urllib3>=2 (pypi range deny) + P3D age gate.
-# Compiles to: npm blocked list containing event-stream, pypi "urllib3<2\n",
-# upstream min_age "P3D".
-UNIFIED = b"""
-schema = 1
-[upstream]
-min_age = "P3D"
-[[rules]]
-ecosystem = "npm"
-name = "event-stream"
-action = "deny"
-[[rules]]
-ecosystem = "pypi"
-name = "urllib3"
-versions = ">=2"
-action = "deny"
-"""
-
-
-def make_syncer(cfg, store=None, upstream_store=None):
-    sleeps = []
-    syncer = Syncer(cfg, sleep=sleeps.append, store=store, upstream_store=upstream_store)
-    return syncer, sleeps
+from tests.conftest import UNIFIED, make_syncer
 
 
 def test_full_sync_writes_artifacts_and_applies_constraints(cfg, mock_gitea, mock_devpi):

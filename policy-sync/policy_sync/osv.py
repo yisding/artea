@@ -16,14 +16,17 @@ import urllib.request
 from dataclasses import dataclass
 
 from .adapters import NPM, PYPI, NpmAdapter, PypiAdapter
+from .config import DEFAULT_OSV_API_URL
 from .policy_model import Action, Policy, PolicyError
 
 log = logging.getLogger(__name__)
 
 MAL_PREFIX = "MAL-"
-OSV_ECOSYSTEMS = {"npm": "npm", "pypi": "PyPI", "PyPI": "PyPI"}
-INTERNAL_ECOSYSTEMS = {"npm": "npm", "pypi": "pypi", "PyPI": "pypi"}
-ADAPTERS: dict[str, NpmAdapter | PypiAdapter] = {"npm": NPM, "pypi": PYPI}
+# Accepted decide() ecosystem input -> adapter. Each adapter carries its internal
+# id (adapter.ecosystem) and OSV.dev casing (adapter.osv_ecosystem), so this is
+# the single mapping to update when adding/renaming an ecosystem. "PyPI" is a
+# required alias: callers may pass the OSV casing as well as the internal "pypi".
+ADAPTERS: dict[str, NpmAdapter | PypiAdapter] = {"npm": NPM, "pypi": PYPI, "PyPI": PYPI}
 MAX_PAGES = 8
 
 
@@ -100,7 +103,7 @@ class _VerdictCache:
 class OsvClient:
     def __init__(
         self,
-        api_url: str = "https://api.osv.dev",
+        api_url: str = DEFAULT_OSV_API_URL,
         timeout: float = 5.0,
         positive_ttl: float = 3600.0,
         negative_ttl: float = 900.0,
@@ -121,11 +124,11 @@ class OsvClient:
         name: str,
         versions: list[str],
     ) -> OsvDecisionResult:
-        internal = INTERNAL_ECOSYSTEMS.get(ecosystem)
-        osv_ecosystem = OSV_ECOSYSTEMS.get(ecosystem)
-        if internal is None or osv_ecosystem is None:
+        adapter = ADAPTERS.get(ecosystem)
+        if adapter is None:
             raise PolicyError(f"unknown ecosystem {ecosystem!r}")
-        adapter = ADAPTERS[internal]
+        internal = adapter.ecosystem
+        osv_ecosystem = adapter.osv_ecosystem
         normalized_name = adapter.normalize_name(name)
 
         ordered_versions = _unique_versions(versions)

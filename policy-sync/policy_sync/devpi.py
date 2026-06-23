@@ -61,6 +61,9 @@ def _effective_lines(value) -> list[str] | None:
 
 
 def _has_expected_base(value) -> bool:
+    # Parallel to has_expected_base in devpi/ensure_index.py: the two images
+    # cannot import each other, so this guards the same R3 base invariant in both.
+    # Keep the two copies in sync (see enrich.py for the same cross-image idiom).
     return value == "root/pypi" or value == ["root/pypi"]
 
 
