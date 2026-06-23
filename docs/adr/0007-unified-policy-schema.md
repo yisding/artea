@@ -1,8 +1,9 @@
 # ADR-0007: Unified cross-ecosystem policy schema
 
-Status: accepted
+Status: accepted (v1)
+Extends: ADR-0006 (policy as code)
 
-Extends ADR-0006 (policy as code). The governance, delivery, `svc-policy`
+The governance, delivery, `svc-policy`
 account, and sub-minute propagation from ADR-0006 are unchanged; this ADR
 replaces only the *authoring format* — the three per-format files become one.
 

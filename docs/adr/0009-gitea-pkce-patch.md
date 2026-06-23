@@ -1,6 +1,7 @@
 # ADR-0009: Patch Gitea to send PKCE on OIDC login sources
 
-Status: accepted (v1). First entry in the `gitea/patches/` queue; amends ADR-0004.
+Status: accepted (v1)
+Amends: ADR-0004 (first entry in the `gitea/patches/` queue)
 
 ## Context
 
