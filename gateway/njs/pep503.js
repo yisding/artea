@@ -88,6 +88,8 @@ function pypiFilePath(value) {
     return path;
 }
 
+// Identical copy of responseBody in pep700.js; the two njs modules are separate
+// ConfigMap files and cannot import each other, so keep the two copies in sync.
 function responseBody(reply) {
     if (reply.responseText !== undefined) {
         return reply.responseText;

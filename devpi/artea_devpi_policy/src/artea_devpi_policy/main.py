@@ -94,14 +94,23 @@ def parse_iso_duration_seconds(raw: Any) -> float:
     return seconds
 
 
+def constraint_lines(text: str) -> list[str]:
+    """Reduce raw constraint text to its effective lines: stripped, minus blanks
+    and #-comment lines. One definition of an effective constraint line shared by
+    parse_constraints and normalize_indexconfig_value."""
+    result = []
+    for item in text.splitlines():
+        item = item.strip()
+        if not item or item.startswith("#"):
+            continue
+        result.append(item)
+    return result
+
+
 def parse_constraints(constraints):
     result = ConstraintsDict()
     if isinstance(constraints, str):
-        constraints = [
-            item.strip()
-            for item in constraints.splitlines()
-            if item.strip() and not item.strip().startswith("#")
-        ]
+        constraints = constraint_lines(constraints)
     for constraint in constraints:
         if constraint == "*":
             result.constrain_all = True
@@ -215,13 +224,7 @@ class ConstrainedStage:
     def normalize_indexconfig_value(self, key, value):
         if key == "constraints":
             if not isinstance(value, list):
-                result = []
-                for item in value.splitlines():
-                    item = item.strip()
-                    if not item or item.startswith("#"):
-                        continue
-                    result.append(item)
-                return result
+                return constraint_lines(value)
             return value
         if key == "min_upstream_age":
             parse_iso_duration_seconds(value)
@@ -267,6 +270,12 @@ class ConstrainedStage:
     def osv_url(self):
         return (self.stage.ixconfig.get("osv_url") or default_osv_url()).rstrip("/")
 
+    def has_file_policy(self) -> bool:
+        """True when any per-file gate (upstream age or OSV) is active, so the
+        per-item filters and the file-age tween must inspect items individually
+        rather than short-circuit."""
+        return self.min_upstream_age_seconds > 0 or bool(self.osv_url)
+
     def get_projects_filter_iter(self, projects):
         constraints = self.constraints
         if not constraints.constrain_all:
@@ -288,7 +297,7 @@ class ConstrainedStage:
         constraints = self.constraints
         version_filter = constraints.get(project)
         if version_filter is None:
-            if not constraints.constrain_all and self.min_upstream_age_seconds <= 0 and not self.osv_url:
+            if not constraints.constrain_all and not self.has_file_policy():
                 return None
         include_legacy = version_filter is None or not len(version_filter)
         needs_age = self.min_upstream_age_seconds > 0
@@ -434,7 +443,7 @@ def file_age_tween_factory(handler, registry):
         if not path.startswith(PYPI_FILE_PREFIXES):
             return handler(request)
         customizer = constrained_customizer(registry)
-        if customizer is None or (customizer.min_upstream_age_seconds <= 0 and not customizer.osv_url):
+        if customizer is None or not customizer.has_file_policy():
             return handler(request)
         mirror = registry["xom"].model.getstage(PYPI_MIRROR_INDEX)
         link = mirror.get_link_from_entrypath(path) if mirror is not None else None
