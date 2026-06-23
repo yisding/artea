@@ -26,8 +26,7 @@ spec:
     spec:
       containers:
         - name: policy-sync
-          image: {{ include "artea.image" .Values.policySync.image | quote }}
-          imagePullPolicy: {{ .Values.policySync.image.pullPolicy }}
+          {{- include "artea.containerImage" .Values.policySync.image | nindent 10 }}
           env:
             # HTTP-only mode: no /policy volume in K8s — an unset path would
             # make every sync fail trying to write /policy/npm-rules.yaml
@@ -47,21 +46,9 @@ spec:
               value: {{ .Values.policySync.osvApiUrl | quote }}
             - name: POLICY_SYNC_POLL_SECONDS
               value: {{ .Values.policySync.pollSeconds | quote }}
-            - name: POLICY_SYNC_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "artea.fullname" "policy-sync" }}
-                  key: POLICY_SYNC_TOKEN
-            - name: POLICY_WEBHOOK_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "artea.fullname" "secrets" }}
-                  key: POLICY_WEBHOOK_SECRET
-            - name: DEVPI_ROOT_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "artea.fullname" "secrets" }}
-                  key: DEVPI_ROOT_PASSWORD
+            {{- include "artea.secretEnv" (dict "name" "POLICY_SYNC_TOKEN" "secret" "policy-sync" "key" "POLICY_SYNC_TOKEN") | nindent 12 }}
+            {{- include "artea.secretEnv" (dict "name" "POLICY_WEBHOOK_SECRET" "secret" "secrets" "key" "POLICY_WEBHOOK_SECRET") | nindent 12 }}
+            {{- include "artea.secretEnv" (dict "name" "DEVPI_ROOT_PASSWORD" "secret" "secrets" "key" "DEVPI_ROOT_PASSWORD") | nindent 12 }}
           ports:
             - name: http
               containerPort: 8920

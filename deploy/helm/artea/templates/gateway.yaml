@@ -2,6 +2,15 @@
 # (auth_request, Gitea-first pypi 404-fallback, PEP 503 normalization) and the
 # single entrypoint. An Ingress in front (gateway-ingress.yaml) does TLS/host
 # routing ONLY.
+{{- /* Single source for the three ConfigMap data files (nginx.conf is tpl'd;
+the two njs helpers are raw .Files.Get). The data block below writes these keys
+explicitly so the symlink-explanation comments survive; the pod-roll checksum
+annotation is derived from this same dict so it can never go stale relative to
+the rendered content. */ -}}
+{{- $gatewayData := dict
+  "nginx.conf" (tpl (.Files.Get "files/gateway/nginx.conf") .)
+  "pep503.js" (.Files.Get "files/gateway/pep503.js")
+  "pep700.js" (.Files.Get "files/gateway/pep700.js") }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -10,16 +19,16 @@ metadata:
     {{- include "artea.labels" (dict "ctx" $ "component" "gateway") | nindent 4 }}
 data:
   nginx.conf: |
-{{ tpl (.Files.Get "files/gateway/nginx.conf") . | indent 4 }}
+{{ get $gatewayData "nginx.conf" | indent 4 }}
   # PEP 503 normalization (njs). files/gateway/pep503.js is a symlink to the
   # single source gateway/njs/pep503.js (Helm follows it), so there is no copy
   # to keep in sync.
   pep503.js: |
-{{ .Files.Get "files/gateway/pep503.js" | indent 4 }}
+{{ get $gatewayData "pep503.js" | indent 4 }}
   # PEP 700 upload-time enrichment orchestrator (njs); files/gateway/pep700.js
   # is a symlink to the single source gateway/njs/pep700.js.
   pep700.js: |
-{{ .Files.Get "files/gateway/pep700.js" | indent 4 }}
+{{ get $gatewayData "pep700.js" | indent 4 }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -37,13 +46,13 @@ spec:
       labels:
         {{- include "artea.selectorLabels" (dict "ctx" $ "component" "gateway") | nindent 8 }}
       annotations:
-        # roll the pods when the rendered nginx config or either njs helper changes
-        checksum/config: {{ printf "%s\n%s\n%s" (tpl (.Files.Get "files/gateway/nginx.conf") .) (.Files.Get "files/gateway/pep503.js") (.Files.Get "files/gateway/pep700.js") | sha256sum }}
+        # roll the pods when the rendered nginx config or either njs helper changes;
+        # derived from $gatewayData so it can never drift from the ConfigMap content
+        checksum/config: {{ toYaml $gatewayData | sha256sum }}
     spec:
       containers:
         - name: nginx
-          image: {{ include "artea.image" .Values.gateway.image | quote }}
-          imagePullPolicy: {{ .Values.gateway.image.pullPolicy }}
+          {{- include "artea.containerImage" .Values.gateway.image | nindent 10 }}
           ports:
             - name: http
               containerPort: 80

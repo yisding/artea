@@ -42,14 +42,9 @@ spec:
         fsGroup: 1000
       containers:
         - name: devpi
-          image: {{ include "artea.image" .Values.devpi.image | quote }}
-          imagePullPolicy: {{ .Values.devpi.image.pullPolicy }}
+          {{- include "artea.containerImage" .Values.devpi.image | nindent 10 }}
           env:
-            - name: DEVPI_ROOT_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "artea.fullname" "secrets" }}
-                  key: DEVPI_ROOT_PASSWORD
+            {{- include "artea.secretEnv" (dict "name" "DEVPI_ROOT_PASSWORD" "secret" "secrets" "key" "DEVPI_ROOT_PASSWORD") | nindent 12 }}
             # simple-page file links must be absolute URLs under the public
             # gateway origin (entrypoint passes --outside-url --absolute-urls)
             - name: DEVPI_OUTSIDE_URL

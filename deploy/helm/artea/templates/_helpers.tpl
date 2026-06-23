@@ -60,6 +60,23 @@ templates/validations.yaml (which pre-validates every owned image). */}}
 {{- end -}}
 {{- end -}}
 
+{{/* The container `image:` (quoted, digest-pinned via artea.image) + `imagePullPolicy:`
+pair shared by every own-template workload; pass the image map (.Values.<c>.image). */}}
+{{- define "artea.containerImage" -}}
+image: {{ include "artea.image" . | quote }}
+imagePullPolicy: {{ .pullPolicy }}
+{{- end -}}
+
+{{/* A single `valueFrom.secretKeyRef` env entry; pass
+(dict "name" "<ENV>" "secret" "<fullname-component>" "key" "<secret-key>"). */}}
+{{- define "artea.secretEnv" -}}
+- name: {{ .name }}
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "artea.fullname" .secret }}
+      key: {{ .key }}
+{{- end -}}
+
 {{/* ClusterIP Service exposing the named "http" port; pass
 (dict "ctx" $ "component" "<c>" "port" <p> "type" "<optional, default ClusterIP>") */}}
 {{- define "artea.service" -}}
@@ -92,6 +109,17 @@ readinessProbe:
     path: {{ .path }}
     port: http
   periodSeconds: 10
+{{- end -}}
+
+{{/* filter-artea plugin config, shared verbatim by the verdaccio config.yaml
+filters and middlewares roles (one package, two plugin instances that must stay
+in sync). Rendered in the umbrella context (config.yaml is tpl'd there). */}}
+{{- define "artea.filterArteaConfig" -}}
+policy_url: {{ printf "%s/policy/npm-rules.yaml" (include "artea.policySyncUrl" .) }}
+upstream_policy_url: {{ printf "%s/policy/upstream-policy.yaml" (include "artea.policySyncUrl" .) }}
+osv_url: {{ printf "%s/osv/querybatch" (include "artea.policySyncUrl" .) }}
+poll_interval_ms: {{ .Values.verdaccio.arteaPolicy.pollIntervalMs }}
+fail_grace_ms: {{ .Values.verdaccio.arteaPolicy.failGraceMs }}
 {{- end -}}
 
 {{/* Cluster-internal URLs of the fixed Services (the cross-component contract) */}}

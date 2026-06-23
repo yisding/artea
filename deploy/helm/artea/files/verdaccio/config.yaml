@@ -25,17 +25,13 @@ auth:
   # replaces htpasswd entirely: validates user:PAT against Gitea and maps
   # configured namespace org/team membership to groups
   auth-gitea:
-    gitea_url: http://artea-gitea-http:3000
+    gitea_url: {{ include "artea.giteaUrl" . }}
     private_namespace: '{{ include "artea.privateNamespace" . }}'
 
 filters:
   # missing/unparsable policy FAILS CLOSED (public packages rejected)
   filter-artea:
-    policy_url: http://artea-policy-sync:8920/policy/npm-rules.yaml
-    upstream_policy_url: http://artea-policy-sync:8920/policy/upstream-policy.yaml
-    osv_url: http://artea-policy-sync:8920/osv/querybatch
-    poll_interval_ms: {{ .Values.verdaccio.arteaPolicy.pollIntervalMs }}
-    fail_grace_ms: {{ .Values.verdaccio.arteaPolicy.failGraceMs }}
+    {{- include "artea.filterArteaConfig" . | nindent 4 }}
 
 uplinks:
   npmjs:
@@ -71,11 +67,7 @@ middlewares:
   # middleware 403s direct tarball downloads of blocked versions (S13) and
   # 503s them while the policy is unavailable (fail-closed, S15)
   filter-artea:
-    policy_url: http://artea-policy-sync:8920/policy/npm-rules.yaml
-    upstream_policy_url: http://artea-policy-sync:8920/policy/upstream-policy.yaml
-    osv_url: http://artea-policy-sync:8920/osv/querybatch
-    poll_interval_ms: {{ .Values.verdaccio.arteaPolicy.pollIntervalMs }}
-    fail_grace_ms: {{ .Values.verdaccio.arteaPolicy.failGraceMs }}
+    {{- include "artea.filterArteaConfig" . | nindent 4 }}
 
 server:
   keepAliveTimeout: 60

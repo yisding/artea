@@ -39,8 +39,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: bootstrap
-          image: {{ include "artea.image" .Values.bootstrap.image | quote }}
-          imagePullPolicy: {{ .Values.bootstrap.image.pullPolicy }}
+          {{- include "artea.containerImage" .Values.bootstrap.image | nindent 10 }}
           env:
             - name: SECRET_NAME
               value: {{ include "artea.fullname" "policy-sync" | quote }}
@@ -62,26 +61,10 @@ spec:
               value: {{ ternary "true" "false" .Values.secrets.allowDevPlaceholders | quote }}
             - name: ARTEA_NAMESPACE
               value: {{ include "artea.privateNamespace" . | quote }}
-            - name: ARTEA_ADMIN_USER
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "artea.fullname" "admin" }}
-                  key: username
-            - name: ARTEA_ADMIN_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "artea.fullname" "admin" }}
-                  key: password
-            - name: DEV1_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "artea.fullname" "secrets" }}
-                  key: DEV1_PASSWORD
-            - name: POLICY_WEBHOOK_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "artea.fullname" "secrets" }}
-                  key: POLICY_WEBHOOK_SECRET
+            {{- include "artea.secretEnv" (dict "name" "ARTEA_ADMIN_USER" "secret" "admin" "key" "username") | nindent 12 }}
+            {{- include "artea.secretEnv" (dict "name" "ARTEA_ADMIN_PASSWORD" "secret" "admin" "key" "password") | nindent 12 }}
+            {{- include "artea.secretEnv" (dict "name" "DEV1_PASSWORD" "secret" "secrets" "key" "DEV1_PASSWORD") | nindent 12 }}
+            {{- include "artea.secretEnv" (dict "name" "POLICY_WEBHOOK_SECRET" "secret" "secrets" "key" "POLICY_WEBHOOK_SECRET") | nindent 12 }}
           {{- with .Values.bootstrap.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
