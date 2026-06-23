@@ -2,8 +2,9 @@
 
 Gitea is Artea's identity provider, PAT issuer, private package store, and UI
 (`docs/ARCHITECTURE.md`). It runs the **unmodified upstream Docker image**
-(pin: `UPSTREAM`, mirrored as `GITEA_VERSION` in `.env`); everything in this
-directory is runtime overlay — no source patches (R7).
+(pin: `UPSTREAM`, mirrored as `gitea.image.tag` in
+`deploy/helm/artea/values.yaml`); everything in this directory is runtime
+overlay — no source patches (R7).
 
 ```
 gitea/

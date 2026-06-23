@@ -19,7 +19,7 @@ dependencies:
   # own version (4.x) is decoupled from the Verdaccio app version: chart 4.31.0
   # ships appVersion 6.2.3, i.e. it IS a Verdaccio 6 chart, and 4.31.0 is the
   # latest release. The app version we actually run is pinned by
-  # verdaccio.image.tag in values.yaml (6.7.2, kept in sync with .env) — not by
+  # verdaccio.image.tag in values.yaml (6.7.2, the source) — not by
   # this chart version.
   - name: verdaccio
     version: 4.31.0

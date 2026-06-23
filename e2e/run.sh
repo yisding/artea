@@ -24,8 +24,6 @@ cd "$(dirname "$0")/.." || exit 1
 # shellcheck disable=SC1091
 source e2e/lib.sh
 
-RUNTIME=k8s # the only runtime; kept as a constant for the helpers below
-
 for tool in curl jq npm python3 git kubectl; do
   command -v "$tool" >/dev/null || die "required tool '${tool}' not found"
 done

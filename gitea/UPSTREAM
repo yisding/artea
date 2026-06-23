@@ -1,5 +1,6 @@
-# Upstream pin for the `gitea` service. THE pin consumed by compose lives in .env
-# (GITEA_VERSION in .env.example) — keep it in sync with this file. Never "latest".
+# Upstream pin for the `gitea` service. This file is the binding pin doc + bump
+# procedure; keep it in sync with `gitea.image.tag` in
+# deploy/helm/artea/values.yaml (the runtime source). Never "latest".
 #
 # IMAGE/VERSION/DIGEST below pin the stock upstream gitea/gitea SOURCE. Artea no
 # longer runs that image unmodified: it builds a PATCHED image
@@ -21,7 +22,7 @@ SOURCE_TAG=v1.26.2
 # Bump procedure (also re-run after any overlay change):
 # 1. Pick the new stable tag from https://github.com/go-gitea/gitea/releases
 #    (and its digest from Docker Hub). Update VERSION/DIGEST/SOURCE_TAG here and
-#    GITEA_VERSION in .env / .env.example.
+#    gitea.image.tag in deploy/helm/artea/values.yaml.
 # 2. Re-verify the template overlay against upstream template changes — every file
 #    under gitea/custom/templates/ shadows an upstream file wholesale, so upstream
 #    fixes there do NOT take effect until re-merged:
@@ -38,5 +39,5 @@ SOURCE_TAG=v1.26.2
 #    checkout of the new tag, re-verify the queue applies AND the package
 #    compiles, rebase any failing patch (patches/README.md), then rebuild the
 #    patched image with gitea/build-image.sh.
-# 5. `make up` — watch the gitea container log for config deprecation warnings.
-# 6. `make e2e` — the S1-S12 scenarios are the acceptance gate.
+# 5. `make dev` — watch the gitea pod log for config deprecation warnings.
+# 6. `make e2e` — the S1-S20 scenarios are the acceptance gate.

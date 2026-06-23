@@ -31,7 +31,7 @@ colima start --kubernetes
 # our images, tagged :local for local-only values-local.yaml (pullPolicy: Never)
 docker build -t ghcr.io/yisding/artea-devpi:local devpi/
 docker build -t ghcr.io/yisding/artea-policy-sync:local policy-sync/
-# bootstrap image (scripts/bootstrap.sh in k8s-secret mode) builds from the
+# bootstrap image (scripts/bootstrap.sh, runs in-cluster) builds from the
 # repo root: it needs scripts/ AND the policy/ seed files
 docker build -t ghcr.io/yisding/artea-bootstrap:local -f scripts/Dockerfile.bootstrap .
 pnpm -C verdaccio/plugins install && pnpm -C verdaccio/plugins build

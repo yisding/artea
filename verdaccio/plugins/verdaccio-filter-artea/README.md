@@ -34,7 +34,7 @@ request, re-parse only on mtime change.
 ```yaml
 filters:
   filter-artea:
-    policy_file: /policy/npm-rules.yaml   # default; the shared policy-data volume
+    policy_file: /policy/npm-rules.yaml   # file mode (test/debug); K8s uses policy_url
     upstream_policy_file: /policy/upstream-policy.yaml
     osv_url: http://policy-sync:8920/osv/querybatch
     osv_timeout_ms: 5000
@@ -55,8 +55,8 @@ always points at policy-sync's internal `POST /osv/querybatch` endpoint.
 ## Policy file schema
 
 The file lives in the configured Gitea policy repo
-`${ARTEA_NAMESPACE}/registry-policy` (or explicit `POLICY_REPO`) and is written
-into the `/policy` volume by policy-sync.
+`${ARTEA_NAMESPACE}/registry-policy` (or explicit `POLICY_REPO`) and is served
+over HTTP by policy-sync (or written to `/policy` in file mode).
 
 `npm-rules.yaml` owns npm-specific blocks:
 

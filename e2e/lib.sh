@@ -4,7 +4,7 @@
 log() { echo "[e2e] $*"; }
 die() { echo "[e2e] ERROR: $*" >&2; exit 1; }
 
-kc() { # kubectl, namespaced when K8S_NAMESPACE is set (RUNTIME=k8s helpers)
+kc() { # kubectl, namespaced when K8S_NAMESPACE is set
   if [ -n "${K8S_NAMESPACE:-}" ]; then
     kubectl -n "${K8S_NAMESPACE}" "$@"
   else

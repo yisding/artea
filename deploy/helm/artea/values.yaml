@@ -23,7 +23,7 @@ global:
   privateNamespace: artea
 
 # ---- secrets -----------------------------------------------------------------
-# Dev placeholders, mirroring .env.example — CHANGE EVERY VALUE for any
+# Dev placeholders — CHANGE EVERY VALUE for any
 # non-throwaway install (e.g. helm install -f my-secrets.yaml). Rendered into
 # Secrets artea-admin / artea-secrets / artea-policy-sync (templates/secrets.yaml).
 # POLICY_SYNC_TOKEN is NOT set here: the bootstrap Job mints it and patches the
@@ -51,6 +51,7 @@ gateway:
   replicas: 2
   image:
     repository: nginx
+    # nginx pin (this file is the source). Never "latest".
     tag: "1.30.2"
     pullPolicy: IfNotPresent
   service:
@@ -147,7 +148,7 @@ bootstrap:
 gitea:
   fullnameOverride: artea-gitea
   image:
-    # Keep in sync with GITEA_VERSION in .env / gitea/UPSTREAM.
+    # Keep in sync with gitea/UPSTREAM (the binding pin doc + bump procedure).
     tag: "1.26.2"
   service:
     http:
@@ -291,7 +292,7 @@ verdaccio:
   fullnameOverride: artea-verdaccio
   image:
     repository: verdaccio/verdaccio
-    # Keep in sync with VERDACCIO_VERSION in .env.
+    # Verdaccio app version pin (this file is the source). Never "latest".
     tag: "6.7.2"
   replicaCount: 1
   service:

@@ -44,8 +44,8 @@ through supported extension surfaces:
    carries one patch (PKCE on OIDC login sources, ADR-0009); the deployed Gitea
    image is built from the patched tree (`gitea/build-image.sh`), opt-in over the
    stock default. PAT expiry dates remain a deferred candidate.
-4. All version pins live in `.env` / `gitea/UPSTREAM`; floating `latest` is
-   forbidden in committed files. The Dockerfiles we own (`devpi/`,
+4. All version pins live in `deploy/helm/artea/values.yaml` / `gitea/UPSTREAM`;
+   floating `latest` is forbidden in committed files. The Dockerfiles we own (`devpi/`,
    `policy-sync/`, `scripts/Dockerfile.bootstrap`, and
    `deploy/docker/verdaccio-assets/Dockerfile`) digest-pin their base image
    (`FROM name:tag@sha256:...` — the tag alone is floating; the digest is not).

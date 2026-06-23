@@ -2,7 +2,7 @@
 # (docs/ARCHITECTURE.md "Kubernetes deployment"): build the service images
 # locally, kind-load them, helm-install deploy/helm/artea, wait for the
 # bootstrap hook Job, then run e2e/run.sh through a gateway port-forward with
-# BASE_URL + RUNTIME=k8s. The slow fail-closed recovery scenario runs as a
+# BASE_URL. The slow fail-closed recovery scenario runs as a
 # parallel shard with CI-only policy timing overrides.
 name: kind-e2e
 
@@ -296,7 +296,6 @@ jobs:
         timeout-minutes: 12
         env:
           BASE_URL: http://localhost:8080
-          RUNTIME: k8s
           # contract for the suite's kubectl-based steps (S1 health, S15 wipe);
           # K8S_NAMESPACE is the variable e2e/run.sh + scripts own
           K8S_NAMESPACE: artea

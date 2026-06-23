@@ -33,9 +33,9 @@ three files:
 
 The `policy-sync` service turns repo state into enforcement: it receives the
 repo's push webhook (plus a startup sync and a slow poll as fallback), fetches
-all three files via Gitea's raw-content API, writes them to the shared
-`policy-data` volume in compose, serves npm and upstream policy over HTTP to
-Verdaccio in Kubernetes, and pushes the PyPI constraints plus
+all three files via Gitea's raw-content API, serves npm and upstream policy
+over HTTP to Verdaccio in Kubernetes (the file-write path survives for
+tests/local inspection), and pushes the PyPI constraints plus
 `min_upstream_age` into devpi. It authenticates as `svc-policy`, a
 dedicated non-admin service account whose only access is read-only on the
 policy repo (via the `policy-readers` team) with a PAT scoped to
