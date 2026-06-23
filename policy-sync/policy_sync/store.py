@@ -5,9 +5,9 @@ this instead of reading the shared volume). The ETag is a strong content hash,
 so it is stable across restarts and identical for byte-identical policies.
 set() swaps content and ETag under one lock, so readers never see a mismatch.
 
-An optional fallback file path (the compose-mode /policy file) covers restarts:
-the volume still holds the last synced policy even before the first sync of the
-new process succeeds.
+An optional fallback file path (the file-mode /policy file, used for test/local
+inspection) covers restarts: the volume still holds the last synced policy even
+before the first sync of the new process succeeds.
 """
 
 import hashlib
