@@ -1,23 +1,26 @@
 # gitea/ — runtime overlay for the stock `gitea/gitea` image
 
 Gitea is Artea's identity provider, PAT issuer, private package store, and UI
-(`docs/ARCHITECTURE.md`). It runs the **unmodified upstream Docker image**
+(`docs/ARCHITECTURE.md`). By default it runs the **stock upstream Docker image**
 (pin: `UPSTREAM`, mirrored as `gitea.image.tag` in
-`deploy/helm/artea/values.yaml`); everything in this directory is runtime
-overlay — no source patches (R7).
+`deploy/helm/artea/values.yaml`), with an **opt-in patched image** available for
+IdPs that require PKCE (PKCE on OIDC login sources, ADR-0009). Everything in this
+directory is primarily runtime overlay, plus that one opt-in source patch; stock
+remains the chart default (R7 still holds in spirit — the patch is a minimal,
+upstreamed-PR-tracked change, not a fork).
 
 ```
 gitea/
 ├── custom/templates/        # template overrides, delivered via ConfigMap
-├── patches/                 # quilt-style source-patch escape hatch (EMPTY in v1)
+├── patches/                 # quilt-style source-patch queue (carries the PKCE patch, ADR-0009)
 └── UPSTREAM                 # image pin + bump procedure
 ```
 
 The effective Gitea config now lives in the Helm chart values
 (`deploy/helm/artea/values.yaml`, key `gitea.gitea.config`) — a full semantic
 translation of the old `app.ini`. The official Gitea subchart owns secrets and
-filesystem paths; this directory only carries the template overlay and the
-(empty) patch queue.
+filesystem paths; this directory carries the template overlay and the patch
+queue (the PKCE patch, ADR-0009).
 
 ## How Kubernetes consumes this overlay
 
@@ -99,8 +102,9 @@ to a shadowed file are masked until re-merged. Re-verify on every bump
   residual surface — a stray repo is harmless and auditable.
 - **Git-specific user settings** (SSH/GPG keys page remnants, repo language
   stats, etc.): cosmetic; deferred.
-- **PAT expiry dates**: not available upstream; the first planned source patch
-  (`patches/README.md`).
+- **PAT expiry dates**: not available upstream; a potential future source-patch
+  candidate (the first patch actually realized is PKCE, ADR-0009 — see
+  `patches/README.md`).
 - Repos stay functional on purpose — `${ARTEA_NAMESPACE}/registry-policy` needs code + PRs.
 
 ## SSO (Okta/OIDC) caveat — read before wiring auth
@@ -127,4 +131,6 @@ or the admin UI.
 
 See `UPSTREAM` for the pinned tag and the full bump procedure (bump pin →
 re-verify template overlay → re-verify config keys → `make dev` → `make e2e`).
-`patches/` stays empty in v1; its README defines the rules for the day it is not.
+`patches/` carries the PKCE patch (ADR-0009); on a bump, re-verify it applies
+(`gitea/patches/apply-patches.sh --check`) and rebuild the opt-in image
+(`gitea/build-image.sh`). See `patches/README.md`.

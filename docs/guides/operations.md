@@ -2,9 +2,11 @@
 
 ## Upgrades — the no-fork rule
 
-Artea never vendors or patches upstream source (architecture requirement R7,
-[ADR-0004](../adr/0004-upstream-isolation-no-fork.md)). Every component is
-either a stock upstream image plus runtime configuration, or our own code.
+Artea avoids vendoring or patching upstream source (architecture requirement R7,
+[ADR-0004](../adr/0004-upstream-isolation-no-fork.md)), with a single opt-in
+exception — the PKCE patch ([ADR-0009](../adr/0009-gitea-pkce-patch.md)). Every
+component in the default install is either a stock upstream image plus runtime
+configuration, or our own code.
 All version pins live in `deploy/helm/artea/values.yaml` (plus `gitea/UPSTREAM`
 as the binding pin doc for the Gitea image); never use floating `latest`.
 
@@ -22,7 +24,7 @@ Per-component notes:
 
 | Component | What it is | Bump notes |
 |-----------|------------|------------|
-| `gitea` | stock `gitea/gitea` image + chart-managed `gitea.gitea.config` + `gitea/custom/` template overlay (delivered via ConfigMap) | Read upstream release notes for breaking config changes; check that template overrides in `gitea/custom/templates/*.template` still match the upstream templates of the new version (they are version-coupled). `gitea/patches/` is an empty patch queue — if it ever gains patches, follow the apply/bump procedure documented there instead of using the stock image directly. |
+| `gitea` | stock `gitea/gitea` image + chart-managed `gitea.gitea.config` + `gitea/custom/` template overlay (delivered via ConfigMap) | Read upstream release notes for breaking config changes; check that template overrides in `gitea/custom/templates/*.template` still match the upstream templates of the new version (they are version-coupled). `gitea/patches/` carries the PKCE patch (ADR-0009); on a `SOURCE_TAG` bump, run `gitea/patches/apply-patches.sh --check` and rebuild the opt-in image via `gitea/build-image.sh` (procedure documented there). The chart default is still the stock image. |
 | `verdaccio` | stock `verdaccio/verdaccio:6` image + generated config + our plugins | Our auth and filter plugins target the stable Verdaccio plugin API; on a major bump, re-run e2e scenarios S4/S5 (pull-through + policy filter) before rollout. |
 | `devpi` | our image (`devpi/Dockerfile`: python-slim + `devpi-server` + Artea devpi policy plugin) | Bump the base image and the `devpi-server` pin in the Dockerfile, rebuild. The server data is a disposable cache (see below) — wiping it on upgrade is safe. |
 | `gateway` | stock nginx + our config | Bump the nginx pin; config is plain nginx conf, rarely affected. |
@@ -30,7 +32,8 @@ Per-component notes:
 
 If an upgrade truly requires changing upstream behavior that config/overlay/
 plugins cannot reach, that is an ADR + `gitea/patches/` decision — not an ad-hoc
-fork (first expected candidate: PAT expiry dates).
+fork. This path has already been used once (PKCE, ADR-0009); PAT expiry dates
+remain a future candidate.
 
 ### Client PAT migration
 
