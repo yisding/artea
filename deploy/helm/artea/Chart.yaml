@@ -10,6 +10,21 @@ type: application
 version: 0.1.0
 # Tracks the Artea repo, not any single upstream component.
 appVersion: "0.1.0"
+home: https://github.com/yisding/artea
+sources:
+  - https://github.com/yisding/artea
+keywords:
+  - npm
+  - pypi
+  - registry
+  - gitea
+  - verdaccio
+  - devpi
+  - pull-through
+  - private-registry
+maintainers:
+  - name: Artea maintainers
+    url: https://github.com/yisding/artea
 dependencies:
   # Official Gitea chart (https://gitea.com/gitea/helm-gitea), published as OCI.
   - name: gitea

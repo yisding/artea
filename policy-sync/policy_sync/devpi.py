@@ -2,7 +2,7 @@
 
 devpi-client cannot be used here: the server runs with --outside-url, so the
 client's /+api discovery rewrites its target URL to the gateway origin, which
-is not devpi (and not reachable) from inside the compose network — see
+is not devpi (and not reachable) from inside the cluster network — see
 devpi/README.md. Raw HTTP against http://devpi:3141 is unaffected.
 
 The Artea devpi policy plugin stores constraints and minimum upstream age as

@@ -57,8 +57,8 @@ class Config:
         if osv_timeout <= 0 or osv_positive_ttl <= 0 or osv_negative_ttl <= 0 or osv_batch_size <= 0:
             raise ConfigError("OSV timeout, TTLs, and batch size must be positive")
 
-        # POLICY_FILE_PATH unset -> compose default under POLICY_DIR;
-        # set to "" -> HTTP-only mode (the /policy endpoint is the only output)
+        # POLICY_FILE_PATH unset -> file-mode default under POLICY_DIR (test/local
+        # inspection); set to "" -> HTTP-only mode (the /policy endpoint is the only output)
         policy_file_path = env.get("POLICY_FILE_PATH")
         if policy_file_path is None:
             policy_dir = env.get("POLICY_DIR", "/policy").rstrip("/")

@@ -337,8 +337,8 @@ def main() -> None:
     state = SyncState()
     wake = threading.Event()
     stop = threading.Event()
-    # the file fallback keeps the endpoint serving across restarts in compose,
-    # where the volume still holds the last synced policy
+    # the file fallback keeps the endpoint serving across restarts in file mode
+    # (test/local inspection), where the volume still holds the last synced policy
     store = PolicyStore(fallback_path=cfg.policy_file_path)
     upstream_store = PolicyStore(fallback_path=cfg.upstream_policy_file_path)
     parsed_policy_store = ParsedPolicyStore()

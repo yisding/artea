@@ -29,12 +29,13 @@ The container does not build anything; plugins are compiled on the host and moun
 
 ```sh
 cd verdaccio/plugins
-pnpm install
+pnpm install --frozen-lockfile
 pnpm build          # tsc -> dist/ in each plugin (CommonJS for verdaccio 6)
 pnpm test           # vitest unit tests
 ```
 
-`make plugins` runs this for the verdaccio component (note: `dist/` is gitignored,
+`make plugins` runs `pnpm install --frozen-lockfile && pnpm build` for the
+verdaccio component (it does **not** run `pnpm test`) (note: `dist/` is gitignored,
 so plugins must be built before the verdaccio-assets image (`make images`) or
 `make dev`). Both
 plugins' runtime dependencies (`semver`, `js-yaml`) are pure JS — no native modules —

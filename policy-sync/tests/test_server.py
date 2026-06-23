@@ -192,7 +192,7 @@ def test_policy_etag_changes_with_content(service):
 
 
 def test_policy_falls_back_to_file_when_memory_empty(service, tmp_path):
-    # compose restart: the volume still holds the last synced file
+    # file mode (test/local inspection) restart: the volume still holds the last synced file
     url, _, _, store, _ = service
     (tmp_path / "npm-rules.yaml").write_bytes(POLICY)
     status, headers, body = get_policy(url)

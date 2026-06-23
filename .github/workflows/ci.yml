@@ -64,6 +64,23 @@ jobs:
       - name: devpi entrypoint tests
         run: python -m pytest devpi/tests/ -q
 
+  gitea-patch:
+    name: gitea PKCE patch applies (dry-run)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: dry-run the patch queue against upstream Gitea at the pinned SOURCE_TAG
+        # gitea/patches/ is the repo's only source modification (ADR-0009); validate
+        # it still applies on every PR so a broken patch never merges green.
+        run: |
+          SOURCE_TAG="$(sed -n 's/^SOURCE_TAG=//p' gitea/UPSTREAM | head -n1)"
+          [ -n "$SOURCE_TAG" ] || { echo "SOURCE_TAG not found in gitea/UPSTREAM" >&2; exit 1; }
+          echo "==> upstream go-gitea/gitea $SOURCE_TAG"
+          git clone --quiet --depth 1 --branch "$SOURCE_TAG" \
+            https://github.com/go-gitea/gitea.git /tmp/gitea-src
+          ./gitea/patches/apply-patches.sh --check /tmp/gitea-src
+
   lint:
     name: shell syntax + helm chart
     runs-on: ubuntu-latest
@@ -72,6 +89,8 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - name: bash -n every tracked shell script
         run: git ls-files '*.sh' | xargs -t -n1 bash -n
+      - name: shellcheck tracked shell scripts
+        run: git ls-files '*.sh' | xargs shellcheck -x --severity=warning
       - name: helm lint + template
         # uses the runner-provided helm
         run: |

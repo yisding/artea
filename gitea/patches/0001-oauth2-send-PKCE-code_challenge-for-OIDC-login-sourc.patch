@@ -1,5 +1,5 @@
 From 39325f2f564b82706fb18c78860b70a23f4e2937 Mon Sep 17 00:00:00 2001
-From: Yi Ding <yding@qventus.com>
+From: Yi Ding <yi.s.ding@gmail.com>
 Date: Mon, 22 Jun 2026 17:45:35 -0700
 Subject: [PATCH] oauth2: send PKCE code_challenge for OIDC login sources
 
