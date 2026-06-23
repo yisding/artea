@@ -154,8 +154,9 @@ jobs:
           ./gitea/build-image.sh "sha-${{ github.sha }}-${{ matrix.arch }}" --push
 
   # Merge the per-arch images into one multi-arch manifest under the real tags
-  # (sha-<full sha> always, latest on the default branch — matching the matrix
-  # tags). imagetools assembles from the pushed per-arch manifests, no rebuild.
+  # (sha-<full sha> always, latest on the default branch, and semver X.Y.Z + X.Y
+  # on v* tags — matching the matrix tags). imagetools assembles from the pushed
+  # per-arch manifests, no rebuild.
   gitea-manifest:
     name: artea-gitea (patched) manifest
     runs-on: ubuntu-latest
@@ -176,6 +177,45 @@ jobs:
           if [ "${{ github.ref }}" = "refs/heads/${{ github.event.repository.default_branch }}" ]; then
             tags="$tags -t $ARTEA_GITEA_IMAGE:latest"
           fi
+          case "${{ github.ref }}" in
+            refs/tags/v*)
+              ver="${{ github.ref_name }}"; ver="${ver#v}"
+              if printf '%s' "$ver" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+                # X.Y.Z plus X.Y, matching docker/metadata-action's semver patterns
+                tags="$tags -t $ARTEA_GITEA_IMAGE:$ver -t $ARTEA_GITEA_IMAGE:${ver%.*}"
+              else
+                tags="$tags -t $ARTEA_GITEA_IMAGE:$ver"
+              fi
+              ;;
+          esac
           docker buildx imagetools create $tags \
             "$ARTEA_GITEA_IMAGE:$SHA-amd64" \
             "$ARTEA_GITEA_IMAGE:$SHA-arm64"
+
+  verify-public:
+    name: verify GHCR images are publicly pullable
+    runs-on: ubuntu-latest
+    needs: [build, gitea-manifest]
+    timeout-minutes: 5
+    steps:
+      - name: anonymous pull check (docs advertise direct pulls; fail if any package is private)
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          owner="$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')"
+          fail=0
+          for pkg in artea-devpi artea-policy-sync artea-bootstrap artea-verdaccio-assets artea-gitea; do
+            repo="${owner}/${pkg}"
+            token="$(curl -fsS "https://ghcr.io/token?service=ghcr.io&scope=repository:${repo}:pull" 2>/dev/null | jq -r '.token // empty')"
+            code="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${token}" "https://ghcr.io/v2/${repo}/tags/list")"
+            if [ "$code" = "200" ]; then
+              echo "ok: ${repo} is publicly pullable"
+            else
+              echo "NOT PUBLIC: ${repo} (anonymous tags/list -> HTTP ${code})" >&2
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::One or more GHCR packages are private, but docs/guides/aws-eks.md advertises direct anonymous pulls. Set each package's visibility to Public (GHCR Package settings -> Change visibility). Fresh GHCR packages default to private." >&2
+            exit 1
+          fi

@@ -130,7 +130,8 @@ json_get() { # <field>
 # sleeping <interval>s between them. Callers `die` on the non-zero return so the
 # die-on-timeout semantics stay at the call site.
 retry_until() { # <timeout s> <interval s> <desc> <cmd...>
-  local timeout=$1 interval=$2 desc=$3 tries i
+  # <desc> ($3) is documentation for the call site; consumed by `shift 3` below.
+  local timeout=$1 interval=$2 tries i
   shift 3
   tries=$(( timeout / interval ))
   [ "$tries" -lt 1 ] && tries=1

@@ -1,4 +1,5 @@
 # Shared helpers for the Artea e2e suite (sourced by e2e/run.sh).
+# shellcheck shell=bash
 # Everything here assumes: cwd = repo root, credentials.env already sourced.
 
 log() { echo "[e2e] $*"; }
