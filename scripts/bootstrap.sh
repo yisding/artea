@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Artea bootstrap (e2e scenario S1). Idempotent: safe to re-run at any time.
 #
-# Creates/ensures, in order: gitea secret files, admin + PAT, configured private
+# Creates/ensures, in order: admin + PAT, configured private
 # namespace org, `${ARTEA_NAMESPACE}/registry-policy` seeded from policy/,
 # push webhook -> policy-sync, the `developers` team (code/pulls/packages
 # write, no admin), demo user `dev1` (developers member, never Owners) + PAT,
@@ -64,7 +64,7 @@ ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-120}" # seconds
 KC=(kubectl)
 [ -n "${NAMESPACE:-}" ] && KC=(kubectl -n "${NAMESPACE}")
 
-wait_deployment_rollout() { # <deployment-name>; k8s mode only
+wait_deployment_rollout() { # <deployment-name>
   local name="$1" deadline json
   deadline=$((SECONDS + ROLLOUT_TIMEOUT))
   while :; do
@@ -108,9 +108,9 @@ POLICY_REPO="${ORG}/${REPO}"
 [ -n "${DEV1_PASSWORD:-}" ] || die "DEV1_PASSWORD must be set in the environment"
 [ -n "${POLICY_WEBHOOK_SECRET:-}" ] || die "POLICY_WEBHOOK_SECRET must be set in the environment"
 if ! truthy "${ARTEA_ALLOW_DEV_SECRETS:-false}"; then
-  # match the .env.example placeholders by PREFIX (mirroring the Helm validator's
+  # match the change-me-* placeholder convention (mirroring the Helm validator's
   # hasPrefix check) so a real secret that merely contains "change-me-" is allowed
-  for _secret in "${ARTEA_ADMIN_PASSWORD}" "${DEV1_PASSWORD}" "${POLICY_WEBHOOK_SECRET}" "${DEVPI_ROOT_PASSWORD:-}"; do
+  for _secret in "${ARTEA_ADMIN_PASSWORD}" "${DEV1_PASSWORD}" "${POLICY_WEBHOOK_SECRET}"; do
     case "${_secret}" in
       change-me-*) die "change-me placeholder secrets are not allowed; set real secrets or ARTEA_ALLOW_DEV_SECRETS=true for a throwaway dev stack" ;;
     esac
@@ -172,11 +172,6 @@ admin_send() { # <method> <api path> <json body or ''> ; dies on non-2xx
   case "$code" in 2*) ;; *) die "$1 $2 -> HTTP $code: $(cat "$RESP")";; esac
 }
 
-token_login() { # <token> -> login name of the token's user, '' if invalid
-  curl -sf -H "Authorization: token $1" "${GITEA_URL}/api/v1/user" 2>/dev/null \
-    | json_get login 2>/dev/null || true
-}
-
 team_id() { # <team name> -> id on stdout, '' if absent
   admin_send GET "/orgs/${ORG}/teams" ''
   python3 -c 'import json,sys; ids=[t["id"] for t in json.load(open(sys.argv[1])) if t["name"]==sys.argv[2]]; print(ids[0] if ids else "")' \
@@ -202,16 +197,9 @@ ADMIN_LOGIN=$(curl -sf -u "${ADMIN_USER}:${ARTEA_ADMIN_PASSWORD}" "${GITEA_URL}/
   || die "cannot authenticate as ${ADMIN_USER} — the chart must provision the admin user"
 log "admin ${ADMIN_USER} present (chart-provisioned)"
 
-# ---- admin PAT (reused from a previous run when still valid) -------------------
-ADMIN_TOKEN=""
-# shellcheck disable=SC1090
-[ -f "${CRED_FILE}" ] && ADMIN_TOKEN="$(. "${CRED_FILE}"; echo "${ARTEA_ADMIN_TOKEN:-}")"
-if [ "$(token_login "${ADMIN_TOKEN:-invalid}")" = "${ADMIN_USER}" ]; then
-  log "reusing admin token from ${CRED_FILE}"
-else
-  log "minting admin token (scopes: all)"
-  ADMIN_TOKEN=$(mint_token "${ADMIN_USER}" all)
-fi
+# ---- admin PAT -----------------------------------------------------------------
+log "minting admin token (scopes: all)"
+ADMIN_TOKEN=$(mint_token "${ADMIN_USER}" all)
 
 # ---- org (private: packages must not be world-readable) ------------------------
 if [ "$(admin_code "/orgs/${ORG}")" = 200 ]; then
@@ -353,6 +341,7 @@ log "dev1 is a member of ${ORG} (developers team)"
 # when dev1 is not a member. Membership in developers must be ensured first so
 # dev1 never drops out of the org entirely.
 OWNERS_ID=$(team_id Owners)
+[ -n "${OWNERS_ID}" ] || die "could not resolve the Owners team id"
 admin_send DELETE "/teams/${OWNERS_ID}/members/dev1" ''
 log "dev1 is not in Owners"
 
@@ -380,15 +369,8 @@ fi
 # read:user: required by Verdaccio's user check.
 # read:organization: gateway org guard plus Verdaccio Artea team group mapping.
 DEV1_SCOPES="write:package,read:user,read:organization"
-DEV1_TOKEN=""
-# shellcheck disable=SC1090
-[ -f "${CRED_FILE}" ] && DEV1_TOKEN="$(. "${CRED_FILE}"; echo "${DEV1_TOKEN:-}")"
-if [ "$(token_login "${DEV1_TOKEN:-invalid}")" = "dev1" ]; then
-  log "reusing dev1 token from ${CRED_FILE}"
-else
-  log "minting dev1 token (scopes: ${DEV1_SCOPES})"
-  DEV1_TOKEN=$(mint_token dev1 "${DEV1_SCOPES}")
-fi
+log "minting dev1 token (scopes: ${DEV1_SCOPES})"
+DEV1_TOKEN=$(mint_token dev1 "${DEV1_SCOPES}")
 
 # ---- svc-policy service account (low-privilege reader of the policy repo) --------
 SVC_USER=svc-policy
@@ -503,7 +485,7 @@ if truthy "${EMIT_CREDENTIALS:-false}"; then
     if write_credentials "${CRED_FILE}" 2>/dev/null; then
       log "credentials also written to ${CRED_FILE}"
     else
-      log "WARN: WRITE_CREDENTIALS_PATH=${CRED_FILE} not writable; rely on the log block"
+      log "WARN: WRITE_CREDENTIALS_PATH=${WRITE_CREDENTIALS_PATH} not writable; rely on the log block"
     fi
   fi
 else
