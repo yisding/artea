@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 log() { echo "[devpi-entrypoint] $*" >&2; }
 
 if [ -z "${DEVPI_ROOT_PASSWORD:-}" ]; then
-  log "ERROR: DEVPI_ROOT_PASSWORD must be set (see .env)"
+  log "ERROR: DEVPI_ROOT_PASSWORD must be set (from the artea-secrets chart Secret)"
   exit 1
 fi
 

@@ -1,6 +1,6 @@
 {{- if .Values.bootstrap.enabled }}
-# Bootstrap as a Helm hook Job (e2e S1): runs scripts/bootstrap.sh in
-# k8s-secret mode — admin PAT, org artea, policy repo seeded, webhook wired,
+# Bootstrap as a Helm hook Job (e2e S1): runs scripts/bootstrap.sh
+# in-cluster — admin PAT, org artea, policy repo seeded, webhook wired,
 # teams/users, branch protection, svc-policy PAT. Idempotent: runs after every
 # install AND upgrade; safe to re-run at any time.
 #

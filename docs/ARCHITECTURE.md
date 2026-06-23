@@ -47,15 +47,15 @@ One public entrypoint (the gateway). Everything else is internal.
 |------|-------|
 | Public base URL (dev) | `http://localhost:8080` |
 | Gateway container/port | `gateway`, listens on 80, published as 8080 |
-| Gitea container/port | `gitea`, 3000 (stock `gitea/gitea` image, exact tag pinned in `.env`) |
+| Gitea container/port | `gitea`, 3000 (stock `gitea/gitea` image, exact tag pinned in `deploy/helm/artea/values.yaml`, kept in sync with `gitea/UPSTREAM`) |
 | Verdaccio container/port | `verdaccio`, 4873 (stock `verdaccio/verdaccio:6` image, exact tag pinned) |
 | devpi container/port | `devpi`, 3141 (our `devpi/Dockerfile`: python-slim + devpi-server + Artea devpi policy plugin) |
 | policy-sync container/port | `policy-sync`, 8920 (our `policy-sync/` Python service) |
 | Private namespace org | `ARTEA_NAMESPACE` (default `artea`; Gitea organization and npm scope `@${ARTEA_NAMESPACE}`) |
 | Policy repo | Gitea repo `${ARTEA_NAMESPACE}/registry-policy`; canonical authoring file `policy.toml` (ADR-0007), compiled by policy-sync into the per-engine artifacts `npm-rules.yaml`, `upstream-policy.yaml`, `pypi-constraints.txt` |
-| Shared policy volume | named volume `policy-data`, mounted at `/policy` in verdaccio and policy-sync |
-| Bootstrap admin | `ARTEA_ADMIN_USER` (default `${ARTEA_NAMESPACE}-admin` when unset), password from `.env` (`ARTEA_ADMIN_PASSWORD`) |
-| Env file | `.env` at repo root (`.env.example` committed); all version pins, secrets, and namespace settings live here |
+| Policy delivery | compiled policy is served over HTTP by policy-sync (`GET /policy/npm-rules.yaml`, `GET /policy/upstream-policy.yaml`); Verdaccio polls those URLs (no shared volume) |
+| Bootstrap admin | `ARTEA_ADMIN_USER` (default `${ARTEA_NAMESPACE}-admin` when unset), password from Helm `secrets.adminPassword` |
+| Config source | version pins, secrets, and namespace settings live in `deploy/helm/artea/values.yaml` (Gitea image pin kept in sync with `gitea/UPSTREAM`); secrets come from `secrets.*` values (dev placeholders in `values-local.yaml` gated by `allowDevPlaceholders`; real installs via `-f my-secrets.yaml`) |
 | Runtime configs | single-sourced as Helm templates in `deploy/helm/artea/`, rendered into ConfigMaps by Helm (gateway `nginx.conf`, verdaccio `config.yaml`; Gitea config via `gitea.gitea.config` in `values.yaml`) |
 | devpi indexes | `root/pypi` (mirror of pypi.org), `root/constrained` (type=constrained, bases=root/pypi) |
 
@@ -293,9 +293,10 @@ the admin allowlist, ≥1 required approval), and developers are members of a
    vendored or patched.
 3. **`gitea/patches/`** is an empty quilt-style patch queue with an apply script and a
    documented bump procedure — the escape hatch for the day we need a source patch
-   (first candidate: PAT expiry dates). Until then, upgrades = bump pin in `.env`,
-   `make up`, `make e2e`.
-4. All version pins live in `.env` / `gitea/UPSTREAM`. Never use floating `latest`
+   (first candidate: PAT expiry dates). Until then, upgrades = bump pin in
+   `deploy/helm/artea/values.yaml`, `make dev`, `make e2e`.
+4. All version pins live in `deploy/helm/artea/values.yaml` (the Gitea image pin
+   kept in sync with `gitea/UPSTREAM`). Never use floating `latest`
    in committed files; our own Dockerfiles digest-pin their base images.
 5. Prefer Gitea's injection extension points (`custom/templates/custom/header.tmpl`
    etc.) over full template copies — a copied core template must be re-verified on
@@ -303,7 +304,7 @@ the admin allowlist, ≥1 required approval), and developers are members of a
 
 ## Hiding git-hosting features
 
-Config-first, in rendered `gitea/app.ini`: disable registration, disable repo units
+Config-first, in the chart-managed `gitea.gitea.config`: disable registration, disable repo units
 (issues/PRs/wiki/projects/actions/releases) by default, landing page → packages
 UI, disable migrations/mirrors, disable RSS/federation surface. Template overlay in
 rendered `gitea/custom/templates/` de-gits the navbar and home page. What cannot be hidden
@@ -312,8 +313,9 @@ must remain functional anyway for `registry-policy`.
 
 ## Kubernetes deployment (`deploy/helm/artea`)
 
-The compose stack is the dev/reference deployment; Kubernetes is the production
-shape. R7 extends to deployment artifacts: **reuse official upstream charts**.
+Kubernetes/Helm is the only runtime — local dev is Colima k3s via `make dev`
+(see `docs/guides/local-dev.md`), production is any cluster. R7 extends to
+deployment artifacts: **reuse official upstream charts**.
 
 - **Umbrella Helm chart** at `deploy/helm/artea`: dependencies = the official Gitea
   chart and the official Verdaccio chart; our own templates exist ONLY for devpi,
@@ -331,15 +333,16 @@ shape. R7 extends to deployment artifacts: **reuse official upstream charts**.
   files — it polls policy-sync's `GET /policy/npm-rules.yaml` and
   `GET /policy/upstream-policy.yaml` every 10s with ETags, keeps last-known-good
   in memory, and fails closed after a grace window of persistent failure.
-  policy-sync serves those endpoints (cluster-internal). Compose keeps file mode
-  for npm/upstream policy and also writes `pypi-constraints.txt` for
-  debugging. PyPI enforcement state lives in devpi index config (`constraints`
+  policy-sync serves those endpoints (cluster-internal). The file-write path
+  survives for tests/local inspection only (it can also write
+  `pypi-constraints.txt` for debugging); HTTP delivery is the supported runtime.
+  PyPI enforcement state lives in devpi index config (`constraints`
   and `min_upstream_age`) after each successful sync.
 - **Bootstrap as a Helm hook Job**: `scripts/bootstrap.sh` runs in-cluster — it
   patches the minted `svc-policy` token into the policy-sync Secret via the API
   under a namespace-scoped Role and triggers a rollout. Idempotent; runs
   post-install and post-upgrade.
-- **State**: gitea-data PVC is the only store of record; devpi/verdaccio cache PVCs
+- **State**: the `artea-gitea-data` PVC is the only store of record; devpi/verdaccio cache PVCs
   are safe to delete (the fail-closed seed makes cache loss benign). Default
   `replicas: 1` everywhere except the stateless gateway.
 - **Images**: `ghcr.io/yisding/artea-{devpi,policy-sync,bootstrap,verdaccio-assets}`.
@@ -349,7 +352,7 @@ shape. R7 extends to deployment artifacts: **reuse official upstream charts**.
   directly.
 - **Local dev contract**: `colima start --kubernetes` (k3s), then
   `kubectl port-forward svc/<gateway> 8080:80` — the e2e suite only knows BASE_URL,
-  so S1–S20 run unchanged against compose or K8s.
+  so S1–S20 run unchanged against any cluster (local Colima k3s or production).
 - **CI**: GitHub Actions — GHCR image builds, plus a kind job that helm-installs the
   chart and runs the full e2e suite against it.
 
