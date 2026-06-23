@@ -1,0 +1,329 @@
+From 39325f2f564b82706fb18c78860b70a23f4e2937 Mon Sep 17 00:00:00 2001
+From: Yi Ding <yding@qventus.com>
+Date: Mon, 22 Jun 2026 17:45:35 -0700
+Subject: [PATCH] oauth2: send PKCE code_challenge for OIDC login sources
+
+When Gitea acts as an OIDC client (login source), it never sent a PKCE
+code_challenge on the authorization request, so identity providers that require
+PKCE (e.g. a django-oauth-toolkit provider with PKCE_REQUIRED) rejected sign-in
+(go-gitea/gitea#34747, go-gitea/gitea#21376).
+
+Generate a per-request S256 verifier in Callout, stash it in the user session,
+and append code_challenge to the authorization redirect; on the callback inject
+the stored code_verifier so goth forwards it to the token exchange. Gated to the
+openidConnect provider via a provider SupportsPKCE() capability; no settings,
+schema, or dependency changes (golang.org/x/oauth2 ships the helpers).
+
+Ported onto Gitea v1.26.2 for Artea's gitea/patches queue (ADR-0009); on a path
+to deletion once merged upstream.
+
+Assisted-by: Claude Code:claude-opus-4-8[1m]
+---
+ services/auth/source/oauth2/pkce.go           | 101 +++++++++++++++++
+ services/auth/source/oauth2/pkce_test.go      | 102 ++++++++++++++++++
+ services/auth/source/oauth2/providers.go      |   2 +
+ services/auth/source/oauth2/providers_base.go |   5 +
+ .../auth/source/oauth2/providers_openid.go    |   5 +
+ services/auth/source/oauth2/source_callout.go |  16 ++-
+ 6 files changed, 228 insertions(+), 3 deletions(-)
+ create mode 100644 services/auth/source/oauth2/pkce.go
+ create mode 100644 services/auth/source/oauth2/pkce_test.go
+
+diff --git a/services/auth/source/oauth2/pkce.go b/services/auth/source/oauth2/pkce.go
+new file mode 100644
+index 0000000000..d6a1f4e275
+--- /dev/null
++++ b/services/auth/source/oauth2/pkce.go
+@@ -0,0 +1,101 @@
++// Copyright 2026 The Gitea Authors. All rights reserved.
++// SPDX-License-Identifier: MIT
++
++package oauth2
++
++import (
++	"net/http"
++	"net/url"
++
++	"code.gitea.io/gitea/modules/log"
++	session_module "code.gitea.io/gitea/modules/session"
++
++	"golang.org/x/oauth2"
++)
++
++// supportsPKCE reports whether the source's provider type opts into PKCE (see Provider.SupportsPKCE).
++// PKCE is gated on the provider capability rather than a hardcoded provider name so it stays correct as
++// OIDC-based providers (e.g. AWS Cognito, which embeds OpenIDProvider) are added.
++func (source *Source) supportsPKCE() bool {
++	p, ok := gothProviders[source.Provider]
++	return ok && p.SupportsPKCE()
++}
++
++// pkceSessionKey returns the Gitea-session key under which the PKCE code_verifier is stored for a login source.
++// Keyed per source name (unique) to avoid collision with other session keys.
++func pkceSessionKey(sourceName string) string {
++	return "oauth2_pkce_verifier:" + sourceName
++}
++
++// addPKCEChallengeToURL parses rawURL (the gothic authorization redirect URL) and appends an S256 code_challenge
++// derived from verifier, preserving all existing query params (client_id, redirect_uri, state, scope, ...).
++// Returns the augmented URL.
++func addPKCEChallengeToURL(rawURL, verifier string) (string, error) {
++	u, err := url.Parse(rawURL)
++	if err != nil {
++		return "", err
++	}
++	q := u.Query()
++	q.Set("code_challenge_method", "S256")
++	q.Set("code_challenge", oauth2.S256ChallengeFromVerifier(verifier))
++	u.RawQuery = q.Encode()
++	return u.String(), nil
++}
++
++// beginPKCE generates a PKCE code_verifier for a PKCE-capable login source, stashes it in the Gitea session,
++// and returns authURL with the matching S256 code_challenge appended so IdPs that REQUIRE PKCE accept the
++// login (gitea#21376, gitea#34747). For any other provider authURL is returned unchanged.
++//
++// goth's provider-level authCodeOptions are shared/static and cannot carry a per-request verifier, hence the
++// manual challenge plus own-session stash instead of going through goth. The verifier is keyed by source name
++// (like gothic's own _gothic_session), so concurrent logins to the same source in one browser session share a
++// slot; this matches gothic's existing single-flight limitation.
++//
++// Must be called AFTER gothic.GetAuthURL: GetAuthURL triggers RegenerateSession, which carries data forward,
++// so storing the verifier afterwards lands it in the surviving session.
++func (source *Source) beginPKCE(request *http.Request, authURL string) (string, error) {
++	if !source.supportsPKCE() {
++		return authURL, nil
++	}
++	verifier := oauth2.GenerateVerifier()
++	sess := session_module.GetContextSession(request)
++	if err := sess.Set(pkceSessionKey(source.AuthSource.Name), verifier); err != nil {
++		return "", err
++	}
++	if err := sess.Release(); err != nil {
++		return "", err
++	}
++	return addPKCEChallengeToURL(authURL, verifier)
++}
++
++// injectPKCEVerifier writes the stashed PKCE code_verifier for an OIDC login source into the callback request's
++// query so goth's openidConnect Session.Authorize (which reads params.Get("code_verifier")) forwards it to the
++// token Exchange. It is a no-op for any other provider or when no verifier was stored.
++//
++// gothic.CompleteUserAuth builds its params from req.URL.Query() for the GET callback route, so the RawQuery
++// rewrite here is how the verifier reaches the exchange. If a goth upgrade changes where it reads the verifier
++// from, TestInjectPKCEVerifier still passes but real logins break, so re-verify that seam on any goth bump.
++func (source *Source) injectPKCEVerifier(request *http.Request) {
++	if !source.supportsPKCE() {
++		return
++	}
++	sess := session_module.GetContextSession(request)
++	key := pkceSessionKey(source.AuthSource.Name)
++	v := sess.Get(key)
++	if v == nil {
++		return
++	}
++	if verifier, ok := v.(string); ok && verifier != "" {
++		q := request.URL.Query()
++		q.Set("code_verifier", verifier)
++		request.URL.RawQuery = q.Encode()
++	}
++	// Best-effort single-use cleanup: the verifier is already injected, so a failure here must not
++	// break the login, but it shouldn't be silent either (a stale verifier would otherwise be invisible).
++	if err := sess.Delete(key); err != nil {
++		log.Error("Failed to delete PKCE verifier from session for source %q: %v", source.AuthSource.Name, err)
++	}
++	if err := sess.Release(); err != nil {
++		log.Error("Failed to release session after consuming PKCE verifier for source %q: %v", source.AuthSource.Name, err)
++	}
++}
+diff --git a/services/auth/source/oauth2/pkce_test.go b/services/auth/source/oauth2/pkce_test.go
+new file mode 100644
+index 0000000000..e7fc326574
+--- /dev/null
++++ b/services/auth/source/oauth2/pkce_test.go
+@@ -0,0 +1,102 @@
++// Copyright 2026 The Gitea Authors. All rights reserved.
++// SPDX-License-Identifier: MIT
++
++package oauth2
++
++import (
++	"context"
++	"encoding/base64"
++	"net/http"
++	"net/http/httptest"
++	"net/url"
++	"testing"
++
++	auth_model "code.gitea.io/gitea/models/auth"
++	session_module "code.gitea.io/gitea/modules/session"
++
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++	"golang.org/x/oauth2"
++)
++
++func TestPKCEChallenge(t *testing.T) {
++	t.Run("key", func(t *testing.T) {
++		assert.Equal(t, "oauth2_pkce_verifier:my-idp", pkceSessionKey("my-idp"))
++	})
++
++	t.Run("challenge_appended", func(t *testing.T) {
++		raw := "https://idp.example.com/authorize?client_id=abc&redirect_uri=https%3A%2F%2Ftry.gitea.io%2Fcallback&response_type=code&scope=openid&state=xyz"
++		verifier := oauth2.GenerateVerifier()
++		out, err := addPKCEChallengeToURL(raw, verifier)
++		require.NoError(t, err)
++		u, err := url.Parse(out)
++		require.NoError(t, err)
++		q := u.Query()
++
++		assert.Equal(t, "S256", q.Get("code_challenge_method"))
++		// proves challenge == base64url(sha256(verifier)) without hardcoding
++		assert.Equal(t, oauth2.S256ChallengeFromVerifier(verifier), q.Get("code_challenge"))
++		decoded, err := base64.RawURLEncoding.DecodeString(q.Get("code_challenge"))
++		require.NoError(t, err)
++		assert.Len(t, decoded, 32) // sha256 length
++
++		// existing params preserved (guards against state loss that breaks gothic state validation)
++		assert.Equal(t, "xyz", q.Get("state"))
++		assert.Equal(t, "abc", q.Get("client_id"))
++		assert.Equal(t, "openid", q.Get("scope"))
++		assert.Equal(t, "https://try.gitea.io/callback", q.Get("redirect_uri"))
++	})
++
++	t.Run("invalid_url", func(t *testing.T) {
++		_, err := addPKCEChallengeToURL("://bad", "v")
++		assert.Error(t, err)
++	})
++}
++
++// TestInjectPKCEVerifier pins the seam between our patch and goth: goth's gothic.CompleteUserAuth reads the
++// token-exchange params from request.URL.Query(), so injectPKCEVerifier must land the stored code_verifier
++// there (and only there). If a goth bump moves where the verifier is read from, this stays green but real
++// logins break, so treat a failure here as "re-verify the goth callback contract".
++func TestInjectPKCEVerifier(t *testing.T) {
++	const sourceName = "my-idp"
++
++	newReq := func(t *testing.T, store session_module.Store) *http.Request {
++		t.Helper()
++		req := httptest.NewRequest(http.MethodGet, "https://try.gitea.io/user/oauth2/my-idp/callback?code=the-code&state=the-state", nil)
++		return req.WithContext(context.WithValue(req.Context(), session_module.MockStoreContextKey, store))
++	}
++
++	newSource := func(provider, name string) *Source {
++		s := &Source{Provider: provider}
++		s.SetAuthSource(&auth_model.Source{Name: name})
++		return s
++	}
++
++	t.Run("oidc verifier reaches goth's params and is single-use", func(t *testing.T) {
++		verifier := oauth2.GenerateVerifier()
++		store := session_module.NewMockMemStore("test-sid")
++		require.NoError(t, store.Set(pkceSessionKey(sourceName), verifier))
++
++		req := newReq(t, store)
++		newSource("openidConnect", sourceName).injectPKCEVerifier(req)
++
++		q := req.URL.Query() // exactly what gothic.CompleteUserAuth reads
++		assert.Equal(t, verifier, q.Get("code_verifier"))
++		assert.Equal(t, "the-code", q.Get("code")) // callback params preserved
++		assert.Equal(t, "the-state", q.Get("state"))
++		assert.Nil(t, store.Get(pkceSessionKey(sourceName))) // verifier consumed
++	})
++
++	t.Run("no stored verifier is a no-op", func(t *testing.T) {
++		req := newReq(t, session_module.NewMockMemStore("test-sid"))
++		newSource("openidConnect", sourceName).injectPKCEVerifier(req)
++		assert.Empty(t, req.URL.Query().Get("code_verifier"))
++	})
++
++	t.Run("non-oidc provider is untouched", func(t *testing.T) {
++		// no session is consulted for non-OIDC providers, so none is provided
++		req := httptest.NewRequest(http.MethodGet, "https://try.gitea.io/cb?code=the-code", nil)
++		newSource("github", "gh").injectPKCEVerifier(req)
++		assert.Empty(t, req.URL.Query().Get("code_verifier"))
++	})
++}
+diff --git a/services/auth/source/oauth2/providers.go b/services/auth/source/oauth2/providers.go
+index f719d23fc3..127771831f 100644
+--- a/services/auth/source/oauth2/providers.go
++++ b/services/auth/source/oauth2/providers.go
+@@ -30,6 +30,8 @@ type Provider interface {
+ 	IconHTML(size int) template.HTML
+ 	CustomURLSettings() *CustomURLSettings
+ 	SupportSSHPublicKey() bool
++	// SupportsPKCE reports whether logins to this provider should send a PKCE code_challenge/code_verifier.
++	SupportsPKCE() bool
+ }
+ 
+ // GothProviderCreator provides a function to create a goth.Provider
+diff --git a/services/auth/source/oauth2/providers_base.go b/services/auth/source/oauth2/providers_base.go
+index bc761e9742..9e9facb0a4 100644
+--- a/services/auth/source/oauth2/providers_base.go
++++ b/services/auth/source/oauth2/providers_base.go
+@@ -23,6 +23,11 @@ func (b *BaseProvider) SupportSSHPublicKey() bool {
+ 	return b.supportSSHPublicKey
+ }
+ 
++// SupportsPKCE defaults to false; providers that need PKCE override this (see OpenIDProvider).
++func (b *BaseProvider) SupportsPKCE() bool {
++	return false
++}
++
+ // Name provides the technical name for this provider
+ func (b *BaseProvider) Name() string {
+ 	return b.name
+diff --git a/services/auth/source/oauth2/providers_openid.go b/services/auth/source/oauth2/providers_openid.go
+index fc0d77a7e6..bdc16bdb57 100644
+--- a/services/auth/source/oauth2/providers_openid.go
++++ b/services/auth/source/oauth2/providers_openid.go
+@@ -21,6 +21,11 @@ func (o *OpenIDProvider) SupportSSHPublicKey() bool {
+ 	return true
+ }
+ 
++// SupportsPKCE reports that OIDC logins send a PKCE code_challenge, which some IdPs require (gitea#21376).
++func (o *OpenIDProvider) SupportsPKCE() bool {
++	return true
++}
++
+ // Name provides the technical name for this provider
+ func (o *OpenIDProvider) Name() string {
+ 	return "openidConnect"
+diff --git a/services/auth/source/oauth2/source_callout.go b/services/auth/source/oauth2/source_callout.go
+index f09d25c772..66e324c97c 100644
+--- a/services/auth/source/oauth2/source_callout.go
++++ b/services/auth/source/oauth2/source_callout.go
+@@ -23,10 +23,17 @@ func (source *Source) Callout(request *http.Request, response http.ResponseWrite
+ 	defer gothRWMutex.RUnlock()
+ 
+ 	url, err := gothic.GetAuthURL(response, request)
+-	if err == nil {
+-		http.Redirect(response, request, url, http.StatusTemporaryRedirect)
++	if err != nil {
++		return err
++	}
++
++	// Append a PKCE code_challenge for OIDC login sources. Remove if upstream resolves gitea#21376.
++	if url, err = source.beginPKCE(request, url); err != nil {
++		return err
+ 	}
+-	return err
++
++	http.Redirect(response, request, url, http.StatusTemporaryRedirect)
++	return nil
+ }
+ 
+ // Callback handles OAuth callback, resolve to a goth user and send back to original url
+@@ -38,6 +45,9 @@ func (source *Source) Callback(request *http.Request, response http.ResponseWrit
+ 	gothRWMutex.RLock()
+ 	defer gothRWMutex.RUnlock()
+ 
++	// Inject the stashed PKCE code_verifier for OIDC login sources. Remove if upstream resolves gitea#21376.
++	source.injectPKCEVerifier(request)
++
+ 	user, err := gothic.CompleteUserAuth(response, request)
+ 	if err != nil {
+ 		return user, err
+-- 
+2.54.0
+

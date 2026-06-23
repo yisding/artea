@@ -3,6 +3,10 @@
 # (docs/ARCHITECTURE.md "Kubernetes deployment"). Tags: latest on main,
 # sha-<full sha> always, semver on v* tags. All four Artea-owned image
 # Dockerfiles are required for release builds.
+#
+# The patched Gitea image (ghcr.io/<owner>/artea-gitea, ADR-0009) is built by a
+# SEPARATE `gitea` job below: it clones upstream Gitea and applies gitea/patches/
+# rather than building a checked-in Dockerfile, so it is not a matrix entry.
 name: images
 
 on:
@@ -17,6 +21,9 @@ on:
       - 'policy/**'
       - 'verdaccio/plugins/**'
       - 'deploy/docker/**'
+      - 'gitea/patches/**'
+      - 'gitea/build-image.sh'
+      - 'gitea/UPSTREAM'
       - '.dockerignore'
       - '.github/workflows/images.yml'
   workflow_dispatch:
@@ -102,3 +109,33 @@ jobs:
           provenance: false
           cache-from: type=gha,scope=artea-${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=artea-${{ matrix.name }}
+
+  # The PATCHED Gitea image (ADR-0009): clone upstream at gitea/UPSTREAM's
+  # SOURCE_TAG, apply gitea/patches/ (the PKCE patch), build Dockerfile.rootless.
+  # Not a matrix entry — there is no checked-in Dockerfile; gitea/build-image.sh
+  # does the clone+patch+build. Mirrors the build job's ghcr login + push perms.
+  # Tags mirror the matrix: sha-<full sha> always, latest on the default branch.
+  gitea:
+    name: artea-gitea (patched)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+      - uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: build + push patched Gitea image
+        env:
+          # build-image.sh defaults to ghcr.io/yisding/artea-gitea; pin to the
+          # repo owner so forks publish under their own namespace
+          ARTEA_GITEA_IMAGE: ghcr.io/${{ github.repository_owner }}/artea-gitea
+        run: |
+          ./gitea/build-image.sh "sha-${{ github.sha }}" --push
+          # tag + push `latest` on the default branch (matches the matrix tags)
+          if [ "${{ github.ref }}" = "refs/heads/${{ github.event.repository.default_branch }}" ]; then
+            docker tag "$ARTEA_GITEA_IMAGE:sha-${{ github.sha }}" "$ARTEA_GITEA_IMAGE:latest"
+            docker push "$ARTEA_GITEA_IMAGE:latest"
+          fi

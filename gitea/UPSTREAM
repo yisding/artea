@@ -1,11 +1,21 @@
 # Upstream pin for the `gitea` service. THE pin consumed by compose lives in .env
 # (GITEA_VERSION in .env.example) — keep it in sync with this file. Never "latest".
+#
+# IMAGE/VERSION/DIGEST below pin the stock upstream gitea/gitea SOURCE. Artea no
+# longer runs that image unmodified: it builds a PATCHED image
+# `ghcr.io/yisding/artea-gitea` = stock source at SOURCE_TAG + the gitea/patches/
+# queue (currently the PKCE patch, ADR-0009), via gitea/build-image.sh and the
+# `images` CI workflow. The patched image is opt-in — the chart default stays the
+# stock image; `make dev` and production select the patched one (see ADR-0009).
+# Keep IMAGE=gitea/gitea as the SOURCE pin (build base + clone tag), not the
+# deployed image.
 
 IMAGE=gitea/gitea
 VERSION=1.26.2
 # multi-arch manifest list digest for gitea/gitea:1.26.2 (Docker Hub, 2026-05-20)
 DIGEST=sha256:7d13848af12645600a5f9d93ee2560daa9c6fa6b5b859b7bff3a5e1c0b661031
-# git tag the runtime overlay (app.ini keys, custom/templates) was verified against
+# git tag the runtime overlay (app.ini keys, custom/templates) AND the patched
+# image source build (gitea/build-image.sh) are verified against
 SOURCE_TAG=v1.26.2
 
 # Bump procedure (also re-run after any overlay change):
@@ -23,7 +33,10 @@ SOURCE_TAG=v1.26.2
 #    "ARTEA:" edits (they are listed at the top of each override).
 # 3. Re-verify app.ini keys against the new tag's custom/conf/app.example.ini
 #    (breaking config changes are listed in the upstream release notes).
-# 4. If gitea/patches/series is non-empty: gitea/patches/apply-patches.sh --check
-#    against a checkout of the new tag; rebase any failing patch (patches/README.md).
+# 4. The gitea/patches/ queue is non-empty (PKCE patch, ADR-0009): after bumping
+#    SOURCE_TAG, run `gitea/patches/apply-patches.sh --check <checkout>` against a
+#    checkout of the new tag, re-verify the queue applies AND the package
+#    compiles, rebase any failing patch (patches/README.md), then rebuild the
+#    patched image with gitea/build-image.sh.
 # 5. `make up` — watch the gitea container log for config deprecation warnings.
 # 6. `make e2e` — the S1-S12 scenarios are the acceptance gate.
