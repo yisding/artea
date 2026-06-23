@@ -173,10 +173,14 @@ jobs:
       - name: helm install (chart + CI overrides)
         # values-local.yaml (colima/local contract) is layered first when it
         # exists; the CI overlay then forces the images just built and loaded
-        # above, pullPolicy Never, and no ingress. Keys match the chart's
-        # values.yaml: {devpi,policySync,bootstrap}.image.* plus
+        # above, pullPolicy Never, no ingress, and the STOCK Gitea image. Keys
+        # match the chart's values.yaml: {devpi,policySync,bootstrap}.image.* plus
         # verdaccio.pluginAssets.image.* and gateway.ingress.enabled. The
         # Verdaccio policy timings shorten only the CI fail-closed probe.
+        # Gitea: values-local pins the patched :local image (ADR-0009), which
+        # this job never builds/loads (PKCE needs a live IdP e2e lacks, and a
+        # per-run Gitea Go build is the cost ADR-0009 avoids); clearing
+        # fullOverride falls back to the stock pin in values.yaml.
         run: |
           helm repo add verdaccio https://charts.verdaccio.org --force-update >/dev/null
           helm dependency build "$CHART_DIR"
@@ -210,6 +214,12 @@ jobs:
             replicas: 1
             ingress:
               enabled: false
+          gitea:
+            image:
+              # revert values-local's patched :local override → stock pin
+              # (docker.gitea.com/gitea:<values.yaml tag>-rootless), pullable
+              fullOverride: ""
+              pullPolicy: IfNotPresent
           EOF
           args=()
           if [ -f "$CHART_DIR/values-local.yaml" ]; then
