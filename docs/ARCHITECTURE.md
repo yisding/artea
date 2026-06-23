@@ -281,20 +281,26 @@ the admin allowlist, ≥1 required approval), and developers are members of a
 
 ## Upstream isolation (R7) — the no-fork rule
 
-1. **Gitea runs the stock upstream Docker image.** All customization is runtime
-   overlay: `deploy/helm/artea/values.yaml` `gitea.gitea.config` (the
-   chart-managed Gitea config) and
+1. **Gitea runs the stock upstream Docker image by default.** Almost all
+   customization is runtime overlay: `deploy/helm/artea/values.yaml`
+   `gitea.gitea.config` (the chart-managed Gitea config) and
    `gitea/custom/` templates (Gitea's supported
-   `custom/` directory: template/asset overrides). No source patches in v1.
+   `custom/` directory: template/asset overrides). The one source-level gap that
+   overlays cannot reach — OIDC login sources sending a PKCE `code_challenge` —
+   is covered by an opt-in patched image build (item 3, ADR-0009), not by
+   running stock unmodified everywhere.
 2. **Verdaccio and devpi are consumed as released artifacts.** Our code is plugins
    against their stable plugin APIs (`verdaccio/plugins/*` as npm packages;
    `devpi/artea_devpi_policy` as a Python package). Artea's devpi plugin is
    derived from the small devpi-constrained plugin, but devpi itself is not
    vendored or patched.
-3. **`gitea/patches/`** is an empty quilt-style patch queue with an apply script and a
-   documented bump procedure — the escape hatch for the day we need a source patch
-   (first candidate: PAT expiry dates). Until then, upgrades = bump pin in
-   `deploy/helm/artea/values.yaml`, `make dev`, `make e2e`.
+3. **`gitea/patches/`** is a quilt-style patch queue with an apply script and a
+   documented bump procedure — the escape hatch for source patches, now in use.
+   It carries one patch (PKCE on OIDC login sources, ADR-0009); the deployed
+   image is built from the patched tree by `gitea/build-image.sh`
+   (`ghcr.io/yisding/artea-gitea`), opt-in over the stock default. PAT expiry
+   dates remain a deferred candidate. Upgrades = bump pin, re-verify the patch
+   queue (`apply-patches.sh --check`) + rebuild, `make dev`, `make e2e`.
 4. All version pins live in `deploy/helm/artea/values.yaml` (the Gitea image pin
    kept in sync with `gitea/UPSTREAM`). Never use floating `latest`
    in committed files; our own Dockerfiles digest-pin their base images.

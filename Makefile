@@ -2,7 +2,7 @@
 SHELL := /bin/bash
 PROJECT := artea
 
-.PHONY: help plugins images dev e2e k8s-deploy k8s-e2e k8s-down
+.PHONY: help plugins images gitea-image dev e2e k8s-deploy k8s-e2e k8s-down
 
 # kubernetes flow (chart by deploy/helm/artea; see docs/ARCHITECTURE.md)
 HELM_RELEASE ?= artea
@@ -31,6 +31,13 @@ images: plugins ## build devpi, policy-sync, bootstrap and verdaccio-assets imag
 	docker build -t $(IMAGE_PREFIX)/artea-verdaccio-assets:$(IMAGE_TAG) \
 		-f deploy/docker/verdaccio-assets/Dockerfile verdaccio/plugins
 
+# Build the PATCHED Gitea rootless image (ADR-0009): clone upstream at the
+# SOURCE_TAG in gitea/UPSTREAM, apply gitea/patches/ (the PKCE patch), build
+# Gitea's Dockerfile.rootless. Slow (Go + frontend). Opt-in: values-local.yaml
+# selects it via gitea.image.fullOverride so local dev runs the PKCE build.
+gitea-image: ## build the patched Gitea rootless image (:local) — clone+patch+build, slow
+	./gitea/build-image.sh local
+
 # Turnkey local dev on Colima's built-in k3s (docs/guides/local-dev.md): ensure
 # the colima k8s context exists, build the images, deploy the chart, then
 # port-forward the gateway. The context is pinned explicitly and `make dev` fails
@@ -44,6 +51,7 @@ dev: ## turnkey local stack on Colima k3s: colima up + images + deploy + port-fo
 	fi
 	kubectl config use-context colima
 	$(MAKE) images
+	$(MAKE) gitea-image
 	$(MAKE) k8s-deploy
 	@echo "Stack deployed. Port-forwarding the gateway to http://localhost:8080"
 	@echo "(Ctrl-C to stop; rerun 'make e2e' in another shell to drive the suite.)"

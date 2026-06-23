@@ -31,10 +31,14 @@ while IFS= read -r line; do
 	p="$patch_dir/$line"
 	[ -f "$p" ] || { echo "error: patch listed in series but missing: $p" >&2; exit 1; }
 	echo "==> $line"
+	# git apply (not `patch -p1`): the patches are git-format and may add files,
+	# which BSD `patch` (macOS) cannot create from a /dev/null diff. git apply
+	# handles new files/renames identically on macOS and Linux. The target must be
+	# a git checkout (it always is — see the bump procedure in gitea/UPSTREAM).
 	if [ "$check" -eq 1 ]; then
-		patch -d "$target" -p1 --dry-run --force < "$p"
+		git -C "$target" apply --check "$p"
 	else
-		patch -d "$target" -p1 --force < "$p"
+		git -C "$target" apply "$p"
 	fi
 	count=$((count + 1))
 done < "$series"

@@ -8,6 +8,15 @@ lives in `gitea/app.ini.template` (deleted) — it is single-sourced in the Helm
 chart values (`deploy/helm/artea/values.yaml` `gitea.gitea.config`), still a
 config overlay on the stock image. The no-fork principle below is unchanged.
 
+Amended by ADR-0009: the `gitea/patches/` queue is no longer empty — it carries
+one source patch (PKCE on OIDC login sources), and Artea now **provides a build
+of a patched Gitea image** (`gitea/build-image.sh`, published as
+`ghcr.io/yisding/artea-gitea`). It stays opt-in: the stock image remains the
+chart default, the patched one is selected via `gitea.image` where a
+PKCE-requiring IdP needs it. The no-fork principle holds — one audited,
+reversible patch onto a stock upstream tag, with a documented deletion path
+(drop it once upstream ships client-side PKCE), not a divergent fork.
+
 ## Context
 
 Artea is built on three actively developed upstreams (Gitea, Verdaccio,
@@ -20,17 +29,21 @@ a high security-fix cadence we cannot afford to lag behind.
 No forking, no vendoring, no source patches in v1. Customization happens only
 through supported extension surfaces:
 
-1. **Gitea**: stock upstream Docker image; behavior via the chart-managed
-   config (`deploy/helm/artea/values.yaml` `gitea.gitea.config`), appearance via
-   Gitea's supported `custom/` overlay directory (`gitea/custom/` templates
-   delivered through the `artea-gitea-custom-templates` ConfigMap).
+1. **Gitea**: stock upstream Docker image by default; behavior via the
+   chart-managed config (`deploy/helm/artea/values.yaml` `gitea.gitea.config`),
+   appearance via Gitea's supported `custom/` overlay directory (`gitea/custom/`
+   templates delivered through the `artea-gitea-custom-templates` ConfigMap).
+   (Amended by ADR-0009: an opt-in patched image build covers the one source-level
+   gap — see the amendment note above and item 3.)
 2. **Verdaccio / devpi**: consumed as released artifacts; our code is plugins
    against their stable plugin APIs (`verdaccio/plugins/*`;
    `devpi/artea_devpi_policy`). The Artea devpi plugin is derived from the
    small `devpi-constrained` plugin but does not vendor or patch devpi itself.
-3. **Escape hatch**: `gitea/patches/` — a quilt-style patch queue, empty in
-   v1, with an apply script and a documented bump procedure. Adding a patch
-   requires an ADR. First expected candidate: PAT expiry dates.
+3. **Escape hatch**: `gitea/patches/` — a quilt-style patch queue with an apply
+   script and a documented bump procedure. Adding a patch requires an ADR. It now
+   carries one patch (PKCE on OIDC login sources, ADR-0009); the deployed Gitea
+   image is built from the patched tree (`gitea/build-image.sh`), opt-in over the
+   stock default. PAT expiry dates remain a deferred candidate.
 4. All version pins live in `deploy/helm/artea/values.yaml` / `gitea/UPSTREAM`;
    floating `latest` is forbidden in committed files. The Dockerfiles we own (`devpi/`,
    `policy-sync/`, `scripts/Dockerfile.bootstrap`, and
@@ -47,5 +60,6 @@ through supported extension surfaces:
   hacked in.
 - Template overlays are version-coupled to Gitea releases and must be
   re-checked on bumps (see operations guide).
-- If the patch queue is ever populated, we knowingly buy the rebase tax — but
-  through one audited, reversible mechanism instead of a divergent fork.
+- With the patch queue now populated (one PKCE patch, ADR-0009) we knowingly buy
+  the rebase tax — but through one audited, reversible mechanism instead of a
+  divergent fork, and only for changes overlays cannot reach.

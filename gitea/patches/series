@@ -1,2 +1,12 @@
-# quilt-style patch queue: one patch filename per line, applied in order with -p1.
-# INTENTIONALLY EMPTY in v1 — see patches/README.md before adding anything.
+# quilt-style patch queue: one patch filename per line, applied in order with
+# `git apply` (not patch -p1 — see patches/README.md) against the SOURCE_TAG
+# pinned in gitea/UPSTREAM. See patches/README.md and the ADR before adding anything.
+#
+# ADR-0009: PKCE for OIDC login sources. Stock Gitea, acting as an OIDC client,
+# never sends a PKCE code_challenge, so identity providers that require PKCE
+# reject the sign-in (not fixable via config/overlay/plugin). The patch adds the
+# S256 challenge, gated to the openidConnect provider.
+# Upstream (deletion path — drop these once merged): go-gitea/gitea#34747,
+# go-gitea/gitea#21376. Ported onto v1.26.2 (module rename only; PKCE unit tests
+# pass on the stable line).
+0001-oauth2-send-PKCE-code_challenge-for-OIDC-login-sourc.patch

@@ -1,35 +1,49 @@
-# gitea/patches — source patch queue (escape hatch, empty by design)
+# gitea/patches — source patch queue (escape hatch)
 
-Artea runs the **stock upstream `gitea/gitea` image with zero source patches**
-(hard rule R7 in `docs/ARCHITECTURE.md`). All v1 customization is runtime overlay:
-config from the Helm chart values (`deploy/helm/artea/values.yaml`
-`gitea.gitea.config`) and templates from `gitea/custom/`.
-This directory exists so that the day a source
-patch becomes unavoidable, there is already an agreed mechanism — and so that "just
-fork it" never looks like the easy path.
+Most of Artea's Gitea customization is runtime overlay: config from the Helm
+chart values (`deploy/helm/artea/values.yaml` `gitea.gitea.config`) and templates
+from `gitea/custom/`. This directory is the escape hatch (hard rule R7 in
+`docs/ARCHITECTURE.md`) for the rare change that overlays cannot reach — so that
+the day a source patch becomes unavoidable there is already an agreed mechanism,
+and so that "just fork it" never looks like the easy path.
+
+The queue now carries **one** patch — the PKCE patch
+(`0001-oauth2-send-PKCE-code_challenge-for-OIDC-login-sourc.patch`, ADR-0009),
+which makes Gitea's `openidConnect` login source send a PKCE S256
+`code_challenge`. The deployed Gitea image is therefore built from the patched
+tree by `gitea/build-image.sh` (opt-in; the stock image stays the chart default —
+see ADR-0009).
 
 ## Policy
 
-- **v1 ships with zero patches.** `series` is empty and must stay empty until a
-  patch is accepted.
 - A patch may be added only when the change is impossible via config, the `custom/`
   overlay, plugins, or the gateway — and only with an ADR in `docs/adr/` explaining
   why, plus an upstream issue/PR link (every patch must be on a path to deletion,
   either by upstreaming or by an upstream alternative).
-- **First planned patch: PAT expiry dates.** Gitea PATs are currently non-expiring;
-  R5 only needs "up to ~1 year", so v1 ships without expiry and this is the first
+- **First actual patch: PKCE for OIDC login sources** (ADR-0009; upstream
+  go-gitea/gitea#34747, #21376) — added because some OIDC providers require PKCE
+  and stock Gitea never sends a `code_challenge`.
+- **Still deferred: PAT expiry dates.** Gitea PATs are currently non-expiring;
+  R5 only needs "up to ~1 year", so v1 ships without expiry and this remains a
   candidate the moment policy requires enforced expiry.
 
 ## Format (quilt-style)
 
-- One `*.patch` file per logical change, unified diff, `-p1` strip level, applying
-  cleanly against the tag named in `gitea/UPSTREAM`.
+- One `*.patch` file per logical change, unified diff, applying cleanly against
+  the tag named in `gitea/UPSTREAM`.
 - `series` lists patch filenames, one per line, in apply order. Blank lines and
   `#` comments are ignored.
-- Name patches `NNNN-short-description.patch` (e.g. `0001-pat-expiry.patch`) and
-  start each file with a header comment: what, why, ADR id, upstream link.
+- Name patches `NNNN-short-description.patch` (e.g.
+  `0001-oauth2-send-PKCE-...patch`) and start each file with a header comment:
+  what, why, ADR id, upstream link.
 
-## Applying (future source builds)
+## Applying (the patched image build)
+
+The queue is applied with **`git apply`** (via `apply-patches.sh`), not
+`patch -p1`: the patches are git-format and may add new files, which BSD `patch`
+(macOS) cannot create from a `/dev/null` diff. `git apply` handles new
+files/renames identically on macOS and Linux, so the target must be a git
+checkout (it always is — see the bump procedure in `gitea/UPSTREAM`).
 
 ```sh
 # verify the queue applies cleanly (no files modified):
@@ -38,10 +52,12 @@ gitea/patches/apply-patches.sh --check /path/to/gitea-checkout
 gitea/patches/apply-patches.sh /path/to/gitea-checkout
 ```
 
-The checkout must be at exactly the `SOURCE_TAG` from `gitea/UPSTREAM`. Once any
-patch exists, the deployment switches from the stock image to an image built from
-the patched tree (a `gitea/Dockerfile` to be added alongside the first patch), and
-`make e2e` becomes the regression gate for every rebase.
+The checkout must be at exactly the `SOURCE_TAG` from `gitea/UPSTREAM`. The
+deployed Gitea image is built from the patched tree by **`gitea/build-image.sh`**
+(clone upstream at `SOURCE_TAG` → apply this queue → build Gitea's
+`Dockerfile.rootless`), published to `ghcr.io/yisding/artea-gitea` by the `images`
+CI workflow. `apply-patches.sh --check` + a recompile is the regression gate for
+every rebase.
 
 ## Rebasing on upstream bumps
 

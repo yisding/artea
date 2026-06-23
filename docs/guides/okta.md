@@ -4,6 +4,14 @@ Humans sign in to Artea (the Gitea UI) through Okta via a generic OpenID
 Connect authentication source. Tools never use SSO — they use personal access
 tokens (PATs) created after first sign-in (see the end of this guide).
 
+> **PKCE-requiring providers.** Stock Gitea's OIDC login source does not send a
+> PKCE `code_challenge` on the authorization request (go-gitea/gitea#34747). An
+> OIDC provider that **requires PKCE** for every authorization-code client will
+> reject sign-in against the stock image. For those providers, run the patched
+> Gitea image built by `gitea/build-image.sh` (ADR-0009), which sends an S256
+> `code_challenge`. Okta does not require this; providers with a process-wide
+> "PKCE required" setting (e.g. django-oauth-toolkit `PKCE_REQUIRED`) do.
+
 ## 1. Create the app in Okta
 
 1. Okta Admin Console → **Applications → Create App Integration**.

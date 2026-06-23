@@ -63,6 +63,14 @@ verdaccio:
     requests: {cpu: 50m, memory: 128Mi}
 
 gitea:
+  # locally-built PATCHED Gitea image (ADR-0009; PKCE on OIDC login sources),
+  # built by `make gitea-image` / gitea/build-image.sh. colima's k3s shares the
+  # docker image store, so the :local tag is visible with pullPolicy Never (a
+  # typo'd tag fails loudly instead of pulling stock gitea from a registry).
+  image:
+    fullOverride: ghcr.io/yisding/artea-gitea:local
+    rootless: true
+    pullPolicy: Never
   persistence:
     size: 5Gi
   resources:
