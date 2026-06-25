@@ -1,0 +1,83 @@
+{{/*
+ARTEA override of templates/user/auth/signup_inner.tmpl (verified against the
+SOURCE_TAG pinned in gitea/UPSTREAM). This partial renders the "Complete New
+Account" / register form, including the OAuth2 link-account flow.
+
+ARTEA edits (re-apply on every upstream bump — see gitea/UPSTREAM):
+  - The username AND email inputs are `readonly` in the OAuth2 link-account flow
+    ({{if .LinkAccountMode}}), so an SSO user cannot change the account name
+    (USERNAME=email) or address derived from the verified OIDC claim. The values
+    still submit. Marked "ARTEA:" below. Everything else is verbatim upstream.
+*/ -}}
+<div class="ui container fluid{{if .LinkAccountMode}} icon{{end}}">
+	<h4 class="ui top attached header center">
+		{{if .LinkAccountMode}}
+			{{ctx.Locale.Tr "auth.oauth_signup_title"}}
+		{{else}}
+			{{ctx.Locale.Tr "sign_up"}}
+		{{end}}
+	</h4>
+	<div class="ui attached segment">
+		{{if .IsFirstTimeRegistration}}
+			<p>{{ctx.Locale.Tr "auth.sign_up_tip"}}</p>
+		{{end}}
+		<form class="ui form" action="{{.SignUpLink}}" method="post">
+			{{if or (not .LinkAccountMode) (and .LinkAccountMode .LinkAccountModeRegister)}}
+			{{template "base/alert" .}}
+			{{end}}
+			{{if .DisableRegistration}}
+				<p>{{ctx.Locale.Tr "auth.disable_register_prompt"}}</p>
+			{{else}}
+				<div class="required field {{if and (.Err_UserName) (or (not .LinkAccountMode) (and .LinkAccountMode .LinkAccountModeRegister))}}error{{end}}">
+					<label for="user_name">{{ctx.Locale.Tr "username"}}</label>
+					{{/* ARTEA: readonly in the OAuth link-account flow (username is derived from the OIDC claim). */}}
+					<input id="user_name" type="text" name="user_name" value="{{.user_name}}" autofocus required{{if .LinkAccountMode}} readonly{{end}}>
+				</div>
+				<div class="required field {{if .Err_Email}}error{{end}}">
+					<label for="email">{{ctx.Locale.Tr "email"}}</label>
+					{{/* ARTEA: readonly in the OAuth link-account flow (email comes from the verified OIDC claim). */}}
+					<input id="email" name="email" type="email" value="{{.email}}" required{{if .LinkAccountMode}} readonly{{end}}>
+				</div>
+
+				{{if not .DisablePassword}}
+					<div class="required field {{if and (.Err_Password) (or (not .LinkAccountMode) (and .LinkAccountMode .LinkAccountModeRegister))}}error{{end}}">
+						<label for="password">{{ctx.Locale.Tr "password"}}</label>
+						<input id="password" name="password" type="password" value="{{.password}}" autocomplete="new-password" required>
+					</div>
+					<div class="required field {{if and (.Err_Password) (or (not .LinkAccountMode) (and .LinkAccountMode .LinkAccountModeRegister))}}error{{end}}">
+						<label for="retype">{{ctx.Locale.Tr "re_type"}}</label>
+						<input id="retype" name="retype" type="password" value="{{.retype}}" autocomplete="new-password" required>
+					</div>
+				{{end}}
+
+				{{template "user/auth/captcha" .}}
+
+				<div class="inline field">
+					<button class="ui primary button tw-w-full">
+						{{if .LinkAccountMode}}
+							{{ctx.Locale.Tr "auth.oauth_signup_submit"}}
+						{{else}}
+							{{ctx.Locale.Tr "auth.create_new_account"}}
+						{{end}}
+					</button>
+				</div>
+			{{end}}
+			{{$showExternalAuthMethods := or .OAuth2Providers .EnableOpenIDSignIn .EnableSSPI}}
+			{{if $showExternalAuthMethods}}
+				<div class="divider divider-text">{{ctx.Locale.Tr "sign_in_or"}}</div>
+				{{template "user/auth/external_auth_methods" .}}
+			{{end}}
+		</form>
+	</div>
+</div>
+
+<div class="ui container fluid">
+	{{if not .LinkAccountMode}}
+	<div class="ui attached segment header top tw-flex tw-flex-col tw-items-center">
+		<div class="field">
+			<span>{{ctx.Locale.Tr "auth.already_have_account"}}</span>
+			<a href="{{AppSubUrl}}/user/login">{{ctx.Locale.Tr "auth.sign_in_now"}}</a>
+		</div>
+	</div>
+	{{end}}
+</div>

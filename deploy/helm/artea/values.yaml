@@ -177,6 +177,8 @@ gitea:
             path: home.tmpl
           - key: base__head_navbar.tmpl
             path: base/head_navbar.tmpl
+          - key: user__auth__signup_inner.tmpl
+            path: user/auth/signup_inner.tmpl
   extraContainerVolumeMounts:
     - name: artea-custom-templates
       mountPath: /data/gitea/templates

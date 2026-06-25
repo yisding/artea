@@ -17,3 +17,5 @@ data:
 {{ .Files.Get "files/gitea-templates/home.tmpl" | replace "__ARTEA_NAMESPACE__" (include "artea.privateNamespace" .) | indent 4 }}
   base__head_navbar.tmpl: |
 {{ .Files.Get "files/gitea-templates/base__head_navbar.tmpl" | replace "__ARTEA_NAMESPACE__" (include "artea.privateNamespace" .) | indent 4 }}
+  user__auth__signup_inner.tmpl: |
+{{ .Files.Get "files/gitea-templates/user__auth__signup_inner.tmpl" | replace "__ARTEA_NAMESPACE__" (include "artea.privateNamespace" .) | indent 4 }}
