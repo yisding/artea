@@ -42,6 +42,9 @@ schema = 1                 # required; integer; gates forward-compatible changes
 [defaults]
 action = "allow"           # registry baseline: allow (block-list) | deny (allow-list)
 
+[upstream]
+min_age = "P3D"            # ISO 8601 duration; hide upstream versions younger than this. OMIT → P0D (gate disabled)
+
 [osv]
 malicious_packages = true  # query OSV.dev inline for OpenSSF MAL-* records
 
@@ -125,6 +128,9 @@ schema = 1
 
 [defaults]
 action = "allow"
+
+[upstream]
+min_age = "P3D"            # hide upstream versions younger than this; omit → P0D (gate disabled)
 
 # whole-package block (old npm `packages: [event-stream]`)
 [[rules]]

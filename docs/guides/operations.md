@@ -158,6 +158,9 @@ schema = 1
 [defaults]
 action = "allow"
 
+[upstream]
+min_age = "P3D"            # hide upstream versions younger than this; omit → P0D (gate disabled)
+
 [osv]
 malicious_packages = true
 
