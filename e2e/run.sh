@@ -79,7 +79,6 @@ SHADOW_VERSION="0.0.1"
 PNPM_NAME="${NPM_SCOPE}/pnpm-hello-${ARTEA_NAMESPACE}"
 PNPM_NAME_ENC="%40${ARTEA_NAMESPACE}%2Fpnpm-hello-${ARTEA_NAMESPACE}"
 PNPM_VERSION="0.0.${RUN_ID}"
-PNPM_STORE="${WORK}/pnpm-store"
 UV_NAME="${ARTEA_NAMESPACE}-uv-hello"
 UV_MODULE="${UV_NAME//-/_}"
 UV_VERSION="0.0.${RUN_ID}"
@@ -158,7 +157,7 @@ log "run id ${RUN_ID}; work dir ${WORK}"
 ORIG_POLICY=$(get_policy_file policy.toml) || die "cannot read policy.toml from the policy repo"
 
 write_npmrc "${NPMRC}" "${DEV1_TOKEN}"
-mkdir -p "${NPM_CACHE}" "${PNPM_STORE}" # PNPM_STORE: pnpm_e2e --store-dir (lib.sh)
+mkdir -p "${NPM_CACHE}"
 
 CURRENT_PYTHON=$(python3 -c 'import os, sys; print(os.path.realpath(sys.executable))') \
   || die "cannot resolve python3 path"
