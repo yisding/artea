@@ -196,6 +196,14 @@ npm_e2e() { # npm with the suite's isolated userconfig + per-run cache
   npm_config_userconfig="${NPMRC}" npm_config_cache="${NPM_CACHE}" npm "$@"
 }
 
+pnpm_e2e() { # pnpm reading the per-package .npmrc (write_npmrc) for the registry +
+  # dual _auth lines, so publish/add hit the gateway with dev1 creds.
+  # npm_config_userconfig keeps any host ~/.npmrc out of the picture. No
+  # --store-dir: `pnpm publish` rejects it (it is an install-side option), and the
+  # default content-addressed store is fine for the suite's single pnpm chain.
+  npm_config_userconfig="${NPMRC}" pnpm "$@"
+}
+
 make_npm_pkg() { # <dir> <name> <version>
   mkdir -p "$1"
   cat > "$1/package.json" <<EOF

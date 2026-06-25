@@ -64,7 +64,7 @@ jobs:
       matrix:
         include:
           - shard: main
-            scenarios: S1,S2,S3,S4,S5,S6,S7,S8,S9,S10,S11,S12,S13,S14,S16,S17,S18,S19,S20
+            scenarios: S1,S2,S3,S4,S5,S6,S7,S8,S9,S10,S11,S12,S13,S14,S16,S17,S18,S19,S20,S21,S22
             policy_grace_secs: "60"
             policy_poll_ms: "10000"
             policy_fail_grace_ms: "60000"
@@ -78,7 +78,7 @@ jobs:
 
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
-          version: 10
+          version: 11
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 22

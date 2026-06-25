@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Artea e2e scenario suite — codifies S1-S20 from docs/ARCHITECTURE.md (the
+# Artea e2e scenario suite — codifies S1-S22 from docs/ARCHITECTURE.md (the
 # definition of done for v1).
 # Requires a deployed chart and a completed bootstrap (`make dev`/`make
 # k8s-deploy` runs both as a hook Job); uses real client tools: npm with an
@@ -26,9 +26,11 @@ source e2e/lib.sh
 # shellcheck source=e2e/env.sh
 source e2e/env.sh
 
-for tool in curl jq npm python3 git kubectl; do
+for tool in curl jq npm pnpm python3 git kubectl; do
   command -v "$tool" >/dev/null || die "required tool '${tool}' not found"
 done
+# uv is provided by the suite venv (installed below alongside build/twine), so it
+# is invoked as ${VENV}/bin/uv and is not part of the host-tool preflight above.
 
 resolve_credentials_file
 [ -f "${CREDENTIALS_FILE}" ] || die "${CREDENTIALS_FILE} missing — run 'make e2e' first"
@@ -55,7 +57,8 @@ ROOT=$(pwd)
 # absolute paths: npm/pip run from fixture dirs, relative paths would break
 WORK="${ROOT}/e2e/tmp/run-${RUN_ID}"
 LOG_DIR="${WORK}/logs"
-mkdir -p "${LOG_DIR}"
+RESULT_DIR="${WORK}/results" # one file per scenario so parallel jobs can report
+mkdir -p "${LOG_DIR}" "${RESULT_DIR}"
 
 # Per-run package versions keep the suite re-runnable without depending on
 # cleanup having succeeded; cleanup deletes them anyway to avoid clutter.
@@ -71,6 +74,14 @@ PY_VERSION="0.0.${RUN_ID}"
 PY_RO_VERSION="0.0.${RUN_ID}.post1"
 SHADOW_NAME="tinynetrc" # real PyPI package, published privately as 0.0.1 in S9
 SHADOW_VERSION="0.0.1"
+# S21/S22: pnpm + uv publish round-trips; own per-run names so they never collide
+# with the npm/twine fixtures above.
+PNPM_NAME="${NPM_SCOPE}/pnpm-hello-${ARTEA_NAMESPACE}"
+PNPM_NAME_ENC="%40${ARTEA_NAMESPACE}%2Fpnpm-hello-${ARTEA_NAMESPACE}"
+PNPM_VERSION="0.0.${RUN_ID}"
+UV_NAME="${ARTEA_NAMESPACE}-uv-hello"
+UV_MODULE="${UV_NAME//-/_}"
+UV_VERSION="0.0.${RUN_ID}"
 # PEP 700 JSON Simple API media type (S20 upload-time enrichment)
 PYPI_JSON_ACCEPT="application/vnd.pypi.simple.v1+json"
 
@@ -103,7 +114,7 @@ POLICY_DIRTY=0       # policy.toml mutated by a scenario; cleanup reverts to ORI
 POLICY_SYNC_SCALED=0 # S15: policy-sync scaled to 0 replicas
 DEVPI_WIPED=0        # S15: devpi cache wiped, constraints not yet re-synced
 E2E_SCENARIOS="${E2E_SCENARIOS:-}"
-ALL_SCENARIOS="S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14 S15 S16 S17 S18 S19 S20"
+ALL_SCENARIOS="S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14 S15 S16 S17 S18 S19 S20 S21 S22"
 
 # ---- cleanup (idempotent, tolerates partial runs) ---------------------------------
 cleanup() {
@@ -117,6 +128,8 @@ cleanup() {
   delete_pkg_version pypi "${PY_NAME}" "${PY_VERSION}" >/dev/null
   delete_pkg_version pypi "${PY_NAME}" "${PY_RO_VERSION}" >/dev/null
   delete_pkg_version pypi "${SHADOW_NAME}" "${SHADOW_VERSION}" >/dev/null
+  delete_pkg_version npm "${PNPM_NAME_ENC}" "${PNPM_VERSION}" >/dev/null
+  delete_pkg_version pypi "${UV_NAME}" "${UV_VERSION}" >/dev/null
   delete_dev1_token "${RO_TOKEN_NAME}" >/dev/null
   delete_dev1_token "${NO_PACKAGE_TOKEN_NAME}" >/dev/null
   delete_dev1_token "${REVOKE_TOKEN_NAME}" >/dev/null
@@ -154,7 +167,7 @@ if [ ! -x "${VENV}/bin/python" ] \
   log "creating python venv with build/twine (one-time, network)"
   rm -rf "${VENV}"
   python3 -m venv "${VENV}" || die "venv creation failed"
-  pip_env "${VENV}/bin/pip" install -q -U pip setuptools wheel build twine || die "venv tool install failed"
+  pip_env "${VENV}/bin/pip" install -q -U pip setuptools wheel build twine uv || die "venv tool install failed"
   printf '%s\n' "${CURRENT_PYTHON}" > "${VENV_PYTHON_STAMP}"
   touch "${VENV}/.artea-e2e-ready"
 fi
@@ -171,26 +184,32 @@ npm_fresh() { # npm with a throwaway cache: defeats packument 304-staleness
 }
 
 # ---- scenario harness ----------------------------------------------------------------
-RESULTS=""
 FAILED=0
 SELECTED_SCENARIOS=0
 
-scenario() { # <id> <description> <function>
+scenario() { # <id> <description> <function> — run fn, record the result to a file
+  # so serial and parallel (background-subshell) scenarios report identically; a
+  # background job cannot update a parent variable, but it can write a file.
   local id=$1 desc=$2 fn=$3 t0 t1 status
-  local logf="${LOG_DIR}/${id}.log"
   t0=$(date +%s)
-  if "$fn" >"$logf" 2>&1; then
-    status=PASS
-  else
-    status=FAIL
-    FAILED=1
-  fi
+  if "$fn" >"${LOG_DIR}/${id}.log" 2>&1; then status=PASS; else status=FAIL; fi
   t1=$(date +%s)
-  printf '%-4s %-4s %s (%ss)\n' "$id" "$status" "$desc" "$((t1 - t0))"
-  if [ "$status" = FAIL ]; then
-    sed 's/^/     | /' "$logf" | tail -25
-  fi
-  RESULTS="${RESULTS}${id} ${status} ${desc}"$'\n'
+  # tab-separated (desc contains spaces); report() reads these in scenario order.
+  printf '%s\t%s\t%s\n' "$status" "$((t1 - t0))" "$desc" > "${RESULT_DIR}/${id}"
+}
+
+report() { # print results in ALL_SCENARIOS order; set FAILED; tail failing logs
+  local id status dur desc
+  echo
+  for id in ${ALL_SCENARIOS}; do
+    [ -f "${RESULT_DIR}/${id}" ] || continue
+    IFS=$'\t' read -r status dur desc < "${RESULT_DIR}/${id}"
+    printf '%-4s %-4s %s (%ss)\n' "$id" "$status" "$desc" "$dur"
+    if [ "$status" = FAIL ]; then
+      FAILED=1
+      sed 's/^/     | /' "${LOG_DIR}/${id}.log" | tail -25
+    fi
+  done
 }
 
 scenario_selected() { # <id>
@@ -203,12 +222,11 @@ scenario_selected() { # <id>
   esac
 }
 
-run_scenario() { # <id> <description> <function>
+run_scenario() { # <id> <description> <function> — runs if selected. The selected
+  # count is computed up front in the run block (parallel jobs run in background
+  # subshells that cannot update a parent counter).
   local id=$1 desc=$2 fn=$3
-  if scenario_selected "$id"; then
-    SELECTED_SCENARIOS=$((SELECTED_SCENARIOS + 1))
-    scenario "$id" "$desc" "$fn"
-  fi
+  scenario_selected "$id" && scenario "$id" "$desc" "$fn"
 }
 
 validate_scenario_selection() {
@@ -965,18 +983,97 @@ TOML
   POLICY_DIRTY=0
 }
 
+# ---- S21: pnpm publish private scoped package -> Gitea, then pnpm add resolves it --------
+s21_pnpm_publish() {
+  local pkgdir="${WORK}/pnpm-hello" proj="${WORK}/proj-s21" version
+  make_npm_pkg "${pkgdir}" "${PNPM_NAME}" "${PNPM_VERSION}"
+  write_npmrc "${pkgdir}/.npmrc" "${DEV1_TOKEN}"
+  (cd "${pkgdir}" && pnpm_e2e publish --no-git-checks) || { echo "pnpm publish failed"; return 1; }
+  pkg_version_exists npm "${PNPM_NAME_ENC}" "${PNPM_VERSION}" \
+    || { echo "Gitea does not list ${PNPM_NAME}@${PNPM_VERSION} after pnpm publish"; return 1; }
+  echo "Gitea package API confirms ${PNPM_NAME}@${PNPM_VERSION}"
+  # install it back through the gateway with pnpm (full publish -> consume loop)
+  mkdir -p "${proj}"
+  echo '{"name":"e2e-consumer-s21","version":"1.0.0"}' > "${proj}/package.json"
+  write_npmrc "${proj}/.npmrc" "${DEV1_TOKEN}"
+  (cd "${proj}" && pnpm_e2e add "${PNPM_NAME}@${PNPM_VERSION}") || { echo "pnpm add failed"; return 1; }
+  version=$(jq -r .version "${proj}/node_modules/${PNPM_NAME}/package.json") \
+    || { echo "${PNPM_NAME} not present in node_modules after pnpm add"; return 1; }
+  assert_eq "${PNPM_VERSION}" "$version" "pnpm-installed version mismatch" || return 1
+  echo "pnpm add resolved ${PNPM_NAME}@${version} from Artea"
+}
+
+# ---- S22: uv build + uv publish private wheel -> Gitea, then uv pip install resolves it ---
+s22_uv_publish() {
+  local pkgdir="${WORK}/uv-hello" target="${WORK}/s22-lib"
+  make_py_pkg "${pkgdir}" "${UV_NAME}" "${UV_VERSION}"
+  "${VENV}/bin/uv" build --wheel --out-dir "${pkgdir}/dist" "${pkgdir}" \
+    || { echo "uv build failed"; return 1; }
+  "${VENV}/bin/uv" publish \
+    --publish-url "${GATEWAY_URL}/api/packages/${ARTEA_NAMESPACE}/pypi/" \
+    --username dev1 --password "${DEV1_TOKEN}" "${pkgdir}/dist/"* \
+    || { echo "uv publish failed"; return 1; }
+  pkg_version_exists pypi "${UV_NAME}" "${UV_VERSION}" \
+    || { echo "Gitea does not list ${UV_NAME} ${UV_VERSION} after uv publish"; return 1; }
+  echo "Gitea package API confirms ${UV_NAME} ${UV_VERSION}"
+  # install it back through the gateway simple index with uv (full loop)
+  "${VENV}/bin/uv" pip install --target "${target}" --index-url "${INDEX_URL}" \
+    --no-deps --reinstall "${UV_NAME}==${UV_VERSION}" \
+    || { echo "uv pip install failed"; return 1; }
+  [ -f "${target}/${UV_MODULE}.py" ] \
+    || { echo "${UV_MODULE}.py not present after uv pip install --target ${target}"; return 1; }
+  echo "uv pip install resolved ${UV_NAME}==${UV_VERSION} from Artea"
+}
+
 # ---- run ---------------------------------------------------------------------------------------
 validate_scenario_selection
 
+# Count selected scenarios up front: the parallel phase runs scenarios in
+# background subshells that cannot update a parent counter.
+SELECTED_SCENARIOS=0
+for _id in ${ALL_SCENARIOS}; do
+  scenario_selected "$_id" && SELECTED_SCENARIOS=$((SELECTED_SCENARIOS + 1))
+done
+
+# S1 first: every other scenario assumes a healthy, bootstrapped stack.
 run_scenario S1 "bootstrap state: stack healthy, org/repo/webhook/PATs present" s1_bootstrap
-run_scenario S2 "npm publish ${NPM_NAME}@${NPM_VERSION} -> Gitea" s2_npm_publish
-run_scenario S3 "npm install ${NPM_NAME} resolves from Gitea (gateway scope routing)" s3_npm_install_private
+
+# Parallel phase — independent publish round-trips. Each chain publishes its OWN
+# unique package(s) and shares nothing with the others (distinct names, no
+# policy.toml mutation, separate tool caches), so they run concurrently; within a
+# chain, install-back follows publish. Everything else stays serial below: the
+# policy/public/stack-teardown scenarios share state, and S11/S16/S17/S20 read the
+# private packages these chains publish. E2E_PARALLEL=0 forces fully sequential.
+chain_npm() {
+  run_scenario S2 "npm publish ${NPM_NAME}@${NPM_VERSION} -> Gitea" s2_npm_publish
+  run_scenario S3 "npm install ${NPM_NAME} resolves from Gitea (gateway scope routing)" s3_npm_install_private
+}
+chain_pypi() {
+  run_scenario S6 "twine upload ${PY_NAME} ${PY_VERSION} -> Gitea" s6_twine_upload
+  run_scenario S7 "pip install ${PY_NAME} via the gateway index" s7_pip_install_private
+}
+chain_shadow() { run_scenario S9 "private ${SHADOW_NAME} fully shadows the PyPI name" s9_precedence_shadowing; }
+chain_pnpm()   { run_scenario S21 "pnpm publish ${PNPM_NAME}@${PNPM_VERSION} -> Gitea, then pnpm add resolves it" s21_pnpm_publish; }
+chain_uv()     { run_scenario S22 "uv publish ${UV_NAME} ${UV_VERSION} -> Gitea, then uv pip install resolves it" s22_uv_publish; }
+
+if [ "${E2E_PARALLEL:-1}" != 0 ]; then
+  # `trap - EXIT` in each subshell so a finishing chain does not fire the parent's
+  # cleanup; the main shell still cleans up on its own exit.
+  ( trap - EXIT; chain_npm )    &
+  ( trap - EXIT; chain_pypi )   &
+  ( trap - EXIT; chain_shadow ) &
+  ( trap - EXIT; chain_pnpm )   &
+  ( trap - EXIT; chain_uv )     &
+  wait
+else
+  chain_npm; chain_pypi; chain_shadow; chain_pnpm; chain_uv
+fi
+
+# Serial phase — shared policy.toml, public-package visibility, stack teardown
+# (S15), and governance (S14) must not run concurrently.
 run_scenario S4 "npm install left-pad via Verdaccio pull-through" s4_npm_install_public
 run_scenario S5 "policy.toml push hides left-pad 1.3.0 from npm view" s5_npm_policy_block
-run_scenario S6 "twine upload ${PY_NAME} ${PY_VERSION} -> Gitea" s6_twine_upload
-run_scenario S7 "pip install ${PY_NAME} via the gateway index" s7_pip_install_private
 run_scenario S8 "pip install six via gateway -> devpi -> PyPI" s8_pip_install_public
-run_scenario S9 "private ${SHADOW_NAME} fully shadows the PyPI name" s9_precedence_shadowing
 run_scenario S10 "policy.toml constrains urllib3 to <2 via gateway" s10_pypi_policy_constraint
 run_scenario S11 "read:package PAT installs but gets 401 on publish" s11_token_scopes
 run_scenario S12 "revoked PAT stops installing within 60s" s12_revocation
@@ -989,19 +1086,24 @@ run_scenario S18 "unified allow-wins: exact-version allow beats a whole-package 
 run_scenario S19 "malformed policy.toml keeps last-known-good; public fetch still works" s19_unified_last_known_good
 run_scenario S20 "PEP 700 upload-time: v1+json enriched to api-version 1.1 (public+private)" s20_pep700_upload_time
 
+report
+
 if [ "$SELECTED_SCENARIOS" -eq 0 ]; then
   die "E2E_SCENARIOS selected no scenarios: ${E2E_SCENARIOS}"
 fi
 
-echo
 if [ "$FAILED" = 0 ]; then
   if [ -z "${E2E_SCENARIOS}" ]; then
-    log "all 20 scenarios passed"
+    log "all ${SELECTED_SCENARIOS} scenarios passed"
   else
     log "${SELECTED_SCENARIOS} selected scenario(s) passed: ${E2E_SCENARIOS}"
   fi
 else
   log "FAILURES:"
-  echo "${RESULTS}" | grep ' FAIL ' || true
+  for _id in ${ALL_SCENARIOS}; do
+    [ -f "${RESULT_DIR}/${_id}" ] || continue
+    IFS=$'\t' read -r _st _ _d < "${RESULT_DIR}/${_id}"
+    [ "$_st" = FAIL ] && printf '%s %s\n' "$_id" "$_d"
+  done
 fi
 exit "$FAILED"
