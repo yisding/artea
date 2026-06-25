@@ -236,14 +236,15 @@ cat "node_modules/@${ARTEA_NAMESPACE}/hello-$USER/index.js"
 
 ```sh
 mkdir artea-try-py && cd artea-try-py
-mod="${ARTEA_NAMESPACE}_hello_$USER"
+pkg="${ARTEA_NAMESPACE}-hello-$USER"        # distribution name (hyphens allowed)
+mod="${pkg//[^A-Za-z0-9_]/_}"               # importable module name (hyphens etc. -> _)
 cat > pyproject.toml <<EOF
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "${ARTEA_NAMESPACE}-hello-$USER"
+name = "${pkg}"
 version = "0.0.1"
 
 [tool.setuptools]
@@ -260,7 +261,7 @@ twine upload \
 #     --username "${ARTEA_USER}" --password "${ARTEA_TOKEN}"
 
 # install it back (uses ~/.netrc + the index from §3)
-pip install "${ARTEA_NAMESPACE}-hello-$USER==0.0.1"
+pip install "${pkg}==0.0.1"
 python -c "import ${mod}; print(${mod}.GREETING)"
 ```
 
