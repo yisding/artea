@@ -146,12 +146,60 @@ Verify:
 uv pip install --index-url "${ARTEA_URL}/pypi/simple/" six
 ```
 
-## Publishing endpoints
+## 4. Publishing
 
-| Ecosystem | Endpoint |
-|-----------|----------|
-| npm private scope | `${ARTEA_URL}/npm/` for `@${ARTEA_NAMESPACE}/*` |
-| PyPI upload | `${ARTEA_URL}/api/packages/${ARTEA_NAMESPACE}/pypi/` |
+Publishing needs a **`write:package`** token (§1) and membership in the
+`${ARTEA_NAMESPACE}` org (the `developers` team) — a `read:package` token, or a
+user without org write access, gets `401` on upload. Only the private
+`${ARTEA_NAMESPACE}` namespace is writable: scoped npm packages
+(`@${ARTEA_NAMESPACE}/*`) and Python packages uploaded to the namespace's PyPI
+registry. The pull-through caches (public npm, `pypi/simple/`) are read-only.
 
-Only private npm scope packages are publishable. Public packages install through
-Artea's authenticated pull-through caches and policy filters.
+### npm
+
+Name the package `@${ARTEA_NAMESPACE}/<name>` in `package.json`, and make sure the
+publish credential line from §2 is in `~/.npmrc` (`//${ARTEA_HOST}/npm/:_auth`).
+Then, from the package directory:
+
+```sh
+npm publish
+```
+
+### pnpm
+
+Same `@${ARTEA_NAMESPACE}/<name>` scope and `~/.npmrc`:
+
+```sh
+pnpm publish
+```
+
+### pip / twine
+
+pip installs but does not publish — build a distribution and upload it with twine:
+
+```sh
+python -m pip install --upgrade build twine
+python -m build                                  # writes dist/*.whl + dist/*.tar.gz
+
+twine upload \
+  --repository-url "${ARTEA_URL}/api/packages/${ARTEA_NAMESPACE}/pypi/" \
+  --username "${ARTEA_USER}" --password "${ARTEA_TOKEN}" \
+  dist/*
+```
+
+### uv
+
+```sh
+uv build                                         # writes dist/
+
+uv publish \
+  --publish-url "${ARTEA_URL}/api/packages/${ARTEA_NAMESPACE}/pypi/" \
+  --username "${ARTEA_USER}" --password "${ARTEA_TOKEN}"
+```
+
+### Endpoints
+
+| Action | Endpoint |
+|--------|----------|
+| `npm` / `pnpm publish` (`@${ARTEA_NAMESPACE}/*`) | `${ARTEA_URL}/npm/` |
+| `twine` / `uv publish` | `${ARTEA_URL}/api/packages/${ARTEA_NAMESPACE}/pypi/` |
