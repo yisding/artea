@@ -203,3 +203,82 @@ uv publish \
 |--------|----------|
 | `npm` / `pnpm publish` (`@${ARTEA_NAMESPACE}/*`) | `${ARTEA_URL}/npm/` |
 | `twine` / `uv publish` | `${ARTEA_URL}/api/packages/${ARTEA_NAMESPACE}/pypi/` |
+
+## 5. Try it end to end
+
+Kick the tires: publish a throwaway private package and install it back. Needs a
+`write:package` token (§1) and membership in the `${ARTEA_NAMESPACE}` org. Pick a
+unique name so you don't collide with anyone else — these examples use your shell
+`$USER`.
+
+### JavaScript (npm / pnpm)
+
+```sh
+mkdir artea-try && cd artea-try
+cat > package.json <<EOF
+{
+  "name": "@${ARTEA_NAMESPACE}/hello-$USER",
+  "version": "0.0.1",
+  "license": "MIT"
+}
+EOF
+echo "module.exports = 'hello from Artea';" > index.js
+
+npm publish                       # or: pnpm publish --no-git-checks
+
+# install it back into a fresh project to confirm the round-trip
+cd .. && mkdir artea-consume && cd artea-consume && npm init -y >/dev/null
+npm install "@${ARTEA_NAMESPACE}/hello-$USER@0.0.1"   # or: pnpm add the same spec
+cat "node_modules/@${ARTEA_NAMESPACE}/hello-$USER/index.js"
+```
+
+### Python (twine / uv)
+
+```sh
+mkdir artea-try-py && cd artea-try-py
+mod="${ARTEA_NAMESPACE}_hello_$USER"
+cat > pyproject.toml <<EOF
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "${ARTEA_NAMESPACE}-hello-$USER"
+version = "0.0.1"
+
+[tool.setuptools]
+py-modules = ["${mod}"]
+EOF
+echo "GREETING = 'hello from Artea'" > "${mod}.py"
+
+python -m build                   # writes dist/  (or: uv build)
+twine upload \
+  --repository-url "${ARTEA_URL}/api/packages/${ARTEA_NAMESPACE}/pypi/" \
+  --username "${ARTEA_USER}" --password "${ARTEA_TOKEN}" dist/*
+# ...or with uv:
+#   uv publish --publish-url "${ARTEA_URL}/api/packages/${ARTEA_NAMESPACE}/pypi/" \
+#     --username "${ARTEA_USER}" --password "${ARTEA_TOKEN}"
+
+# install it back (uses ~/.netrc + the index from §3)
+pip install "${ARTEA_NAMESPACE}-hello-$USER==0.0.1"
+python -c "import ${mod}; print(${mod}.GREETING)"
+```
+
+### Deleting a package
+
+Private package versions can be deleted (handy for cleaning up tests) by anyone
+with a `write:package` token + org membership:
+
+- **Web UI:** `__ARTEA_PUBLIC_URL__/__ARTEA_NAMESPACE__/-/packages` → pick the
+  package → the version → **Delete**.
+- **API** — `DELETE /api/v1/packages/${ARTEA_NAMESPACE}/<type>/<name>/<version>`:
+
+```sh
+# Python (type = pypi; name = the project name)
+curl -fsS -X DELETE -H "Authorization: token ${ARTEA_TOKEN}" \
+  "${ARTEA_URL}/api/v1/packages/${ARTEA_NAMESPACE}/pypi/${ARTEA_NAMESPACE}-hello-$USER/0.0.1"
+
+# npm (type = npm; the scoped name is URL-encoded: @x/y -> %40x%2Fy)
+curl -fsS -X DELETE -H "Authorization: token ${ARTEA_TOKEN}" \
+  "${ARTEA_URL}/api/v1/packages/${ARTEA_NAMESPACE}/npm/%40${ARTEA_NAMESPACE}%2Fhello-$USER/0.0.1"
+```
