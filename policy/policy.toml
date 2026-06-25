@@ -13,6 +13,9 @@
 #   [defaults]
 #   action = "allow"           # baseline: allow (block-list) | deny (allow-list)
 #
+#   [upstream]
+#   min_age = "P3D"            # ISO 8601 duration; hide upstream versions younger than this (P0D disables)
+#
 #   [osv]
 #   malicious_packages = true  # query OSV.dev inline for OpenSSF MAL-* records
 #
@@ -23,14 +26,16 @@
 #   action = "deny"            # defaults to "deny"; "allow" is an explicit carve-out
 #   reason = "example"         # optional; free text for humans
 #
-# Default policy: allow everything (block nothing).
+# Default policy: allow all packages EXCEPT known-malicious ones (OSV.dev OpenSSF
+# MAL-* records, via [osv] below) and upstream versions younger than
+# [upstream] min_age. No per-package name/version rules ship by default.
 schema = 1
 
 [defaults]
 action = "allow"
 
 [upstream]
-min_age = "P0D"
+min_age = "P3D"
 
 [osv]
 malicious_packages = true
