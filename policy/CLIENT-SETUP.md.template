@@ -14,32 +14,41 @@ Verdaccio, devpi, npmjs.org, or pypi.org.
 
 ## 1. Create a personal access token
 
-Open [/user/settings/applications](/user/settings/applications), then create a
-personal access token.
+Open [__ARTEA_PUBLIC_URL__/user/settings/applications](__ARTEA_PUBLIC_URL__/user/settings/applications),
+then create a personal access token.
 
 | Use | Required token scopes |
 |-----|-----------------------|
 | Install only | `read:package`, `read:user`, `read:organization` |
 | Publish and install | `write:package`, `read:user`, `read:organization` |
 
-Use your Gitea username and this token as the package-client credential:
+Use your Gitea username and this token as the package-client credential. Derive
+the bare host (no scheme or path) too — both the JavaScript and Python setups
+below use it:
 
 ```sh
 export ARTEA_USER=your-username
 export ARTEA_TOKEN=your-token
+
+ARTEA_HOST="${ARTEA_URL#http://}"
+ARTEA_HOST="${ARTEA_HOST#https://}"
+ARTEA_HOST="${ARTEA_HOST%%/*}"
 ```
 
-## 2. npm
+## 2. JavaScript
+
+npm and pnpm share the same registry credential:
 
 ```sh
-ARTEA_NPM_HOST="${ARTEA_URL#http://}"
-ARTEA_NPM_HOST="${ARTEA_NPM_HOST#https://}"
-ARTEA_NPM_HOST="${ARTEA_NPM_HOST%%/*}"
 ARTEA_NPM_AUTH="$(printf '%s:%s' "$ARTEA_USER" "$ARTEA_TOKEN" | base64 | tr -d '\n')"
+```
 
+### npm
+
+```sh
 cat > ~/.npmrc <<EOF
 registry=${ARTEA_URL}/npm/
-//${ARTEA_NPM_HOST}/:_auth=${ARTEA_NPM_AUTH}
+//${ARTEA_HOST}/:_auth=${ARTEA_NPM_AUTH}
 always-auth=true
 EOF
 ```
@@ -49,7 +58,7 @@ credential line too:
 
 ```sh
 cat >> ~/.npmrc <<EOF
-//${ARTEA_NPM_HOST}/npm/:_auth=${ARTEA_NPM_AUTH}
+//${ARTEA_HOST}/npm/:_auth=${ARTEA_NPM_AUTH}
 EOF
 ```
 
@@ -60,17 +69,17 @@ npm ping --registry "${ARTEA_URL}/npm/"
 npm view left-pad versions
 ```
 
-## 3. pnpm
+### pnpm
 
 pnpm reads the same `.npmrc`. Equivalent setup:
 
 ```sh
 pnpm config set registry "${ARTEA_URL}/npm/"
-pnpm config set "//${ARTEA_NPM_HOST}/:_auth" "${ARTEA_NPM_AUTH}"
+pnpm config set "//${ARTEA_HOST}/:_auth" "${ARTEA_NPM_AUTH}"
 pnpm config set always-auth true
 
 # Only needed when publishing.
-pnpm config set "//${ARTEA_NPM_HOST}/npm/:_auth" "${ARTEA_NPM_AUTH}"
+pnpm config set "//${ARTEA_HOST}/npm/:_auth" "${ARTEA_NPM_AUTH}"
 ```
 
 Verify:
@@ -79,13 +88,15 @@ Verify:
 pnpm view left-pad versions
 ```
 
-## 4. pip
+## 3. Python
+
+### pip
 
 Put the credential in `~/.netrc`. The `machine` value is the hostname only,
 without scheme or port:
 
 ```sh
-ARTEA_NETRC_MACHINE="${ARTEA_NPM_HOST%%:*}"
+ARTEA_NETRC_MACHINE="${ARTEA_HOST%%:*}"
 
 cat >> ~/.netrc <<EOF
 machine ${ARTEA_NETRC_MACHINE}
@@ -106,7 +117,7 @@ python -m pip index versions six
 Do not configure `extra-index-url` to pypi.org. That bypasses Artea's private
 package precedence.
 
-## 5. uv
+### uv
 
 uv reads `~/.netrc` automatically. Add Artea as the default index:
 
