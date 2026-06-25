@@ -366,7 +366,7 @@ deployment artifacts: **reuse official upstream charts**.
   directly.
 - **Local dev contract**: `colima start --kubernetes` (k3s), then
   `kubectl port-forward svc/<gateway> 8080:80` — the e2e suite only knows BASE_URL,
-  so S1–S20 run unchanged against any cluster (local Colima k3s or production).
+  so S1–S22 run unchanged against any cluster (local Colima k3s or production).
 - **CI**: GitHub Actions — GHCR image builds, plus a kind job that helm-installs the
   chart and runs the full e2e suite against it.
 
@@ -396,9 +396,9 @@ deployment artifacts: **reuse official upstream charts**.
 | R1 | Gitea OIDC (Okta) + plugins/auth_request validate everything against Gitea | S11, S12 (+ docs) |
 | R2 | npm gateway scope routing → Gitea (scope match, never a fallback); pypi gateway 404-fallback (200 = never consult public) | S2–S4, S6–S9, S17 |
 | R3 | Unified `policy.toml` compiled by policy-sync → Verdaccio filter plugin + tarball middleware + Artea devpi policy plugin, fail-closed | S5, S10, S13, S15, S18, S19 |
-| R4 | Stock protocols: npm/pnpm/yarn vs Verdaccio+Gitea; pip/uv/twine vs gateway+Gitea | S2–S10 |
+| R4 | Stock protocols: npm/pnpm/yarn vs Verdaccio+Gitea; pip/uv/twine vs gateway+Gitea | S2–S10, S21 (pnpm), S22 (uv) |
 | R5 | Gitea PATs (non-expiring today) | S11 |
-| R6 | One PAT publishes (Gitea) and pulls (everywhere) | S2/S3, S6/S7, S11 |
+| R6 | One PAT publishes (Gitea) and pulls (everywhere) | S2/S3, S6/S7, S11, S21, S22 |
 | R7 | Stock images + runtime overlays + plugins + patch-queue escape hatch | audit |
 
 ## E2E scenarios (the definition of done for v1)
@@ -445,3 +445,7 @@ S19 malformed policy: pushing a structurally broken `policy.toml` fails the sync
 S20 PEP 700 upload-time: the JSON Simple API (`application/vnd.pypi.simple.v1+json`)
     is served as api-version 1.1 with `upload-time` fields for both public
     (pull-through) and private packages.
+S21 `pnpm publish` a private `@${ARTEA_NAMESPACE}/pnpm-hello-${ARTEA_NAMESPACE}` package →
+    Gitea, then `pnpm add` resolves it back through the gateway (publish → consume loop).
+S22 `uv build` + `uv publish` a `${ARTEA_NAMESPACE}-uv-hello` wheel → Gitea, then
+    `uv pip install` resolves it back through the gateway index (publish → consume loop).
