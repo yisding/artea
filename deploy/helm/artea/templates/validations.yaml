@@ -10,7 +10,11 @@ holds even for images not emitted via artea.image. */ -}}
 {{- range $image := $owned -}}
 {{- include "artea.validateImageDigest" $image -}}
 {{- end -}}
-{{- $secretValues := dict "adminUsername" (include "artea.adminUsername" .) "adminPassword" .Values.secrets.adminPassword "dev1Password" .Values.secrets.dev1Password "devpiRootPassword" .Values.secrets.devpiRootPassword "webhookSecret" .Values.secrets.webhookSecret -}}
+{{- $secretValues := dict "adminUsername" (include "artea.adminUsername" .) "adminPassword" .Values.secrets.adminPassword "devpiRootPassword" .Values.secrets.devpiRootPassword "webhookSecret" .Values.secrets.webhookSecret -}}
+{{- /* dev1Password is only needed when bootstrap creates the demo user. */ -}}
+{{- if .Values.bootstrap.createDemoUser -}}
+{{- $_ := set $secretValues "dev1Password" .Values.secrets.dev1Password -}}
+{{- end -}}
 {{- range $name, $value := $secretValues -}}
 {{- if empty $value -}}
 {{- fail (printf "secrets.%s must not be empty" $name) -}}

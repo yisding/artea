@@ -7,7 +7,7 @@ description: >-
   policy-sync, the gateway and the bootstrap Job (docs/ARCHITECTURE.md,
   "Kubernetes deployment").
 type: application
-version: 0.1.2
+version: 0.1.3
 # Tracks the Artea repo, not any single upstream component.
 appVersion: "0.1.0"
 home: https://github.com/yisding/artea
