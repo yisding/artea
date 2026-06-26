@@ -482,8 +482,8 @@ s11_token_scopes() {
   out=$( (cd "${WORK}/hello-${ARTEA_NAMESPACE}-ro" && npm_config_userconfig="${WORK}/npmrc-ro" \
     npm_config_cache="${WORK}/npm-cache-ro" npm publish) 2>&1) && {
     echo "npm publish with read-only token unexpectedly succeeded"; return 1; }
-  grep -q 'E401' <<<"$out" || { echo "npm publish rejection was not 401:"; echo "$out"; return 1; }
-  grep -q '403' <<<"$out" && { echo "got 403, expected 401:"; echo "$out"; return 1; }
+  cli_status_is "$out" 401 || { echo "npm publish rejection was not 401:"; echo "$out"; return 1; }
+  cli_status_is "$out" 403 && { echo "got 403, expected 401:"; echo "$out"; return 1; }
   pkg_version_exists npm "${NPM_NAME_ENC}" "${NPM_RO_VERSION}" && { echo "package was created anyway"; return 1; }
   echo "npm publish with read-only token rejected with 401"
 
@@ -492,8 +492,8 @@ s11_token_scopes() {
   build_wheel "${WORK}/${PY_NAME}-ro" || { echo "wheel build failed"; return 1; }
   out=$(twine_upload "${ro_token}" "${WORK}/${PY_NAME}-ro/dist/"*.whl 2>&1) && {
     echo "twine upload with read-only token unexpectedly succeeded"; return 1; }
-  grep -q '401' <<<"$out" || { echo "twine rejection was not 401:"; echo "$out"; return 1; }
-  grep -q '403' <<<"$out" && { echo "got 403, expected 401:"; echo "$out"; return 1; }
+  cli_status_is "$out" 401 || { echo "twine rejection was not 401:"; echo "$out"; return 1; }
+  cli_status_is "$out" 403 && { echo "got 403, expected 401:"; echo "$out"; return 1; }
   pkg_version_exists pypi "${PY_NAME}" "${PY_RO_VERSION}" && { echo "package was created anyway"; return 1; }
   echo "twine upload with read-only token rejected with 401"
 
