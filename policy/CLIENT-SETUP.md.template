@@ -11,6 +11,25 @@ export ARTEA_URL=__ARTEA_PUBLIC_URL__
 Use only this gateway URL. Do not point package clients directly at Gitea,
 Verdaccio, devpi, npmjs.org, or pypi.org.
 
+## Quick setup (one script)
+
+Download **[setup.sh](setup.sh)** from this repo (you are already signed in here)
+and run it:
+
+```sh
+bash setup.sh
+```
+
+It detects your installed tools (npm, pnpm, pip, uv), lets you pick which to
+configure, opens the token page for you, **backs up** each existing config file,
+and merges Artea settings in. It also **warns about existing CodeArtifact /
+Artifactory / other-registry config** that would shadow Artea (and offers to
+neutralize the clear conflicts). It is idempotent — re-run any time to refresh,
+or `bash setup.sh --uninstall` to remove the Artea blocks again.
+
+Prefer to configure by hand, or want to understand what the script does? The
+per-tool steps are below.
+
 ## 1. Create a personal access token
 
 Open [__ARTEA_PUBLIC_URL__/user/settings/applications](__ARTEA_PUBLIC_URL__/user/settings/applications),
