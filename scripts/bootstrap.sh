@@ -29,7 +29,7 @@
 # browser/client base rendered into the server-side client setup guide),
 # GITEA_READY_TIMEOUT, POLICY_SYNC_URL, POLICY_SYNC_HOOK_URL, ARTEA_NAMESPACE,
 # ARTEA_ADMIN_USER, ROLLOUT_TIMEOUT, ARTEA_CREATE_DEMO_USER (default true),
-# ARTEA_ORG_VISIBILITY (private|limited|public, default private). Credentials
+# ARTEA_ORG_VISIBILITY (private|limited, default private). Credentials
 # (ARTEA_ADMIN_PASSWORD, POLICY_WEBHOOK_SECRET, POLICY_SYNC_TOKEN, and
 # DEV1_PASSWORD when the demo user is enabled) come from the environment (the
 # chart's Secrets).
@@ -112,14 +112,17 @@ POLICY_REPO="${ORG}/${REPO}"
 # Optional demo user `dev1` (e2e/smoke fixture, developers member). Real installs
 # disable it so no shared write:package account exists.
 ARTEA_CREATE_DEMO_USER="${ARTEA_CREATE_DEMO_USER:-true}"
-# Gitea org visibility: private (default), limited (any signed-in user can read
-# the org's public repos — e.g. the seeded client-setup guide — without org
-# membership), or public. When non-private, the registry-policy repo is made
-# public so a freshly signed-in user can reach the guide before team reconcile.
+# Gitea org visibility: private (default) or limited. "limited" lets any
+# signed-in user read the org's PUBLIC repos (e.g. the seeded client-setup guide)
+# without org membership; the registry-policy repo is then made public so a
+# freshly signed-in user reaches the guide before team reconcile. "public" is
+# intentionally NOT allowed: this org owns the private packages and Gitea derives
+# package read visibility from the owner, so a public org would expose package
+# metadata to every signed-in user (outside the gateway's guarded routes).
 ARTEA_ORG_VISIBILITY="${ARTEA_ORG_VISIBILITY:-private}"
 case "${ARTEA_ORG_VISIBILITY}" in
-  private | limited | public) ;;
-  *) die "ARTEA_ORG_VISIBILITY must be one of: private, limited, public" ;;
+  private | limited) ;;
+  *) die "ARTEA_ORG_VISIBILITY must be private or limited (public is disallowed: this org owns the private packages)" ;;
 esac
 [ -n "${ARTEA_ADMIN_PASSWORD:-}" ] || die "ARTEA_ADMIN_PASSWORD must be set in the environment"
 if truthy "${ARTEA_CREATE_DEMO_USER}"; then
@@ -377,7 +380,17 @@ if truthy "${ARTEA_CREATE_DEMO_USER}"; then
   admin_send DELETE "/teams/${OWNERS_ID}/members/dev1" ''
   log "dev1 is not in Owners"
 else
-  log "demo user dev1 disabled (ARTEA_CREATE_DEMO_USER=false); skipping"
+  # Enforce the invariant on re-runs/upgrades: if an earlier bootstrap (or the
+  # default-on behavior) already created dev1, deprovision it so disabling the
+  # flag actually removes the shared write:package account. purge=true also drops
+  # its org/team memberships and revokes its tokens.
+  if [ "$(admin_code /users/dev1)" = 200 ]; then
+    log "demo user dev1 disabled; deleting existing dev1 (purge memberships + tokens)"
+    admin_send DELETE "/admin/users/dev1?purge=true" ''
+    log "dev1 removed"
+  else
+    log "demo user dev1 disabled (ARTEA_CREATE_DEMO_USER=false); none present"
+  fi
 fi
 
 # ---- branch protection on the policy repo (S14: policy changes go through PRs) --

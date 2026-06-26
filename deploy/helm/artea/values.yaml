@@ -132,10 +132,12 @@ bootstrap:
   # false, secrets.dev1Password is not required.
   createDemoUser: true
   # Gitea org visibility: "private" (default; package listings hidden from
-  # non-members), "limited" (any signed-in user can read the org's PUBLIC repos —
-  # e.g. the seeded registry-policy/CLIENT-SETUP guide — without org membership),
-  # or "public". Non-private also makes registry-policy public so a freshly
+  # non-members) or "limited" (any signed-in user can read the org's PUBLIC repos
+  # — e.g. the seeded registry-policy/CLIENT-SETUP guide — without org
+  # membership). "limited" also makes registry-policy public so a freshly
   # signed-in user reaches the client-setup guide before team reconciliation.
+  # "public" is intentionally unsupported: this org owns the private packages and
+  # Gitea derives package read visibility from the owner.
   orgVisibility: private
   image:
     repository: ghcr.io/yisding/artea-bootstrap
