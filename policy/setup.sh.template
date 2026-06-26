@@ -300,7 +300,6 @@ if [ "$need_npm" = 1 ]; then
 registry=${ARTEA_URL}/npm/
 //${ARTEA_HOST}/:_auth=${NPM_AUTH}
 //${ARTEA_HOST}/npm/:_auth=${NPM_AUTH}
-always-auth=true
 EOF
 )" append
   chmod 600 "$NPMRC"

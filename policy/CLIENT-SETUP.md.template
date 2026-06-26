@@ -67,7 +67,6 @@ ARTEA_NPM_AUTH="$(printf '%s:%s' "$ARTEA_USER" "$ARTEA_TOKEN" | base64 | tr -d '
 cat > ~/.npmrc <<EOF
 registry=${ARTEA_URL}/npm/
 //${ARTEA_HOST}/:_auth=${ARTEA_NPM_AUTH}
-always-auth=true
 EOF
 ```
 
@@ -94,7 +93,6 @@ pnpm reads the same `.npmrc`. Equivalent setup:
 ```sh
 pnpm config set registry "${ARTEA_URL}/npm/"
 pnpm config set "//${ARTEA_HOST}/:_auth" "${ARTEA_NPM_AUTH}"
-pnpm config set always-auth true
 
 # Only needed when publishing.
 pnpm config set "//${ARTEA_HOST}/npm/:_auth" "${ARTEA_NPM_AUTH}"

@@ -82,8 +82,8 @@ volume — it comes over HTTP (`policy_url`, see below).
 
 ## Auth model recap
 
-Every request must carry HTTP Basic `user:PAT` (the documented `.npmrc` uses
-`_auth=<base64 user:PAT>` + `always-auth=true`). The auth plugin validates against
+Every request must carry HTTP Basic `user:PAT` (the documented `.npmrc` uses a
+URL-scoped `_auth=<base64 user:PAT>`). The auth plugin validates against
 Gitea per request, rejects valid Gitea users outside the configured namespace
 org (`ARTEA_NAMESPACE`, default `artea`), and
 uses a 30s positive cache. The gateway has its own 30s positive auth cache, so

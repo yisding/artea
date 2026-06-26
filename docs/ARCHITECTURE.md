@@ -94,7 +94,6 @@ add the `/npm/`-scoped copy — the full form, as in
 registry=http://localhost:8080/npm/
 //localhost:8080/:_auth=<base64 user:PAT>
 //localhost:8080/npm/:_auth=<base64 user:PAT>
-always-auth=true
 ```
 
 The same `_auth` value appears on two nerf-dart lines: the host-rooted
