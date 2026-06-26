@@ -61,9 +61,15 @@ spec:
               value: {{ ternary "true" "false" .Values.secrets.allowDevPlaceholders | quote }}
             - name: ARTEA_NAMESPACE
               value: {{ include "artea.privateNamespace" . | quote }}
+            - name: ARTEA_CREATE_DEMO_USER
+              value: {{ ternary "true" "false" .Values.bootstrap.createDemoUser | quote }}
+            - name: ARTEA_ORG_VISIBILITY
+              value: {{ .Values.bootstrap.orgVisibility | quote }}
             {{- include "artea.secretEnv" (dict "name" "ARTEA_ADMIN_USER" "secret" "admin" "key" "username") | nindent 12 }}
             {{- include "artea.secretEnv" (dict "name" "ARTEA_ADMIN_PASSWORD" "secret" "admin" "key" "password") | nindent 12 }}
+            {{- if .Values.bootstrap.createDemoUser }}
             {{- include "artea.secretEnv" (dict "name" "DEV1_PASSWORD" "secret" "secrets" "key" "DEV1_PASSWORD") | nindent 12 }}
+            {{- end }}
             {{- include "artea.secretEnv" (dict "name" "POLICY_WEBHOOK_SECRET" "secret" "secrets" "key" "POLICY_WEBHOOK_SECRET") | nindent 12 }}
           {{- with .Values.bootstrap.resources }}
           resources:
