@@ -15,6 +15,7 @@
 #   ARTEA_TOKEN=… bash setup.sh --yes               # non-interactive (token from env)
 #   bash setup.sh --uninstall                       # remove the Artea blocks again
 set -euo pipefail
+umask 077   # credential files (~/.npmrc, ~/.netrc) must never be group/world-readable
 
 # ---- rendered by Artea bootstrap (do not edit) -------------------------------
 ARTEA_URL="__ARTEA_PUBLIC_URL__"
@@ -33,7 +34,7 @@ for arg in "$@"; do
   case "$arg" in
     --yes | -y) ASSUME_YES=1 ;;
     --uninstall) UNINSTALL=1 ;;
-    -h | --help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h | --help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $arg (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -45,15 +46,15 @@ say()  { printf '%s\n' "$*"; }
 warn() { printf 'WARN: %s\n' "$*" >&2; }
 die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 ask() { # <prompt> <varname>
-  local __a
-  if [ -n "$TTY" ]; then printf '%s' "$1" > "$TTY"; IFS= read -r __a < "$TTY"
+  local __a=""
+  if [ -n "$TTY" ]; then printf '%s' "$1" > "$TTY"; IFS= read -r __a < "$TTY" || true
   else die "no terminal for input; set ARTEA_TOKEN and pass --yes for non-interactive use"; fi
   printf -v "$2" '%s' "$__a"
 }
 ask_secret() { # <prompt> <varname> ; hidden input
-  local __a
+  local __a=""
   [ -n "$TTY" ] || die "no terminal for input; set ARTEA_TOKEN and pass --yes for non-interactive use"
-  printf '%s' "$1" > "$TTY"; IFS= read -rs __a < "$TTY"; printf '\n' > "$TTY"
+  printf '%s' "$1" > "$TTY"; IFS= read -rs __a < "$TTY" || true; printf '\n' > "$TTY"
   printf -v "$2" '%s' "$__a"
 }
 confirm() { # <prompt> ; default yes
@@ -75,8 +76,12 @@ backup() { # <file> ; one timestamped copy of the file's ORIGINAL state per run
   cp -p "$1" "$1.artea-bak.${TS}" && say "  backed up $1 -> $(basename "$1").artea-bak.${TS}"
 }
 backup_pip_config() { # back up whichever pip config file `pip config` edits
-  for c in "$HOME/.config/pip/pip.conf" "$HOME/.pip/pip.conf" \
-           "$HOME/Library/Application Support/pip/pip.conf"; do backup "$c"; done
+  # mirror pip's own precedence: PIP_CONFIG_FILE wins, else XDG/legacy/macOS paths.
+  local c
+  for c in "${PIP_CONFIG_FILE:-}" "${XDG_CONFIG_HOME:-$HOME/.config}/pip/pip.conf" \
+           "$HOME/.pip/pip.conf" "$HOME/Library/Application Support/pip/pip.conf"; do
+    [ -n "$c" ] && backup "$c"
+  done
 }
 strip_block() { # <file> -> file contents with any prior artea block removed (stdout)
   [ -f "$1" ] || return 0
@@ -85,7 +90,7 @@ strip_block() { # <file> -> file contents with any prior artea block removed (st
 }
 write_block() { # <file> <block-body> <append|prepend>
   local f="$1" body="$2" pos="${3:-append}" rest
-  mkdir -p "$(dirname "$f")"; touch "$f"; backup "$f"
+  mkdir -p "$(dirname "$f")"; backup "$f"   # backup() no-ops if $f doesn't exist yet
   rest="$(strip_block "$f")"
   {
     if [ "$pos" = prepend ]; then
@@ -100,6 +105,7 @@ write_block() { # <file> <block-body> <append|prepend>
 }
 remove_block() { # <file> ; drop the artea block, keep the rest
   [ -f "$1" ] || return 0
+  grep -qF "$MARK_BEGIN" "$1" || return 0   # nothing of ours here — don't rewrite or back up
   backup "$1"; strip_block "$1" > "$1.artea-tmp"; mv "$1.artea-tmp" "$1"
   say "  removed Artea block from $1"
 }
@@ -196,8 +202,9 @@ have() { command -v "$1" >/dev/null 2>&1; }
 FOUND=()
 have npm && FOUND+=(npm)
 have pnpm && FOUND+=(pnpm)
-PIPBIN=pip; have pip || PIPBIN=pip3
-{ have pip || have pip3; } && FOUND+=(pip)
+if have pip; then PIPBIN=pip; FOUND+=(pip)
+elif have pip3; then PIPBIN=pip3; FOUND+=(pip)
+else PIPBIN=pip; fi
 have uv && FOUND+=(uv)
 
 NPMRC="$HOME/.npmrc"
@@ -262,9 +269,15 @@ fi
 [ -n "${ARTEA_TOKEN:-}" ] || die "no token provided."
 
 # Validate + learn the canonical username from the token (works through the gateway).
-ARTEA_USER="$(curl -fsS -H "Authorization: token ${ARTEA_TOKEN}" "${ARTEA_URL}/api/v1/user" 2>/dev/null \
-  | sed -n 's/.*"login":"\([^"]*\)".*/\1/p' | head -1)" \
+# Pass the token via curl's stdin config (-K -) so it never lands in argv (ps/proc).
+# Drop -f: an HTTP 4xx (bad token) then returns a body with no "login", which we tell
+# apart from a real network failure (curl itself errors) below — so the two die
+# messages stay accurate instead of both reporting "could not reach".
+api_resp="$(printf 'header = "Authorization: token %s"\n' "${ARTEA_TOKEN}" \
+  | curl -sS -K - "${ARTEA_URL}/api/v1/user" 2>/dev/null)" \
   || die "could not reach ${ARTEA_URL}/api/v1/user — check the URL and your network."
+ARTEA_USER="$(printf '%s' "$api_resp" \
+  | sed -n 's/.*"login":[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)" || true
 [ -n "$ARTEA_USER" ] || die "token rejected by Artea (no user returned); check the token and its scopes."
 say "Token OK — authenticated as ${ARTEA_USER}."
 
