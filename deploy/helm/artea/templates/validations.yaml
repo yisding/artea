@@ -26,6 +26,16 @@ holds even for images not emitted via artea.image. */ -}}
 {{- if and .Values.bootstrap.emitCredentials (not .Values.secrets.allowDevPlaceholders) -}}
 {{- fail "bootstrap.emitCredentials=true is only allowed with secrets.allowDevPlaceholders=true for throwaway dev/e2e installs" -}}
 {{- end -}}
+{{- if .Values.cachePrune.enabled -}}
+{{- /* maxAgeDays is interpolated into the remote `find -mtime +<N>` predicate.
+Enforcing a positive integer here is what proves the predicate stays exactly
+`-type f [-name '*.tgz'] -mtime +<int>`: a non-integer, a value with shell
+metacharacters/quotes, or 0 (which would prune everything older than 24h) is
+rejected at render time before it can reach the cluster. */ -}}
+{{- if not (regexMatch "^[1-9][0-9]*$" (toString .Values.cachePrune.maxAgeDays)) -}}
+{{- fail (printf "cachePrune.maxAgeDays must be a positive integer (number of days); got %q" (toString .Values.cachePrune.maxAgeDays)) -}}
+{{- end -}}
+{{- end -}}
 {{- if .Values.gateway.ingress.enabled -}}
 {{- if empty .Values.gateway.ingress.host -}}
 {{- fail "gateway.ingress.enabled=true requires gateway.ingress.host" -}}
