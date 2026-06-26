@@ -88,16 +88,37 @@ strip_block() { # <file> -> file contents with any prior artea block removed (st
   awk -v b="$MARK_BEGIN" -v e="$MARK_END" '
     $0==b {skip=1; next} skip && $0==e {skip=0; next} !skip' "$1"
 }
-strip_netrc_machine() { # <host> ; drop every `machine <host>` stanza from stdin
+strip_netrc_machine() { # <host> ; drop every `machine <host>` entry from stdin
   # netrc has no single parse rule: uv/pip/twine (Python) read the LAST matching
-  # machine, curl the first — so a leftover duplicate stanza for the host can
-  # silently shadow ours. Remove them all; the caller writes exactly one. A stanza
-  # runs from `machine <host>` to the next machine/default/macdef keyword.
+  # machine, curl the first — so a leftover duplicate for the host silently
+  # shadows ours. Remove them all; the caller writes exactly one. netrc is a
+  # whitespace-separated TOKEN stream (entries may share a physical line), so
+  # tokenize and rebuild: a `machine <host>` entry runs through its login/
+  # password/account value-pairs (a value equal to a keyword is consumed as a
+  # value, never a boundary). macdef (FTP macros) is not used by these clients.
   awk -v host="$1" '
-    $1 == "machine"                   { skip = ($2 == host); if (!skip) print; next }
-    $1 == "default" || $1 == "macdef" { skip = 0; print; next }
-    skip                              { next }
-                                      { print }
+    { blob = blob " " $0 }
+    END {
+      n = split(blob, t, /[ \t\r\n]+/)
+      i = 1
+      while (i <= n) {
+        if (t[i] == "") { i++; continue }
+        if (t[i] == "machine") {
+          keep = (t[i + 1] != host)
+          if (keep) printf "machine %s\n", t[i + 1]
+          i += 2
+          while (i <= n && (t[i] == "login" || t[i] == "password" || t[i] == "account")) {
+            if (keep) printf "  %s %s\n", t[i], t[i + 1]
+            i += 2
+          }
+        } else if (t[i] == "default") {
+          print "default"; i++
+          while (i <= n && (t[i] == "login" || t[i] == "password" || t[i] == "account")) {
+            printf "  %s %s\n", t[i], t[i + 1]; i += 2
+          }
+        } else { i++ }   # stray/unsupported token (e.g. macdef): skip
+      }
+    }
   '
 }
 write_block() { # <file> <block-body> <append|prepend>
