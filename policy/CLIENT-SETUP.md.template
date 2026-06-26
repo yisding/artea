@@ -6,7 +6,6 @@ This Artea registry is available at:
 
 ```sh
 export ARTEA_URL=__ARTEA_PUBLIC_URL__
-export ARTEA_NAMESPACE=__ARTEA_NAMESPACE__
 ```
 
 Use only this gateway URL. Do not point package clients directly at Gitea,
@@ -53,7 +52,7 @@ always-auth=true
 EOF
 ```
 
-If you publish `@${ARTEA_NAMESPACE}/*` packages, add the exact registry
+If you publish `@__ARTEA_NAMESPACE__/*` packages, add the exact registry
 credential line too:
 
 ```sh
@@ -149,15 +148,15 @@ uv pip install --index-url "${ARTEA_URL}/pypi/simple/" six
 ## 4. Publishing
 
 Publishing needs a **`write:package`** token (§1) and membership in the
-`${ARTEA_NAMESPACE}` org (the `developers` team) — a `read:package` token, or a
+`__ARTEA_NAMESPACE__` org (the `developers` team) — a `read:package` token, or a
 user without org write access, gets `401` on upload. Only the private
-`${ARTEA_NAMESPACE}` namespace is writable: scoped npm packages
-(`@${ARTEA_NAMESPACE}/*`) and Python packages uploaded to the namespace's PyPI
+`__ARTEA_NAMESPACE__` namespace is writable: scoped npm packages
+(`@__ARTEA_NAMESPACE__/*`) and Python packages uploaded to the namespace's PyPI
 registry. The pull-through caches (public npm, `pypi/simple/`) are read-only.
 
 ### npm
 
-Name the package `@${ARTEA_NAMESPACE}/<name>` in `package.json`, and make sure the
+Name the package `@__ARTEA_NAMESPACE__/<name>` in `package.json`, and make sure the
 publish credential line from §2 is in `~/.npmrc` (`//${ARTEA_HOST}/npm/:_auth`).
 Then, from the package directory:
 
@@ -167,7 +166,7 @@ npm publish
 
 ### pnpm
 
-Same `@${ARTEA_NAMESPACE}/<name>` scope and `~/.npmrc`:
+Same `@__ARTEA_NAMESPACE__/<name>` scope and `~/.npmrc`:
 
 ```sh
 pnpm publish
@@ -182,7 +181,7 @@ python -m pip install --upgrade build twine
 python -m build                                  # writes dist/*.whl + dist/*.tar.gz
 
 twine upload \
-  --repository-url "${ARTEA_URL}/api/packages/${ARTEA_NAMESPACE}/pypi/" \
+  --repository-url "${ARTEA_URL}/api/packages/__ARTEA_NAMESPACE__/pypi/" \
   --username "${ARTEA_USER}" --password "${ARTEA_TOKEN}" \
   dist/*
 ```
@@ -193,7 +192,7 @@ twine upload \
 uv build                                         # writes dist/
 
 uv publish \
-  --publish-url "${ARTEA_URL}/api/packages/${ARTEA_NAMESPACE}/pypi/" \
+  --publish-url "${ARTEA_URL}/api/packages/__ARTEA_NAMESPACE__/pypi/" \
   --username "${ARTEA_USER}" --password "${ARTEA_TOKEN}"
 ```
 
@@ -201,13 +200,13 @@ uv publish \
 
 | Action | Endpoint |
 |--------|----------|
-| `npm` / `pnpm publish` (`@${ARTEA_NAMESPACE}/*`) | `${ARTEA_URL}/npm/` |
-| `twine` / `uv publish` | `${ARTEA_URL}/api/packages/${ARTEA_NAMESPACE}/pypi/` |
+| `npm` / `pnpm publish` (`@__ARTEA_NAMESPACE__/*`) | `${ARTEA_URL}/npm/` |
+| `twine` / `uv publish` | `${ARTEA_URL}/api/packages/__ARTEA_NAMESPACE__/pypi/` |
 
 ## 5. Try it end to end
 
 Kick the tires: publish a throwaway private package and install it back. Needs a
-`write:package` token (§1) and membership in the `${ARTEA_NAMESPACE}` org. Pick a
+`write:package` token (§1) and membership in the `__ARTEA_NAMESPACE__` org. Pick a
 unique name so you don't collide with anyone else — these examples use your shell
 `$USER`.
 
@@ -217,7 +216,7 @@ unique name so you don't collide with anyone else — these examples use your sh
 mkdir artea-try && cd artea-try
 cat > package.json <<EOF
 {
-  "name": "@${ARTEA_NAMESPACE}/hello-$USER",
+  "name": "@__ARTEA_NAMESPACE__/hello-$USER",
   "version": "0.0.1",
   "license": "MIT"
 }
@@ -228,15 +227,15 @@ npm publish                       # or: pnpm publish --no-git-checks
 
 # install it back into a fresh project to confirm the round-trip
 cd .. && mkdir artea-consume && cd artea-consume && npm init -y >/dev/null
-npm install "@${ARTEA_NAMESPACE}/hello-$USER@0.0.1"   # or: pnpm add the same spec
-cat "node_modules/@${ARTEA_NAMESPACE}/hello-$USER/index.js"
+npm install "@__ARTEA_NAMESPACE__/hello-$USER@0.0.1"   # or: pnpm add the same spec
+cat "node_modules/@__ARTEA_NAMESPACE__/hello-$USER/index.js"
 ```
 
 ### Python (twine / uv)
 
 ```sh
 mkdir artea-try-py && cd artea-try-py
-pkg="${ARTEA_NAMESPACE}-hello-$USER"        # distribution name (hyphens allowed)
+pkg="__ARTEA_NAMESPACE__-hello-$USER"        # distribution name (hyphens allowed)
 mod="${pkg//[^A-Za-z0-9_]/_}"               # importable module name (hyphens etc. -> _)
 cat > pyproject.toml <<EOF
 [build-system]
@@ -254,10 +253,10 @@ echo "GREETING = 'hello from Artea'" > "${mod}.py"
 
 python -m build                   # writes dist/  (or: uv build)
 twine upload \
-  --repository-url "${ARTEA_URL}/api/packages/${ARTEA_NAMESPACE}/pypi/" \
+  --repository-url "${ARTEA_URL}/api/packages/__ARTEA_NAMESPACE__/pypi/" \
   --username "${ARTEA_USER}" --password "${ARTEA_TOKEN}" dist/*
 # ...or with uv:
-#   uv publish --publish-url "${ARTEA_URL}/api/packages/${ARTEA_NAMESPACE}/pypi/" \
+#   uv publish --publish-url "${ARTEA_URL}/api/packages/__ARTEA_NAMESPACE__/pypi/" \
 #     --username "${ARTEA_USER}" --password "${ARTEA_TOKEN}"
 
 # install it back (uses ~/.netrc + the index from §3)
@@ -272,14 +271,14 @@ with a `write:package` token + org membership:
 
 - **Web UI:** `__ARTEA_PUBLIC_URL__/__ARTEA_NAMESPACE__/-/packages` → pick the
   package → the version → **Delete**.
-- **API** — `DELETE /api/v1/packages/${ARTEA_NAMESPACE}/<type>/<name>/<version>`:
+- **API** — `DELETE /api/v1/packages/__ARTEA_NAMESPACE__/<type>/<name>/<version>`:
 
 ```sh
 # Python (type = pypi; name = the project name)
 curl -fsS -X DELETE -H "Authorization: token ${ARTEA_TOKEN}" \
-  "${ARTEA_URL}/api/v1/packages/${ARTEA_NAMESPACE}/pypi/${ARTEA_NAMESPACE}-hello-$USER/0.0.1"
+  "${ARTEA_URL}/api/v1/packages/__ARTEA_NAMESPACE__/pypi/__ARTEA_NAMESPACE__-hello-$USER/0.0.1"
 
 # npm (type = npm; the scoped name is URL-encoded: @x/y -> %40x%2Fy)
 curl -fsS -X DELETE -H "Authorization: token ${ARTEA_TOKEN}" \
-  "${ARTEA_URL}/api/v1/packages/${ARTEA_NAMESPACE}/npm/%40${ARTEA_NAMESPACE}%2Fhello-$USER/0.0.1"
+  "${ARTEA_URL}/api/v1/packages/__ARTEA_NAMESPACE__/npm/%40__ARTEA_NAMESPACE__%2Fhello-$USER/0.0.1"
 ```
