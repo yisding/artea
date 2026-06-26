@@ -1,13 +1,9 @@
 {{- if .Values.cachePrune.enabled }}
-# Generic cache-prune CronJob: bounds the DISPOSABLE Verdaccio (npm) and devpi
-# (pypi) pull-through cache PVCs by deleting only old, regenerable cached
-# artifacts. Both cache PVCs are ReadWriteOnce and already mounted by their
-# cache pods, so a separate mounter is impossible; instead this Job runs kubectl
-# and execs `find ... -delete` INSIDE each cache pod (mirroring the bootstrap
-# exec pattern). It only ever removes regenerable cached files — never package
-# metadata, never index/keyfs state, never directories — so a wiped file is
-# simply re-fetched on the next pull-through. Disabled by default; opt in via
-# cachePrune.enabled. Namespace-scoped, least-privilege RBAC.
+# Cache-prune CronJob (opt-in: cachePrune.enabled). Bounds the DISPOSABLE
+# Verdaccio + devpi pull-through cache PVCs. The PVCs are RWO and already mounted
+# by the cache pods, so this execs `find` INSIDE each pod rather than re-mounting.
+# Safety invariant: deletes only regenerable cached *files* — never package
+# metadata, keyfs/index state, or directories.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -15,8 +11,6 @@ metadata:
   labels:
     {{- include "artea.labels" (dict "ctx" $ "component" "cache-prune") | nindent 4 }}
 ---
-# Least privilege: read pods and exec into them, in this namespace only. Nothing
-# cluster-wide; no other verbs or resources.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -27,12 +21,8 @@ rules:
   - apiGroups: [""]
     resources: [pods]
     verbs: [get, list]
-  # NOTE: pods/exec cannot be scoped by resourceName in Kubernetes RBAC, so this
-  # grants exec into ANY pod in the release namespace, not just the two cache
-  # pods targeted below. It is the minimum viable RBAC for the exec-based pruner
-  # (the RWO cache PVCs are already mounted by their pods, so a second mounter is
-  # impossible). Tighter blast-radius must come from namespace isolation, not
-  # from RBAC tightening.
+  # pods/exec can't be scoped by resourceName, so this grants exec into any pod in
+  # the release namespace — blast-radius is bounded by the namespace, not by RBAC.
   - apiGroups: [""]
     resources: [pods/exec]
     verbs: [create]
@@ -61,10 +51,8 @@ metadata:
 spec:
   schedule: {{ .Values.cachePrune.schedule | quote }}
   {{- with .Values.cachePrune.timeZone }}
-  # Without this the schedule runs in the controller-manager timezone (UTC on EKS).
   timeZone: {{ . | quote }}
   {{- end }}
-  # Never overlap runs; if a scheduled start is missed by >5m, skip it.
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 300
   successfulJobsHistoryLimit: 1
@@ -102,27 +90,23 @@ spec:
                 - |
                   set -euo pipefail
 
-                  # MAX_AGE is validated to a positive integer in
-                  # templates/validations.yaml, so this interpolation can only ever
-                  # be plain digits; the remote scripts reference the $MAX_AGE shell
-                  # var (never re-template the literal into the find predicate).
+                  # Validated to a positive integer (validations.yaml), so it can
+                  # never alter the remote `find -mtime` predicate.
                   MAX_AGE={{ .Values.cachePrune.maxAgeDays }}
                   NS="${POD_NAMESPACE}"
                   echo "artea cache-prune: starting (namespace=${NS}, maxAgeDays=${MAX_AGE})"
 
-                  # Count of caches attempted and of caches that had no Running pod.
-                  # A *total* miss is failed at the end (see below); a partial miss
-                  # stays success so one down cache never masks the other.
+                  # EXPECTED = caches attempted; MISSES = no Running pod; FAILED =
+                  # exec ran but errored/timed out. The Job fails only when NO cache
+                  # was effectively pruned (MISSES+FAILED==EXPECTED), so one bad
+                  # cache never masks the other but a total no-op still alerts.
                   EXPECTED=0
                   MISSES=0
+                  FAILED=0
 
-                  # Name of a single Running pod for a label selector ("" if none).
-                  # Bounded with coreutils `timeout` (the image is Debian), NOT
-                  # kubectl --request-timeout: that global flag makes kubectl fall
-                  # back to the localhost:8080 default server instead of in-cluster
-                  # config (the API call then fails and, swallowed by 2>/dev/null,
-                  # looks like "no pod"). `timeout` bounds a slow apiserver without
-                  # disturbing in-cluster config.
+                  # Bound with coreutils `timeout`, NOT kubectl --request-timeout:
+                  # that global flag makes kubectl ignore in-cluster config and hit
+                  # the localhost:8080 default (silently looks like "no pod").
                   resolve_pod() {
                     timeout 30 kubectl get pods -n "${NS}" -l "$1" \
                       --field-selector=status.phase=Running \
@@ -130,10 +114,9 @@ spec:
                   }
 
                   # prune_cache <name> <selector> <container> <remote-sh-script>
-                  # Resolve the cache pod and exec the prune script inside it.
-                  # Tolerates a missing / zero-replica pod and a failing or HUNG
-                  # prune: logs and moves on so one unavailable cache never fails
-                  # the Job and never starves the other cache of the Job deadline.
+                  # A missing pod or a failed/hung exec is logged and counted, never
+                  # fatal on its own, so one bad cache can't fail the Job or starve
+                  # the other.
                   prune_cache() {
                     cache="$1"; selector="$2"; container="$3"; script="$4"
                     EXPECTED=$((EXPECTED + 1))
@@ -144,28 +127,20 @@ spec:
                       return 0
                     fi
                     echo "[${cache}] pruning in pod ${pod} (container ${container})"
-                    # Bound the remote call. The bootstrap image is Debian, so
-                    # coreutils `timeout` is present: it exits 124 on hang and falls
-                    # into the else branch (WARNING + continue), so a wedged pod
-                    # cannot consume the whole activeDeadlineSeconds and block the
-                    # other cache. (No kubectl --request-timeout — it breaks
-                    # in-cluster config; see resolve_pod above.)
+                    # `timeout` (coreutils, Debian image) caps a hung exec at 180s so
+                    # it can't eat the whole activeDeadlineSeconds.
                     if timeout 180 kubectl exec -n "${NS}" "${pod}" -c "${container}" -- /bin/sh -c "${script}"; then
                       echo "[${cache}] ok"
                     else
                       rc=$?
+                      FAILED=$((FAILED + 1))
                       echo "[${cache}] WARNING: prune failed or timed out (exit ${rc}) in pod ${pod}; continuing"
                     fi
                   }
 
-                  # Verdaccio: only cached upstream tarballs (*.tgz) are ever
-                  # targeted — NEVER package.json (per-package metadata) or
-                  # .verdaccio-db.json, and never directories (-type f). The glob is
-                  # quoted so the remote shell does not expand it; find does the
-                  # matching. -exec rm (not -delete) is portable to the BusyBox find
-                  # in the alpine verdaccio image. find runs standalone (not piped to
-                  # wc), so its exit status is checked and a partial failure surfaces
-                  # instead of being masked. Deleted paths are echoed for audit.
+                  # Safety: only *.tgz cached tarballs, `-type f`, quoted glob —
+                  # never package.json / .verdaccio-db.json / directories. `-exec rm`
+                  # (not -delete) for the BusyBox find in the alpine verdaccio image.
                   VERDACCIO_PRUNE='set -u
                   MAX_AGE='"${MAX_AGE}"'
                   DIR=/verdaccio/storage/data
@@ -184,13 +159,10 @@ spec:
                     exit "$rc"
                   fi'
 
-                  # devpi: only cached mirror release files under +files are
-                  # deletable; devpi re-fetches them from PyPI on demand. The dir
-                  # only appears after the first pull-through, so absence is normal
-                  # (guarded, not an error). NEVER touch keyfs/index state
-                  # (.sqlite, .event_serial, .nodeinfo, .serverversion, lost+found)
-                  # or anything outside +files. Same find-status / -exec rm /
-                  # audit-logging discipline as verdaccio above.
+                  # Safety: only cached mirror files under +files (re-fetched on
+                  # demand); never keyfs/index state (.sqlite, .event_serial,
+                  # .nodeinfo, .serverversion) or anything outside +files. +files
+                  # appears only after the first pull-through, so absence is normal.
                   DEVPI_PRUNE='set -u
                   MAX_AGE='"${MAX_AGE}"'
                   DIR=/devpi/server/+files
@@ -209,19 +181,17 @@ spec:
                     exit "$rc"
                   fi'
 
-                  # Verdaccio selector uses the STABLE app.kubernetes.io/* labels
-                  # (not the subchart's legacy `app=` label) for parity with devpi
-                  # and resilience across verdaccio chart bumps.
+                  # Stable app.kubernetes.io/* labels (not the subchart's legacy
+                  # `app=`) for resilience across chart bumps.
                   prune_cache verdaccio {{ printf "app.kubernetes.io/name=verdaccio,app.kubernetes.io/instance=%s" .Release.Name | quote }} verdaccio "${VERDACCIO_PRUNE}"
                   prune_cache devpi {{ printf "app.kubernetes.io/name=artea,app.kubernetes.io/component=devpi,app.kubernetes.io/instance=%s" .Release.Name | quote }} devpi "${DEVPI_PRUNE}"
 
-                  echo "artea cache-prune: finished (caches=${EXPECTED}, missed=${MISSES})"
-                  # Surface a TOTAL miss (every expected cache had zero Running
-                  # pods) as a Job failure so monitoring keyed on failedJobsHistory
-                  # alerts — these are always-on singletons, so zero pods anywhere
-                  # is abnormal. A partial miss stays success (handled above).
-                  if [ "${EXPECTED}" -gt 0 ] && [ "${MISSES}" -eq "${EXPECTED}" ]; then
-                    echo "artea cache-prune: ERROR: no cache pods were available; failing for visibility"
+                  echo "artea cache-prune: finished (caches=${EXPECTED}, missed=${MISSES}, failed=${FAILED})"
+                  # Fail when NO cache was effectively pruned (every attempt missed
+                  # or errored) so failedJobsHistory alerts instead of unbounded
+                  # silent growth. A partial success (>=1 cache pruned) stays green.
+                  if [ "${EXPECTED}" -gt 0 ] && [ "$((MISSES + FAILED))" -eq "${EXPECTED}" ]; then
+                    echo "artea cache-prune: ERROR: no cache was pruned (misses=${MISSES}, failures=${FAILED}); failing for visibility"
                     exit 1
                   fi
 {{- end }}
