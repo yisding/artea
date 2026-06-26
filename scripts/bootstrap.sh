@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # Artea bootstrap (e2e scenario S1). Idempotent: safe to re-run at any time.
 #
-# Creates/ensures, in order: admin + PAT, configured private
-# namespace org, `${ARTEA_NAMESPACE}/registry-policy` seeded from policy/,
+# Creates/ensures, in order: admin + PAT, configured
+# namespace org (visibility per ARTEA_ORG_VISIBILITY),
+# `${ARTEA_NAMESPACE}/registry-policy` seeded from policy/ (public when the org
+# is limited/public so the client-setup guide is readable without membership),
 # push webhook -> policy-sync, the `developers` team (code/pulls/packages
-# write, no admin), demo user `dev1` (developers member, never Owners) + PAT,
+# write, no admin), optional demo user `dev1` (developers member, never Owners)
+# + PAT when ARTEA_CREATE_DEMO_USER=true,
 # branch protection on the policy repo's default branch (PRs + >=1 approval;
 # direct push only for the configured admin), the `svc-policy` service account
 # in a read-only `policy-readers` team, and its policy-sync PAT (delivered via
@@ -25,9 +28,11 @@
 # GATEWAY_URL (base recorded in the credentials), ARTEA_PUBLIC_URL (public
 # browser/client base rendered into the server-side client setup guide),
 # GITEA_READY_TIMEOUT, POLICY_SYNC_URL, POLICY_SYNC_HOOK_URL, ARTEA_NAMESPACE,
-# ARTEA_ADMIN_USER, ROLLOUT_TIMEOUT. Credentials (ARTEA_ADMIN_PASSWORD,
-# DEV1_PASSWORD, POLICY_WEBHOOK_SECRET, POLICY_SYNC_TOKEN) come from the
-# environment (the chart's Secrets).
+# ARTEA_ADMIN_USER, ROLLOUT_TIMEOUT, ARTEA_CREATE_DEMO_USER (default true),
+# ARTEA_ORG_VISIBILITY (private|limited, default private). Credentials
+# (ARTEA_ADMIN_PASSWORD, POLICY_WEBHOOK_SECRET, POLICY_SYNC_TOKEN, and
+# DEV1_PASSWORD when the demo user is enabled) come from the environment (the
+# chart's Secrets).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -104,18 +109,37 @@ fi
 ADMIN_USER="${ARTEA_ADMIN_USER:-${ARTEA_NAMESPACE}-admin}"
 ORG="${ARTEA_NAMESPACE}"
 POLICY_REPO="${ORG}/${REPO}"
+# Optional demo user `dev1` (e2e/smoke fixture, developers member). Real installs
+# disable it so no shared write:package account exists.
+ARTEA_CREATE_DEMO_USER="${ARTEA_CREATE_DEMO_USER:-true}"
+# Gitea org visibility: private (default) or limited. "limited" lets any
+# signed-in user read the org's PUBLIC repos (e.g. the seeded client-setup guide)
+# without org membership; the registry-policy repo is then made public so a
+# freshly signed-in user reaches the guide before team reconcile. "public" is
+# intentionally NOT allowed: this org owns the private packages and Gitea derives
+# package read visibility from the owner, so a public org would expose package
+# metadata to every signed-in user (outside the gateway's guarded routes).
+ARTEA_ORG_VISIBILITY="${ARTEA_ORG_VISIBILITY:-private}"
+case "${ARTEA_ORG_VISIBILITY}" in
+  private | limited) ;;
+  *) die "ARTEA_ORG_VISIBILITY must be private or limited (public is disallowed: this org owns the private packages)" ;;
+esac
 [ -n "${ARTEA_ADMIN_PASSWORD:-}" ] || die "ARTEA_ADMIN_PASSWORD must be set in the environment"
-[ -n "${DEV1_PASSWORD:-}" ] || die "DEV1_PASSWORD must be set in the environment"
+if truthy "${ARTEA_CREATE_DEMO_USER}"; then
+  [ -n "${DEV1_PASSWORD:-}" ] || die "DEV1_PASSWORD must be set in the environment (or set ARTEA_CREATE_DEMO_USER=false)"
+fi
 [ -n "${POLICY_WEBHOOK_SECRET:-}" ] || die "POLICY_WEBHOOK_SECRET must be set in the environment"
 if ! truthy "${ARTEA_ALLOW_DEV_SECRETS:-false}"; then
   # match the change-me-* placeholder convention (mirroring the Helm validator's
   # hasPrefix check) so a real secret that merely contains "change-me-" is allowed
-  for _secret in "${ARTEA_ADMIN_PASSWORD}" "${DEV1_PASSWORD}" "${POLICY_WEBHOOK_SECRET}"; do
+  _secrets_to_check=("${ARTEA_ADMIN_PASSWORD}" "${POLICY_WEBHOOK_SECRET}")
+  truthy "${ARTEA_CREATE_DEMO_USER}" && _secrets_to_check+=("${DEV1_PASSWORD}")
+  for _secret in "${_secrets_to_check[@]}"; do
     case "${_secret}" in
       change-me-*) die "change-me placeholder secrets are not allowed; set real secrets or ARTEA_ALLOW_DEV_SECRETS=true for a throwaway dev stack" ;;
     esac
   done
-  unset _secret
+  unset _secret _secrets_to_check
 fi
 
 # ---- helpers -----------------------------------------------------------------
@@ -202,21 +226,28 @@ log "admin ${ADMIN_USER} present (chart-provisioned)"
 log "minting admin token (scopes: all)"
 ADMIN_TOKEN=$(mint_token "${ADMIN_USER}" all)
 
-# ---- org (private: packages must not be world-readable) ------------------------
+# ---- org (visibility per ARTEA_ORG_VISIBILITY; default private so package
+# listings are not readable by non-members) --------------------------------------
 if [ "$(admin_code "/orgs/${ORG}")" = 200 ]; then
-  log "org ${ORG} already exists"
+  log "org ${ORG} already exists; ensuring visibility=${ARTEA_ORG_VISIBILITY}"
+  admin_send PATCH "/orgs/${ORG}" "{\"visibility\":\"${ARTEA_ORG_VISIBILITY}\"}"
 else
-  log "creating private org ${ORG}"
-  admin_send POST /orgs "{\"username\":\"${ORG}\",\"visibility\":\"private\"}"
+  log "creating org ${ORG} (visibility=${ARTEA_ORG_VISIBILITY})"
+  admin_send POST /orgs "{\"username\":\"${ORG}\",\"visibility\":\"${ARTEA_ORG_VISIBILITY}\"}"
 fi
 
 # ---- policy repo ----------------------------------------------------------------
+# registry-policy carries policy.toml + the client-setup guide. When the org is
+# limited/public, make this repo public so a freshly signed-in user can read the
+# guide before team reconciliation adds them; a private org keeps it private.
+if [ "${ARTEA_ORG_VISIBILITY}" = private ]; then REPO_PRIVATE=true; else REPO_PRIVATE=false; fi
 if [ "$(admin_code "/repos/${ORG}/${REPO}")" = 200 ]; then
-  log "repo ${ORG}/${REPO} already exists"
+  log "repo ${ORG}/${REPO} already exists; ensuring private=${REPO_PRIVATE}"
+  admin_send PATCH "/repos/${ORG}/${REPO}" "{\"private\":${REPO_PRIVATE}}"
 else
-  log "creating repo ${ORG}/${REPO}"
+  log "creating repo ${ORG}/${REPO} (private=${REPO_PRIVATE})"
   admin_send POST "/orgs/${ORG}/repos" \
-    "{\"name\":\"${REPO}\",\"private\":true,\"auto_init\":true,\"default_branch\":\"main\"}"
+    "{\"name\":\"${REPO}\",\"private\":${REPO_PRIVATE},\"auto_init\":true,\"default_branch\":\"main\"}"
 fi
 
 seed_file() { # <local path> <path in repo>
@@ -330,21 +361,37 @@ else
 fi
 
 # ---- demo user dev1 (developers member so it can read/write private packages) ----
-if [ "$(admin_code /users/dev1)" = 200 ]; then
-  log "user dev1 already exists"
+# Optional: only the e2e/smoke fixture needs it; real installs set
+# ARTEA_CREATE_DEMO_USER=false so no shared write:package account exists.
+if truthy "${ARTEA_CREATE_DEMO_USER}"; then
+  if [ "$(admin_code /users/dev1)" = 200 ]; then
+    log "user dev1 already exists"
+  else
+    log "creating user dev1"
+    create_user dev1 "${DEV1_PASSWORD}"
+  fi
+  admin_send PUT "/teams/${DEV_TEAM_ID}/members/dev1" ''
+  log "dev1 is a member of ${ORG} (developers team)"
+  # migration: older bootstraps put dev1 into Owners; removal is a no-op (204)
+  # when dev1 is not a member. Membership in developers must be ensured first so
+  # dev1 never drops out of the org entirely.
+  OWNERS_ID=$(team_id Owners)
+  [ -n "${OWNERS_ID}" ] || die "could not resolve the Owners team id"
+  admin_send DELETE "/teams/${OWNERS_ID}/members/dev1" ''
+  log "dev1 is not in Owners"
 else
-  log "creating user dev1"
-  create_user dev1 "${DEV1_PASSWORD}"
+  # Enforce the invariant on re-runs/upgrades: if an earlier bootstrap (or the
+  # default-on behavior) already created dev1, deprovision it so disabling the
+  # flag actually removes the shared write:package account. purge=true also drops
+  # its org/team memberships and revokes its tokens.
+  if [ "$(admin_code /users/dev1)" = 200 ]; then
+    log "demo user dev1 disabled; deleting existing dev1 (purge memberships + tokens)"
+    admin_send DELETE "/admin/users/dev1?purge=true" ''
+    log "dev1 removed"
+  else
+    log "demo user dev1 disabled (ARTEA_CREATE_DEMO_USER=false); none present"
+  fi
 fi
-admin_send PUT "/teams/${DEV_TEAM_ID}/members/dev1" ''
-log "dev1 is a member of ${ORG} (developers team)"
-# migration: older bootstraps put dev1 into Owners; removal is a no-op (204)
-# when dev1 is not a member. Membership in developers must be ensured first so
-# dev1 never drops out of the org entirely.
-OWNERS_ID=$(team_id Owners)
-[ -n "${OWNERS_ID}" ] || die "could not resolve the Owners team id"
-admin_send DELETE "/teams/${OWNERS_ID}/members/dev1" ''
-log "dev1 is not in Owners"
 
 # ---- branch protection on the policy repo (S14: policy changes go through PRs) --
 admin_send GET "/repos/${ORG}/${REPO}" ''
@@ -369,9 +416,12 @@ fi
 # write:package: publish+install and satisfies the gateway package-scope probe.
 # read:user: required by Verdaccio's user check.
 # read:organization: gateway org guard plus Verdaccio Artea team group mapping.
-DEV1_SCOPES="write:package,read:user,read:organization"
-log "minting dev1 token (scopes: ${DEV1_SCOPES})"
-DEV1_TOKEN=$(mint_token dev1 "${DEV1_SCOPES}")
+DEV1_TOKEN=""
+if truthy "${ARTEA_CREATE_DEMO_USER}"; then
+  DEV1_SCOPES="write:package,read:user,read:organization"
+  log "minting dev1 token (scopes: ${DEV1_SCOPES})"
+  DEV1_TOKEN=$(mint_token dev1 "${DEV1_SCOPES}")
+fi
 
 # ---- svc-policy service account (low-privilege reader of the policy repo) --------
 SVC_USER=svc-policy
@@ -468,11 +518,15 @@ POLICY_REPO=${POLICY_REPO}
 ARTEA_ADMIN_USER=${ADMIN_USER}
 ARTEA_ADMIN_PASSWORD=${ARTEA_ADMIN_PASSWORD}
 ARTEA_ADMIN_TOKEN=${ADMIN_TOKEN}
+POLICY_SYNC_TOKEN=${POLICY_SYNC_TOKEN}
+EOF
+  if truthy "${ARTEA_CREATE_DEMO_USER}"; then
+    cat <<EOF
 DEV1_USER=dev1
 DEV1_PASSWORD=${DEV1_PASSWORD}
 DEV1_TOKEN=${DEV1_TOKEN}
-POLICY_SYNC_TOKEN=${POLICY_SYNC_TOKEN}
 EOF
+  fi
 }
 write_credentials() { # <path> ; subshell so umask stays contained
   (mkdir -p "$(dirname "$1")" && umask 177 && emit_credentials > "$1")

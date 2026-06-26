@@ -127,6 +127,18 @@ bootstrap:
   # Production default: do not put throwaway credentials in Job logs. Local
   # e2e/dev flows set this true and extract the framed block from the hook log.
   emitCredentials: false
+  # Demo user `dev1` (e2e/smoke fixture: a developers member with a write:package
+  # PAT). Real installs set false so no shared publishing account exists; when
+  # false, secrets.dev1Password is not required.
+  createDemoUser: true
+  # Gitea org visibility: "private" (default; package listings hidden from
+  # non-members) or "limited" (any signed-in user can read the org's PUBLIC repos
+  # — e.g. the seeded registry-policy/CLIENT-SETUP guide — without org
+  # membership). "limited" also makes registry-policy public so a freshly
+  # signed-in user reaches the client-setup guide before team reconciliation.
+  # "public" is intentionally unsupported: this org owns the private packages and
+  # Gitea derives package read visibility from the owner.
+  orgVisibility: private
   image:
     repository: ghcr.io/yisding/artea-bootstrap
     tag: main
