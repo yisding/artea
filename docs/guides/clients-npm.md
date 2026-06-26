@@ -151,7 +151,16 @@ pnpm config set //localhost:8080/npm/:_auth $(echo -n 'user:PAT' | base64)
 
 ## 6. yarn
 
-**Yarn 1.x (classic)** reads `.npmrc`; the configuration above works as-is.
+**Yarn 1.x (classic)** reads `.npmrc`, but unlike npm it only sends auth for
+*scoped* packages unless `always-auth` is set. Artea's gateway requires auth on
+all `/npm/` traffic, so unscoped installs (`yarn add left-pad`) need it — add:
+
+```ini
+always-auth=true
+```
+
+(npm ≥ 7 ignores `always-auth` and warns on it as an unknown config, so add this
+line only if you use Yarn Classic.)
 
 **Yarn 2+ (Berry)** uses `.yarnrc.yml` instead — and since the gateway routes
 the configured private scope, no `npmScopes` block is needed:
