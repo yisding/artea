@@ -117,12 +117,15 @@ spec:
                   MISSES=0
 
                   # Name of a single Running pod for a label selector ("" if none).
-                  # --request-timeout bounds the API call so a slow apiserver can't
-                  # hang the Job.
+                  # Bounded with coreutils `timeout` (the image is Debian), NOT
+                  # kubectl --request-timeout: that global flag makes kubectl fall
+                  # back to the localhost:8080 default server instead of in-cluster
+                  # config (the API call then fails and, swallowed by 2>/dev/null,
+                  # looks like "no pod"). `timeout` bounds a slow apiserver without
+                  # disturbing in-cluster config.
                   resolve_pod() {
-                    kubectl get pods -n "${NS}" -l "$1" \
+                    timeout 30 kubectl get pods -n "${NS}" -l "$1" \
                       --field-selector=status.phase=Running \
-                      --request-timeout=30s \
                       -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true
                   }
 
@@ -145,8 +148,9 @@ spec:
                     # coreutils `timeout` is present: it exits 124 on hang and falls
                     # into the else branch (WARNING + continue), so a wedged pod
                     # cannot consume the whole activeDeadlineSeconds and block the
-                    # other cache. --request-timeout bounds the kubectl side too.
-                    if timeout 180 kubectl exec --request-timeout=120s -n "${NS}" "${pod}" -c "${container}" -- /bin/sh -c "${script}"; then
+                    # other cache. (No kubectl --request-timeout — it breaks
+                    # in-cluster config; see resolve_pod above.)
+                    if timeout 180 kubectl exec -n "${NS}" "${pod}" -c "${container}" -- /bin/sh -c "${script}"; then
                       echo "[${cache}] ok"
                     else
                       rc=$?
