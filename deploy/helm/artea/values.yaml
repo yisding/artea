@@ -151,6 +151,43 @@ bootstrap:
   backoffLimit: 10
   resources: {}
 
+# ---- cache prune CronJob (our template: exec-based, bounds the cache PVCs) -----
+# Generic cache hygiene for the DISPOSABLE Verdaccio (npm) + devpi (pypi)
+# pull-through caches. Both cache PVCs are ReadWriteOnce and already mounted by
+# their cache pods, so a sidecar/second mounter is impossible; the CronJob runs
+# kubectl and execs `find ... -delete` INSIDE each cache pod to drop only old,
+# regenerable cached files (Verdaccio *.tgz tarballs; devpi +files mirror
+# downloads). It never removes package metadata, index/keyfs state, or
+# directories — a pruned file is simply re-fetched on the next pull-through.
+# Off by default; deployments opt in.
+cachePrune:
+  enabled: false
+  # When to run `schedule`. Default: daily at 03:00. With no timeZone set, this
+  # is the kube-controller-manager timezone, which on EKS (and most clusters) is
+  # UTC, NOT the operator's local time.
+  schedule: "0 3 * * *"
+  # Optional IANA timezone for `schedule` (e.g. "America/Los_Angeles"). Empty
+  # leaves the schedule in the controller-manager timezone (UTC on EKS). CronJob
+  # spec.timeZone is stable since Kubernetes 1.27.
+  timeZone: ""
+  # Delete cached files whose mtime is older than this many days. MUST be a
+  # positive integer; enforced in templates/validations.yaml when enabled so the
+  # value can never alter the remote `find` predicate (see cache-prune-cronjob).
+  maxAgeDays: 14
+  # Needs kubectl; reuses the bootstrap image shape. Production/release installs
+  # must pin `digest` (takes precedence over tag); local/dev sets requireDigest
+  # false for locally built images.
+  image:
+    repository: ghcr.io/yisding/artea-bootstrap
+    tag: main
+    digest: ""
+    requireDigest: true
+    pullPolicy: IfNotPresent
+  # Resources for the short-lived kubectl prune pod. Empty by default, matching
+  # the other workload components; set requests/limits when a LimitRange/quota
+  # would otherwise reject or starve the pod.
+  resources: {}
+
 # ================================================================================
 # Subchart: official Gitea chart (oci://docker.gitea.com/charts/gitea).
 # Translation of gitea/app.ini for the chart-managed (rootless) image — only
