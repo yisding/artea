@@ -69,9 +69,14 @@ open_url() { # best-effort browser open; non-fatal
 }
 
 # ---- config-file editing -----------------------------------------------------
-backup() { # <file> ; timestamped copy of any existing file
+backup() { # <file> ; one timestamped copy of the file's ORIGINAL state per run
   [ -f "$1" ] || return 0
+  [ -f "$1.artea-bak.${TS}" ] && return 0   # already captured this run — keep the pristine copy
   cp -p "$1" "$1.artea-bak.${TS}" && say "  backed up $1 -> $(basename "$1").artea-bak.${TS}"
+}
+backup_pip_config() { # back up whichever pip config file `pip config` edits
+  for c in "$HOME/.config/pip/pip.conf" "$HOME/.pip/pip.conf" \
+           "$HOME/Library/Application Support/pip/pip.conf"; do backup "$c"; done
 }
 strip_block() { # <file> -> file contents with any prior artea block removed (stdout)
   [ -f "$1" ] || return 0
@@ -170,6 +175,7 @@ report_conflicts() { # scan selected tools; warn; offer safe fixes
   for c in "${CONFLICTS[@]}"; do warn "  • $c"; done
   warn "(Your files are backed up and Artea writes only inside its own marked block.)"
   if [ "$FIX_PIP_EXTRA" = 1 ] && confirm "Unset pip global.extra-index-url now?"; then
+    backup_pip_config   # capture the original (with the extra index) before removing it
     "$PIPBIN" config unset global.extra-index-url >/dev/null 2>&1 \
       && say "  unset pip global.extra-index-url" || warn "  could not unset; do it manually"
   fi
@@ -205,8 +211,14 @@ if [ "$UNINSTALL" = 1 ]; then
   remove_block "$NETRC"
   remove_block "$UV_TOML"
   if have pip || have pip3; then
-    "$PIPBIN" config unset global.index-url >/dev/null 2>&1 \
-      && say "  unset pip global.index-url" || true
+    # Only undo what we set: leave a non-Artea index-url (e.g. a corporate one) alone.
+    cur="$("$PIPBIN" config get global.index-url 2>/dev/null || true)"
+    if [ "$cur" = "${ARTEA_URL}/pypi/simple/" ]; then
+      "$PIPBIN" config unset global.index-url >/dev/null 2>&1 \
+        && say "  unset pip global.index-url" || true
+    elif [ -n "$cur" ]; then
+      say "  left pip global.index-url unchanged (not Artea: $cur)"
+    fi
   fi
   say "Done. Artea settings removed."
   exit 0
@@ -295,11 +307,8 @@ EOF
 fi
 
 if [ "$need_pip" = 1 ]; then
-  PIP=pip; have pip || PIP=pip3
-  # Back up whichever pip config file `pip config set` will edit, then set the index.
-  for c in "$HOME/.config/pip/pip.conf" "$HOME/.pip/pip.conf" \
-           "$HOME/Library/Application Support/pip/pip.conf"; do backup "$c"; done
-  "$PIP" config set global.index-url "${ARTEA_URL}/pypi/simple/" >/dev/null
+  backup_pip_config   # no-op if already captured pristine above (e.g. extra-index-url unset)
+  "$PIPBIN" config set global.index-url "${ARTEA_URL}/pypi/simple/" >/dev/null
   say "configured pip -> global.index-url = ${ARTEA_URL}/pypi/simple/"
 fi
 
@@ -317,7 +326,7 @@ fi
 say ""
 say "Done. Verify with, e.g.:"
 [ "$need_npm" = 1 ] && say "  npm view left-pad versions"
-[ "$need_pip" = 1 ] && say "  ${PIP:-pip} index versions six"
+[ "$need_pip" = 1 ] && say "  ${PIPBIN} index versions six"
 [ "$need_uv" = 1 ] && say "  uv pip install --index-url ${ARTEA_URL}/pypi/simple/ six"
 say "Publish private packages under @${ARTEA_NAMESPACE} (needs a write:package token)."
 say "Re-run any time to refresh, or 'bash setup.sh --uninstall' to remove the Artea blocks."
