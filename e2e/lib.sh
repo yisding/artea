@@ -30,12 +30,14 @@ assert_code() { # <expected-code> <curl args...> ; runs http_code on the curl ar
   [ "$code" = "$expected" ] || { echo "expected HTTP ${expected}, got ${code} for: $*"; return 1; }
 }
 
-# True if CLI output reports HTTP <code> as a *status*. Anchored to how each tool
-# prints it — npm: "code E<code>"; pip/twine (requests): "<code> <Reason>" — so the
-# bare digits in a tarball shasum/integrity hash or a package version can't
-# false-match (that substring match made S11's "not a 403" guard flaky).
+# True if CLI output reports HTTP <code> as a *status*. npm prints "code E<code>";
+# pip/twine (requests) print "<code> <Reason>" where Reason is a title-case word
+# (e.g. "Forbidden", "Client Error"). Anchored with a non-digit boundary before
+# the code and a title-case word after, so the bare digits in a tarball
+# shasum/integrity hash, a package version, or a byte-size notice ("403 B") can't
+# false-match — that substring match made S11's "not a 403" guard flaky.
 cli_status_is() { # <output> <http-code>
-  grep -qE "code E${2}|${2} [A-Za-z]" <<<"$1"
+  grep -qE "code E${2}|(^|[^0-9])${2} [A-Z][a-z]" <<<"$1"
 }
 
 assert_contains() { # <needle> <haystack> <message>
