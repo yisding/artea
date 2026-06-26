@@ -41,7 +41,6 @@ Put this in `~/.npmrc` (per-user) or your project's `.npmrc`:
 ```ini
 registry=http://localhost:8080/npm/
 //localhost:8080/:_auth=<base64 user:PAT>
-always-auth=true
 ```
 
 - `<base64 user:PAT>` — generate with:
@@ -50,8 +49,8 @@ always-auth=true
   echo -n 'your-username:your-token' | base64
   ```
 
-- npm ≥ 9 ignores `always-auth` (URL-scoped credentials are always sent);
-  keeping the line is harmless and required for older clients.
+- The URL-scoped `_auth` credential is sent on every matching request (npm ≥ 7),
+  so no `always-auth` is needed — newer npm warns on it as an unknown config.
 
 **If you publish**, add one more line carrying the *same* value (the reason is
 under [Publish](#3-publish-private-packages-only) below):
@@ -146,7 +145,6 @@ needed. Equivalent imperative setup:
 ```sh
 pnpm config set registry http://localhost:8080/npm/
 pnpm config set //localhost:8080/:_auth $(echo -n 'user:PAT' | base64)
-pnpm config set always-auth true
 # only if you publish (npm's publish preflight, see above):
 pnpm config set //localhost:8080/npm/:_auth $(echo -n 'user:PAT' | base64)
 ```

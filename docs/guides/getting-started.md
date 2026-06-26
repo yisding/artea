@@ -101,7 +101,6 @@ cat > .npmrc <<EOF
 registry=http://localhost:8080/npm/
 //localhost:8080/:_auth=${NPM_AUTH}
 //localhost:8080/npm/:_auth=${NPM_AUTH}
-always-auth=true
 EOF
 
 NPM_PACKAGE="@${ARTEA_NAMESPACE}/hello-$(date +%s)"

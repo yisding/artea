@@ -142,7 +142,6 @@ jobs:
           registry=http://localhost:8080/npm/
           //localhost:8080/:_auth=${AUTH}
           //localhost:8080/npm/:_auth=${AUTH}
-          always-auth=true
           EOF
       - run: npm publish
 ```
@@ -160,7 +159,6 @@ publish preflight — see [clients-npm.md](clients-npm.md).)
           cat > .npmrc <<EOF
           registry=http://localhost:8080/npm/
           //localhost:8080/:_auth=${AUTH}
-          always-auth=true
           EOF
       - run: npm ci
 ```

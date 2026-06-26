@@ -177,7 +177,6 @@ write_npmrc() { # <file> <token> ; the documented single-URL client contract
 registry=${GATEWAY_URL}/npm/
 //${GATEWAY_HOSTPORT}/:_auth=${b64}
 //${GATEWAY_HOSTPORT}/npm/:_auth=${b64}
-always-auth=true
 audit=false
 fund=false
 update-notifier=false
@@ -195,7 +194,6 @@ registry=${GATEWAY_URL}/npm/
 @${ARTEA_NAMESPACE}:registry=${GATEWAY_URL}/api/packages/${ARTEA_NAMESPACE}/npm/
 //${GATEWAY_HOSTPORT}/npm/:_auth=${b64}
 //${GATEWAY_HOSTPORT}/api/packages/${ARTEA_NAMESPACE}/npm/:_authToken=$2
-always-auth=true
 audit=false
 fund=false
 update-notifier=false

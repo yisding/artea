@@ -37,8 +37,8 @@ that fail authorization (non-member of the configured namespace or missing packa
 failures get this mapping: upstream 401/403s from Verdaccio itself (e.g. the policy
 middleware's tarball 403, S13) pass through unmodified because
 `proxy_intercept_errors` stays off there. npm clients send credentials on every
-request (`always-auth=true` in the documented client config), so package flows
-are unaffected by the guard.
+request (the URL-scoped `_auth` nerf-dart in the documented client config), so
+package flows are unaffected by the guard.
 
 ## PEP 503 name normalization (njs)
 
