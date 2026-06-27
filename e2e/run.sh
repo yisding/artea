@@ -114,7 +114,7 @@ POLICY_DIRTY=0       # policy.toml mutated by a scenario; cleanup reverts to ORI
 POLICY_SYNC_SCALED=0 # S15: policy-sync scaled to 0 replicas
 DEVPI_WIPED=0        # S15: devpi cache wiped, constraints not yet re-synced
 E2E_SCENARIOS="${E2E_SCENARIOS:-}"
-ALL_SCENARIOS="S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14 S15 S16 S17 S18 S19 S20 S21 S22"
+ALL_SCENARIOS="S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14 S15 S16 S17 S18 S19 S20 S21 S22 S23"
 
 # ---- cleanup (idempotent, tolerates partial runs) ---------------------------------
 cleanup() {
@@ -861,6 +861,51 @@ s20_pep700_upload_time() {
   fi
 }
 
+# ---- S23: PEP 658/714 Core Metadata for public (devpi pull-through) packages ------------------
+# Metadata-only resolves (pip/uv fetching a wheel's METADATA instead of the whole
+# wheel) require the public Simple API to advertise `core-metadata` (HTML
+# data-core-metadata + JSON key) AND the `<wheel>.metadata` file to be downloadable
+# through the gateway file guard. Private (Gitea) packages have NO PEP 658 — Gitea
+# upstream serves no .metadata file — so the gateway must NOT advertise it for them
+# (advertising a file it cannot serve would break metadata-aware installers).
+s23_pep658_core_metadata() {
+  local html json url meta
+
+  # a. public HTML Simple API advertises the PEP 714 attribute
+  html=$(gw_get /pypi/simple/six/) || { echo "six simple HTML fetch failed"; return 1; }
+  grep -q 'data-core-metadata' <<<"$html" \
+    || { echo "public simple HTML lacks data-core-metadata"; echo "$html" | head -c 300; return 1; }
+  echo "public six: HTML simple page advertises data-core-metadata"
+
+  # b. public JSON Simple API carries core-metadata per wheel (survives PEP 700 enrichment)
+  json=$(pypi_json "${DEV1_TOKEN}" six) || { echo "six v1+json fetch failed"; return 1; }
+  jq -e '[.files[] | select(.filename | endswith(".whl")) | select(.["core-metadata"])] | length > 0' \
+    >/dev/null <<<"$json" || { echo "public JSON has no wheel with core-metadata"; return 1; }
+  echo "public six: v1+json carries core-metadata per wheel"
+
+  # c. the METADATA file itself downloads at <wheel-url>.metadata through the
+  #    gateway (devpi pull-through + the Artea file guard gating it like the wheel)
+  meta=""
+  while read -r url; do
+    [ -n "$url" ] || continue
+    # --compressed: devpi serves .metadata with Content-Encoding: gzip, which the
+    # gateway streams through untouched (real installers decompress; curl needs the flag).
+    if meta=$(curl -sf --compressed -u "dev1:${DEV1_TOKEN}" "${url}.metadata" 2>/dev/null) \
+       && grep -qi '^Metadata-Version:' <<<"$meta"; then
+      echo "public six: ${url##*/}.metadata served through the gateway ($(printf %s "$meta" | wc -c) bytes)"
+      break
+    fi
+    meta=""
+  done < <(jq -r '.files[] | select(.filename | endswith(".whl")) | .url' <<<"$json")
+  [ -n "$meta" ] || { echo "no six wheel served a .metadata document through the gateway"; return 1; }
+
+  # d. private packages intentionally advertise NO core-metadata (Gitea upstream gap)
+  json=$(pypi_json "${DEV1_TOKEN}" "${PY_NAME}") || { echo "private v1+json fetch failed"; return 1; }
+  jq -e '[.files[] | select(.["core-metadata"])] | length == 0' >/dev/null <<<"$json" \
+    || { echo "private package unexpectedly advertises core-metadata (Gitea cannot serve .metadata)"; return 1; }
+  echo "private ${PY_NAME}: no core-metadata advertised (correct — Gitea has no PEP 658)"
+}
+
 # ---- S18-S19: unified policy.toml (ADR-0007) --------------------------------------------------
 # These scenarios author non-trivial policy.toml documents and revert to
 # ORIG_POLICY afterward (POLICY_DIRTY guards the cleanup revert). They exercise
@@ -1085,6 +1130,7 @@ run_scenario S17 "legacy scoped .npmrc still works; encoded private-scope paths 
 run_scenario S18 "unified allow-wins: exact-version allow beats a whole-package deny" s18_unified_allow_wins
 run_scenario S19 "malformed policy.toml keeps last-known-good; public fetch still works" s19_unified_last_known_good
 run_scenario S20 "PEP 700 upload-time: v1+json enriched to api-version 1.1 (public+private)" s20_pep700_upload_time
+run_scenario S23 "PEP 658 core-metadata: public simple advertises + .metadata downloadable (private opts out)" s23_pep658_core_metadata
 
 report
 

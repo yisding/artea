@@ -37,6 +37,11 @@ DEFAULT_METADATA_CACHE_SECONDS = 300.0
 CONSTRAINED_INDEX = "root/constrained"
 PYPI_MIRROR_INDEX = "root/pypi"
 PYPI_FILE_PREFIXES = ("root/pypi/+f/", "root/pypi/+e/")
+# PEP 658/714: devpi serves a distribution's Core Metadata at the file URL with
+# `.metadata` appended (e.g. `<wheel>.whl.metadata`). devpi has no separate link
+# entry for it, so policy decisions resolve the underlying wheel link by stripping
+# this suffix — a metadata file is allowed iff its distribution is.
+METADATA_SUFFIX = ".metadata"
 OSV_TIMEOUT_SECONDS = 5
 
 ISO_DURATION_RE = re.compile(
@@ -137,6 +142,18 @@ def iso_to_epoch(raw: str) -> float | None:
 
 def filename_from_path(path: str) -> str:
     return urllib.parse.unquote(path.rstrip("/").rsplit("/", 1)[-1].split("#", 1)[0])
+
+
+def link_entrypath(path: str) -> str:
+    """Resolve a mirror-file request path to the entrypath of its distribution.
+
+    For a PEP 658 Core Metadata request (`<file>.metadata`) this strips the
+    suffix so the underlying wheel's mirror link is found and the SAME policy
+    (constraints, upstream age, OSV) decides the metadata file too. Plain file
+    paths are returned unchanged."""
+    if path.endswith(METADATA_SUFFIX):
+        return path[: -len(METADATA_SUFFIX)]
+    return path
 
 
 def fetch_project_metadata(project: str, pypi_json_url: str, now=time.time) -> ProjectMetadata:
@@ -446,7 +463,7 @@ def file_age_tween_factory(handler, registry):
         if customizer is None or not customizer.has_file_policy():
             return handler(request)
         mirror = registry["xom"].model.getstage(PYPI_MIRROR_INDEX)
-        link = mirror.get_link_from_entrypath(path) if mirror is not None else None
+        link = mirror.get_link_from_entrypath(link_entrypath(path)) if mirror is not None else None
         project = getattr(link, "project", None)
         if link is None or not project:
             raise HTTPForbidden("public PyPI file requires age-verifiable mirror metadata")
@@ -466,7 +483,7 @@ def pypi_file_allowed_view(request):
 
     customizer = constrained_customizer(request.registry)
     mirror = request.registry["xom"].model.getstage(PYPI_MIRROR_INDEX)
-    link = mirror.get_link_from_entrypath(path) if mirror is not None else None
+    link = mirror.get_link_from_entrypath(link_entrypath(path)) if mirror is not None else None
     if customizer is None or link is None:
         raise HTTPForbidden("public PyPI file is not in the mirror index")
 

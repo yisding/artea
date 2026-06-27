@@ -745,6 +745,21 @@ class GatewayTest(unittest.TestCase):
         self.assertTrue(any(p.startswith("/+artea/file-allowed?path=")
                             for p in self.seen("devpi")))
 
+    def test_devpi_pep658_metadata_file_routed_and_guarded(self):
+        # PEP 658/714: pip/uv fetch `<wheel>.metadata` from the file URL. It must
+        # route through the SAME file guard to devpi (the location regex matches
+        # the `.metadata` suffix; the njs guard probes file-allowed for it), not
+        # 404 at the gateway and not bypass auth.
+        path = "/root/pypi/%2Bf/472/1f391ed90541f/six-1.0.0-py3-none-any.whl.metadata"
+        status, _, _ = self._raw("GET", path)
+        self.assertEqual(status, 401)  # guarded exactly like the wheel
+        status, body, _ = self._raw("GET", path, auth=GOOD_AUTH)
+        self.assertEqual(status, 200)
+        self.assertIn(".metadata", body)  # devpi actually served the metadata path
+        self.assertTrue(any(p.startswith("/+artea/file-allowed?path=") and ".metadata" in p
+                            for p in self.seen("devpi")),
+                        "the .metadata request must be policy-probed, not waved through")
+
     def test_devpi_file_download_requires_current_constrained_link(self):
         path = "/root/pypi/%2Bf/472/1f391ed90541f/six-9.9.9-py3-none-any.whl"
         before = len([p for p in self.seen("devpi") if "six-9.9.9" in p])

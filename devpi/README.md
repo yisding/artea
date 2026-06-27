@@ -4,7 +4,13 @@ This container is Artea's PyPI mirror layer. It does exactly two things:
 
 1. **`root/pypi`** — devpi's built-in mirror index of `https://pypi.org/simple/`,
    created automatically by `devpi-init` on first boot. Packages are fetched from
-   PyPI on demand and cached on disk.
+   PyPI on demand and cached on disk. The entrypoint runs devpi with
+   `--enable-core-metadata` and `ensure_index.py` sets
+   `mirror_provides_core_metadata=true` on this index, so the mirror advertises
+   **PEP 658/714 Core Metadata** (`data-core-metadata` / `core-metadata`) and
+   serves each wheel's `METADATA` at `<wheel-url>.metadata` for fast
+   metadata-only resolves. Both the server flag and the per-mirror option are
+   required (the flag alone does nothing); the option defaults off.
 2. **`root/constrained`** — a `type=constrained` index provided by Artea's local
    devpi policy plugin (`artea_devpi_policy`, derived from devpi-constrained's
    small stage customizer). It re-exposes the mirror filtered by a constraints
@@ -41,6 +47,7 @@ The gateway's pypi 404-fallback targets the **constrained** index, not the raw m
 | Gateway-internal simple index target for a project (PEP 503) | `/root/constrained/+simple/{name}/` (trailing slash; `{name}` PEP 503-normalized — pip normalizes before requesting) |
 | Gateway-internal full project list | `/root/constrained/+simple/` (avoid: forces a full pypi.org project-list sync) |
 | Release files | `/root/pypi/+f/{hash}/{filename}#sha256=...` — note **`root/pypi`**, not `root/constrained`: cached mirror files live on the base index even when discovered via the constrained one |
+| PEP 658 metadata | `/root/pypi/+f/{hash}/{filename}.metadata` — the wheel's `METADATA`, served when `mirror_provides_core_metadata` is on. The gateway routes it through the same file guard; the plugin checks it against the underlying wheel's link (`link_entrypath` strips `.metadata`), so it is allowed iff the wheel is |
 | Health/status | `/+status` (also used by the image's `HEALTHCHECK`) |
 
 Because the server runs with `--outside-url http://localhost:8080` **and
@@ -155,8 +162,11 @@ and emulates the index JSON API, so the readiness probe and HTTP calls are
 exercised for real). It asserts: init runs only on an empty server dir, the
 constrained index is created only when missing (with root credentials and the
 fail-closed `*` constraints seed plus `min_upstream_age=P0D` — never overwriting
-an existing index), re-runs are no-ops, and a missing `DEVPI_ROOT_PASSWORD`
-fails fast. No docker or network needed:
+an existing index), re-runs are no-ops, `--enable-core-metadata` is passed and
+`mirror_provides_core_metadata` is enabled on `root/pypi` idempotently (PEP 658),
+and a missing `DEVPI_ROOT_PASSWORD` fails fast. `tests/test_artea_devpi_policy.py`
+covers the plugin, including that a `<wheel>.metadata` path is policy-gated like
+its wheel. No docker or network needed:
 
 ```sh
 python3 -m pytest devpi/tests/ -q

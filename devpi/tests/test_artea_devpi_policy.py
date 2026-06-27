@@ -12,6 +12,7 @@ from artea_devpi_policy.main import (  # noqa: E402
     ConstrainedStage,
     ProjectMetadata,
     file_age_tween_factory,
+    link_entrypath,
     pypi_file_allowed_view,
     parse_iso_duration_seconds,
 )
@@ -223,6 +224,96 @@ def test_file_allowed_endpoint_derives_project_from_mirror_link():
         params={"path": "/root/pypi/+f/abc/backports.tarfile-1.0.0.tar.gz"},
     ))
     assert allowed.status_code == 204
+
+
+def test_link_entrypath_strips_pep658_metadata_suffix():
+    whl = "root/pypi/+f/abc/six-1.0.0-py3-none-any.whl"
+    assert link_entrypath(whl) == whl  # plain file unchanged
+    assert link_entrypath(whl + ".metadata") == whl  # PEP 658 metadata -> wheel
+
+
+def test_file_allowed_endpoint_gates_pep658_metadata_like_its_wheel():
+    # PEP 658: a `<wheel>.metadata` request is allowed iff the wheel is. The mirror
+    # only knows the wheel's entrypath (devpi appends `.metadata` for serving but
+    # registers no separate link), so the policy must strip the suffix to resolve
+    # the link — without that, an allowed wheel's metadata would 403.
+    customizer = make_stage("P0D")
+    customizer.stage.ixconfig["constraints"] = ["six<2"]
+
+    class FakeConstrainedStage:
+        def __init__(self, stage_customizer):
+            self.customizer = stage_customizer
+
+    class FakeMirrorStage:
+        def get_link_from_entrypath(self, path):
+            return {
+                "root/pypi/+f/472/six-1.17.0-py2.py3-none-any.whl": FakeELink(
+                    "1.17.0", "six-1.17.0-py2.py3-none-any.whl"
+                ),
+                "root/pypi/+f/bad/six-2.0.0-py3-none-any.whl": FakeELink(
+                    "2.0.0", "six-2.0.0-py3-none-any.whl"
+                ),
+            }.get(path)
+
+    class FakeModel:
+        def getstage(self, name):
+            return {"root/constrained": FakeConstrainedStage(customizer), "root/pypi": FakeMirrorStage()}.get(name)
+
+    class FakeXom:
+        model = FakeModel()
+
+    registry = {"xom": FakeXom()}
+    allowed = pypi_file_allowed_view(FakeRequest(
+        "/+artea/file-allowed",
+        registry=registry,
+        params={"path": "/root/pypi/+f/472/six-1.17.0-py2.py3-none-any.whl.metadata"},
+    ))
+    assert allowed.status_code == 204
+
+    with pytest.raises(HTTPForbidden):
+        pypi_file_allowed_view(FakeRequest(
+            "/+artea/file-allowed",
+            registry=registry,
+            params={"path": "/root/pypi/+f/bad/six-2.0.0-py3-none-any.whl.metadata"},
+        ))
+
+
+def test_direct_public_file_tween_gates_pep658_metadata_like_its_wheel(monkeypatch):
+    # The age tween intercepts the real `.metadata` serve too (its path is under
+    # the mirror file prefix); it must resolve the wheel link and block a too-new
+    # file's metadata exactly as it blocks the wheel.
+    now = time.time()
+    customizer = make_stage("P3D")
+    metadata = ProjectMetadata(
+        fetched_at=now,
+        files={"six-2.0.0-py3-none-any.whl": now - 6 * 60 * 60},
+        versions={},
+    )
+    monkeypatch.setattr(customizer, "_project_metadata", lambda project: metadata)
+
+    class FakeConstrainedStage:
+        def __init__(self, stage_customizer):
+            self.customizer = stage_customizer
+
+    class FakeMirrorStage:
+        def get_link_from_entrypath(self, path):
+            # Only the wheel entrypath is known; a `.metadata` lookup that is not
+            # stripped returns None and the tween would 403 with a different reason.
+            if path == "root/pypi/+f/abc/six-2.0.0-py3-none-any.whl":
+                return FakeLink("2.0.0", "six-2.0.0-py3-none-any.whl")
+            return None
+
+    class FakeModel:
+        def getstage(self, name):
+            return {"root/constrained": FakeConstrainedStage(customizer), "root/pypi": FakeMirrorStage()}.get(name)
+
+    class FakeXom:
+        model = FakeModel()
+
+    tween = file_age_tween_factory(lambda request: "ok", {"xom": FakeXom()})
+
+    with pytest.raises(HTTPForbidden):
+        tween(FakeRequest("/root/pypi/+f/abc/six-2.0.0-py3-none-any.whl.metadata"))
 
 
 def test_direct_public_file_tween_enforces_min_upstream_age(monkeypatch):
