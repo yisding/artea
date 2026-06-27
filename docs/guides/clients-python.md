@@ -79,7 +79,13 @@ In `uv.toml` (`~/.config/uv/uv.toml`) or under `[tool.uv]` in `pyproject.toml`:
 name = "artea"
 url = "http://localhost:8080/pypi/simple/"
 default = true
+authenticate = "always"
 ```
+
+`authenticate = "always"` (uv ≥ 0.6.9) makes uv attach credentials to the
+first request instead of trying anonymously, getting a `401`, and retrying —
+Artea requires auth on every request, so the anonymous attempt is always a
+wasted round-trip.
 
 Credentials: uv reads `~/.netrc` automatically; alternatively use the
 per-index environment variables:

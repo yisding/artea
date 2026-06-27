@@ -144,8 +144,14 @@ cat > ~/.config/uv/uv.toml <<EOF
 name = "artea"
 url = "${ARTEA_URL}/pypi/simple/"
 default = true
+authenticate = "always"
 EOF
 ```
+
+`authenticate = "always"` makes uv send your `~/.netrc` credentials on the
+first request. Artea requires auth on every request, so without it uv tries
+each request anonymously first, gets a `401`, then retries with credentials —
+a wasted round-trip. (Requires uv ≥ 0.6.9.)
 
 In a project's `pyproject.toml`, use this equivalent shape:
 
@@ -154,6 +160,7 @@ In a project's `pyproject.toml`, use this equivalent shape:
 name = "artea"
 url = "__ARTEA_PUBLIC_URL__/pypi/simple/"
 default = true
+authenticate = "always"
 ```
 
 Verify:
