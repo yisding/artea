@@ -373,14 +373,21 @@ class GatewayTest(unittest.TestCase):
         self.assertIn("proto=https", body)
         self.assertIn("outside=https://", body)
 
-    def test_forwarded_proto_takes_first_value_of_a_proxy_chain(self):
-        # If a multi-hop chain leaves a comma list, the leftmost (origin) wins.
-        status, body, _ = self._raw(
-            "GET", "/forwarded-echo",
-            headers={"X-Forwarded-Proto": "https, http"})
-        self.assertEqual(status, 200)
-        self.assertIn("proto=https", body)
-        self.assertIn("outside=https://", body)
+    def test_forwarded_proto_uses_trusted_last_value_in_a_chain(self):
+        # When a proxy APPENDS rather than overwrites, X-Forwarded-Proto arrives
+        # as a comma list. The directly-fronting (trusted) proxy's value is the
+        # LAST element — a client can only prepend — so the gateway must select
+        # the last token, never the client-controlled first one. This blocks a
+        # client from smuggling a downgraded scheme past an HTTPS ingress: with
+        # "https, http" the real (last) scheme http wins, and a spoofed leading
+        # "http" cannot mask the trusted trailing "https".
+        for header, want in (("http, https", "https"), ("https, http", "http")):
+            status, body, _ = self._raw(
+                "GET", "/forwarded-echo",
+                headers={"X-Forwarded-Proto": header})
+            self.assertEqual(status, 200, header)
+            self.assertIn(f"proto={want}", body, header)
+            self.assertIn(f"outside={want}://", body, header)
 
     def test_forwarded_proto_falls_back_to_connection_scheme(self):
         # No fronting proxy (direct connection / kubectl port-forward): fall back
@@ -388,6 +395,14 @@ class GatewayTest(unittest.TestCase):
         status, body, _ = self._raw("GET", "/forwarded-echo")
         self.assertEqual(status, 200)
         self.assertIn("proto=http", body)
+        self.assertIn("outside=http://", body)
+        # An unexpected token (not exactly http|https) is ignored rather than
+        # forwarded verbatim into a scheme — same safe fallback to $scheme.
+        status, body, _ = self._raw(
+            "GET", "/forwarded-echo", headers={"X-Forwarded-Proto": "javascript"})
+        self.assertEqual(status, 200)
+        self.assertIn("proto=http", body)
+        self.assertIn("outside=http://", body)
         self.assertIn("outside=http://", body)
 
     def test_gitea_package_api_limited_to_artea_npm_and_pypi(self):
