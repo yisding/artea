@@ -265,8 +265,12 @@ else
     "{\"name\":\"${REPO}\",\"private\":true,\"auto_init\":true,\"default_branch\":\"main\"}"
 fi
 
+repo_file_exists() { # <path in repo>
+  [ "$(admin_code "/repos/${ORG}/${REPO}/contents/$1")" = 200 ]
+}
+
 seed_file() { # <local path> <path in repo>
-  if [ "$(admin_code "/repos/${ORG}/${REPO}/contents/$2")" = 200 ]; then
+  if repo_file_exists "$2"; then
     log "$2 already seeded"
     return
   fi
@@ -275,10 +279,15 @@ seed_file() { # <local path> <path in repo>
     "{\"content\":\"${b64}\",\"message\":\"chore: seed $2\"}"
   log "seeded $2"
 }
-# policy.toml is the canonical unified source for fresh installs; the three
-# legacy files are kept as a fallback for existing deployments (policy-sync
-# parses policy.toml first and falls back to the legacy files when it is absent).
-seed_file policy/policy.toml policy.toml
+# policy.toml is canonical for fresh installs. Do not add the default allow-all
+# policy.toml to a repo that already has legacy policy, because policy.toml wins.
+if repo_file_exists policy.toml; then
+  log "policy.toml already seeded"
+elif repo_file_exists npm-rules.yaml || repo_file_exists upstream-policy.yaml || repo_file_exists pypi-constraints.txt; then
+  log "legacy policy files exist; not seeding policy.toml"
+else
+  seed_file policy/policy.toml policy.toml
+fi
 seed_file policy/npm-rules.yaml npm-rules.yaml
 seed_file policy/upstream-policy.yaml upstream-policy.yaml
 seed_file policy/pypi-constraints.txt pypi-constraints.txt
