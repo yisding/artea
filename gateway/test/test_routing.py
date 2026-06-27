@@ -526,10 +526,15 @@ class GatewayTest(unittest.TestCase):
         # before either upstream sees it.
         g_before = len(self.upstreams["gitea"].requests)
         v_before = len(self.upstreams["verdaccio"].requests)
-        status, body, _ = self._raw("GET", f"/npm/@{TEST_NAMESPACE}%252fscoped-f",
-                                    auth=GOOD_AUTH)
+        status, _, _ = self._raw("GET", f"/npm/@{TEST_NAMESPACE}%252fscoped-f",
+                                 auth=GOOD_AUTH)
         self.assertEqual(status, 400)
-        self.assertEqual(body, "")
+        # Body is intentionally not asserted byte-for-byte: the gateway rejects
+        # with a bare `return 400`, so nginx serves its default 400 error page,
+        # whose markup is build-dependent (some builds emit a styled HTML page,
+        # others little or nothing). The contract is the 400 status reaching
+        # neither upstream — pinned by the two checks below — not the bytes of
+        # nginx's stock rejection page.
         self.assertEqual(len(self.upstreams["gitea"].requests), g_before)
         self.assertEqual(len(self.upstreams["verdaccio"].requests), v_before)
 
