@@ -189,6 +189,19 @@ CLIENT CAVEAT comment in `deploy/helm/artea/files/gateway/nginx.conf`.
 - `X-Forwarded-For/-Proto/-Host`, `X-Real-IP`, `Host $http_host` set for all
   upstreams; `X-outside-url` is set for devpi paths so generated public package
   links stay on the gateway origin.
+- `X-Forwarded-Proto` / `X-outside-url` carry `$artea_forwarded_proto`, not the
+  raw `$scheme`. A fronting TLS-terminating proxy (AWS ELB/ALB, another ingress,
+  a CDN) ends HTTPS and forwards to the gateway over plain HTTP on `:80`, so
+  `$scheme` is `http`; a `map` honors the proxy's inbound `X-Forwarded-Proto`
+  and falls back to `$scheme` only when that header is absent (direct connection
+  / `kubectl port-forward`). If a proxy appends rather than overwrites, the
+  header is a comma list whose **last** element is the trusted, directly-fronting
+  proxy's value (a client can only prepend); the `map` takes that last element
+  and only when it is exactly `http`/`https`, so a client cannot smuggle a
+  downgraded `X-Forwarded-Proto: http` past an HTTPS ingress. Without honoring
+  the header at all, Gitea emits `http://` 301/302 redirects and devpi `http://`
+  file links to HTTPS clients, which the ALB's `ssl-redirect` then bounces back
+  into a downgrade/loop.
 
 ## Auth-result cache
 
