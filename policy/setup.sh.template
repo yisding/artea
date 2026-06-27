@@ -369,6 +369,7 @@ if [ "$need_uv" = 1 ]; then
 name = "artea"
 url = "${ARTEA_URL}/pypi/simple/"
 default = true
+authenticate = "always"
 EOF
 )" append
   say "configured uv -> $UV_TOML"
