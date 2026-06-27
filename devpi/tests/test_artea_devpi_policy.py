@@ -35,10 +35,10 @@ class FakeRequest:
         self.path_info = path_info
 
 
-def make_stage(min_age="P3D"):
+def make_stage(min_age="P3D", constraints=None):
     customizer = ConstrainedStage()
     customizer.stage = FakeStage({
-        "constraints": [],
+        "constraints": constraints or [],
         "min_upstream_age": min_age,
         "pypi_json_url": "https://pypi.example.test/pypi",
     })
@@ -97,6 +97,47 @@ def test_file_allowed_requires_upload_time(monkeypatch):
 
     assert customizer.file_allowed("six", "six-1.0.0-py3-none-any.whl") is True
     assert customizer.file_allowed("six", "six-2.0.0-py3-none-any.whl") is False
+
+
+def test_file_allowed_applies_constraints_without_age_gate():
+    customizer = make_stage("P0D", ["six<2.0.0"])
+
+    assert customizer.file_allowed("six", "six-1.0.0-py3-none-any.whl") is True
+    assert customizer.file_allowed("six", "six-2.0.0-py3-none-any.whl") is False
+
+
+def test_file_allowed_honors_default_deny_constraint():
+    customizer = make_stage("P0D", ["*"])
+
+    assert customizer.file_allowed("six", "six-1.0.0-py3-none-any.whl") is False
+
+
+def test_direct_public_file_tween_enforces_constraints_without_age_gate():
+    customizer = make_stage("P0D", ["six<2.0.0"])
+
+    class FakeConstrainedStage:
+        def __init__(self, stage_customizer):
+            self.customizer = stage_customizer
+
+    class FakeMirrorStage:
+        def get_link_from_entrypath(self, path):
+            return FakeLink("2.0.0", "six-2.0.0-py3-none-any.whl")
+
+    class FakeModel:
+        def getstage(self, name):
+            stages = {
+                "root/constrained": FakeConstrainedStage(customizer),
+                "root/pypi": FakeMirrorStage(),
+            }
+            return stages.get(name)
+
+    class FakeXom:
+        model = FakeModel()
+
+    tween = file_age_tween_factory(lambda request: "ok", {"xom": FakeXom()})
+
+    with pytest.raises(HTTPForbidden):
+        tween(FakeRequest("/root/pypi/+f/abc/six-2.0.0-py3-none-any.whl"))
 
 
 def test_direct_public_file_tween_enforces_min_upstream_age(monkeypatch):

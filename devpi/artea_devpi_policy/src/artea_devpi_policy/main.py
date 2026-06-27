@@ -274,7 +274,16 @@ class ConstrainedStage:
                 continue
             yield True
 
-    def file_allowed(self, project: str, filename: str) -> bool:
+    def file_allowed(self, project: str, filename: str, version: str | None = None) -> bool:
+        constraints = self.constraints
+        version_filter = constraints.get(project)
+        if version is None:
+            version = self._filename_version(project, filename)
+        if version is None:
+            return False
+        include_legacy = version_filter is None or not len(version_filter)
+        if not self._version_matches_filter(version, version_filter, constraints, include_legacy):
+            return False
         if self.min_upstream_age_seconds <= 0:
             return True
         metadata = self._project_metadata(project)
@@ -303,16 +312,18 @@ class ConstrainedStage:
             return include_legacy
         return parsed_version in version_filter
 
+    def _filename_version(self, project: str, filename: str) -> str | None:
+        parts = splitext_archive(filename)[0].split("-")
+        for index in range(1, len(parts)):
+            name = normalize_name("-".join(parts[:index]))
+            if name != project:
+                continue
+            return parts[index]
+        return None
+
     def _link_version(self, project, link_info):
         if isinstance(link_info, tuple):
-            key = link_info[0]
-            parts = splitext_archive(key)[0].split("-")
-            for index in range(1, len(parts)):
-                name = normalize_name("-".join(parts[:index]))
-                if name != project:
-                    continue
-                return "-".join(parts[index:])
-            return None
+            return self._filename_version(project, filename_from_link(link_info))
         if link_info.name != project:
             return None
         return link_info.version
@@ -340,16 +351,17 @@ def file_age_tween_factory(handler, registry):
         if not path.startswith(PYPI_FILE_PREFIXES):
             return handler(request)
         customizer = constrained_customizer(registry)
-        if customizer is None or customizer.min_upstream_age_seconds <= 0:
-            return handler(request)
+        if customizer is None:
+            raise HTTPForbidden("public PyPI file requires configured policy")
         mirror = registry["xom"].model.getstage(PYPI_MIRROR_INDEX)
         link = mirror.get_link_from_entrypath(path) if mirror is not None else None
         project = getattr(link, "project", None)
         if link is None or not project:
             raise HTTPForbidden("public PyPI file requires age-verifiable mirror metadata")
         filename = getattr(link, "basename", filename_from_path(path))
-        if not customizer.file_allowed(project, filename):
-            raise HTTPForbidden("%s is newer than the registry minimum upstream age" % filename)
+        version = getattr(link, "version", None)
+        if not customizer.file_allowed(project, filename, version):
+            raise HTTPForbidden("%s is blocked by the registry PyPI policy" % filename)
         return handler(request)
 
     return tween
