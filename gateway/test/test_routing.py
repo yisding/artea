@@ -747,12 +747,19 @@ class GatewayTest(unittest.TestCase):
 
     def test_devpi_file_download_requires_current_constrained_link(self):
         path = "/root/pypi/%2Bf/472/1f391ed90541f/six-9.9.9-py3-none-any.whl"
-        before = len([p for p in self.seen("devpi") if "six-9.9.9" in p])
+        # Count only the FILE proxy (/root/...), not the /+artea/file-allowed
+        # policy check: the guard legitimately forwards the file path to that
+        # check (which carries the filename in its ?path= query), and on a 403 it
+        # is exactly that check which blocks the file. What must never happen is
+        # the blocked file itself being proxied to devpi.
+        file_hits = lambda: [p for p in self.seen("devpi")
+                             if "six-9.9.9" in p and p.startswith("/root/")]
+        before = len(file_hits())
         status, body, headers = self._raw("GET", path, auth=GOOD_AUTH)
         self.assertEqual((status, body), (403, "forbidden\n"))
         self.assertNotIn("WWW-Authenticate", headers)
-        after = len([p for p in self.seen("devpi") if "six-9.9.9" in p])
-        self.assertEqual(after, before, "blocked file must not be proxied to devpi")
+        self.assertEqual(len(file_hits()), before,
+                         "blocked file itself must not be proxied to devpi")
 
     def test_devpi_file_download_missing_package_scope_rejected(self):
         path = "/root/pypi/%2Bf/472/1f391ed90541f/six-1.0.0-py3-none-any.whl"
