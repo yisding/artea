@@ -151,14 +151,15 @@ bootstrap:
   backoffLimit: 10
   resources: {}
 
-# ---- cache prune CronJob (our template: exec-based, bounds the cache PVCs) -----
+# ---- cache prune CronJob (our template: PVC-mounted cache hygiene) ---------------
 # Generic cache hygiene for the DISPOSABLE Verdaccio (npm) + devpi (pypi)
-# pull-through caches. Both cache PVCs are ReadWriteOnce and already mounted by
-# their cache pods, so a sidecar/second mounter is impossible; the CronJob runs
-# kubectl and execs `find ... -delete` INSIDE each cache pod to drop only old,
-# regenerable cached files (Verdaccio *.tgz tarballs; devpi +files mirror
-# downloads). It never removes package metadata, index/keyfs state, or
-# directories — a pruned file is simply re-fetched on the next pull-through.
+# pull-through caches. The CronJob mounts the cache PVCs directly and never gets
+# Kubernetes API credentials, so enabling it does not grant pod exec rights in
+# the namespace.
+# It drops only old, regenerable cached files (Verdaccio *.tgz tarballs; devpi
+# +files mirror downloads). It never removes package metadata, index/keyfs
+# state, or directories — a pruned file is simply re-fetched on the next
+# pull-through.
 # Off by default; deployments opt in.
 cachePrune:
   enabled: false
@@ -174,9 +175,9 @@ cachePrune:
   # positive integer; enforced in templates/validations.yaml when enabled so the
   # value can never alter the remote `find` predicate (see cache-prune-cronjob).
   maxAgeDays: 14
-  # Needs kubectl; reuses the bootstrap image shape. Production/release installs
-  # must pin `digest` (takes precedence over tag); local/dev sets requireDigest
-  # false for locally built images.
+  # Prune runner image with bash/find/rm. Production/release installs must pin
+  # `digest` (takes precedence over tag); local/dev sets requireDigest false for
+  # locally built images.
   image:
     repository: ghcr.io/yisding/artea-bootstrap
     tag: main
