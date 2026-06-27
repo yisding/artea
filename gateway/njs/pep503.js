@@ -113,8 +113,17 @@ function pypiFileGuard(r) {
             return;
         }
 
-        var probe = '/_artea_devpi_file_allowed?path=' + encodeURIComponent(path);
-        r.subrequest(probe, {method: 'GET'}, function(allowed) {
+        // Pass the path through the subrequest options `args` (the form pep700.js
+        // already uses for /_enrich), NOT embedded in the URI string. Some njs
+        // builds do not split a query off a URI-string subrequest target: the
+        // location's $arg_path then comes up empty and the subrequest can resolve
+        // without ever proxying to devpi, so the file-allowed check is skipped and
+        // a stale/blocked mirror file would pass the guard (fail-open). The
+        // options form keeps $arg_path populated across njs versions; nginx
+        // url-decodes it once for the upstream's ?path= just as before.
+        r.subrequest('/_artea_devpi_file_allowed',
+                     {method: 'GET', args: 'path=' + encodeURIComponent(path)},
+                     function(allowed) {
             if (allowed.status >= 200 && allowed.status < 300) {
                 r.return(204);
                 return;
