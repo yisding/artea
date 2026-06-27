@@ -122,6 +122,15 @@ class UpstreamHandler(http.server.BaseHTTPRequestHandler):
         auth = self.headers.get("Authorization")
         server.requests.append((self.path, auth))
         if server.tag == "gitea":
+            # Echo the proxy-set forwarded headers so the routing test can assert
+            # the gateway derives them from the client-facing scheme (a fronting
+            # TLS-terminating ELB/ALB's X-Forwarded-Proto), not nginx's own
+            # connection $scheme. Reached via the catch-all `location /`.
+            if self.path == "/forwarded-echo":
+                self._reply(200, "proto=%s outside=%s" % (
+                    self.headers.get("X-Forwarded-Proto"),
+                    self.headers.get("X-outside-url")))
+                return
             if self.path == "/api/v1/user":
                 if auth in (GOOD_AUTH, GOOD_TOKEN_AUTH, NO_PACKAGE_AUTH):
                     self._reply(200, '{"login":"user"}')
@@ -322,10 +331,12 @@ class GatewayTest(unittest.TestCase):
         cls.tmp.cleanup()
 
     @classmethod
-    def _raw(cls, method, path, auth=None, accept=None):
+    def _raw(cls, method, path, auth=None, accept=None, headers=None):
         """http.client keeps the path byte-exact (no normalization)."""
         conn = http.client.HTTPConnection("127.0.0.1", cls.port, timeout=5)
-        headers = {"Authorization": auth} if auth else {}
+        headers = dict(headers) if headers else {}
+        if auth:
+            headers["Authorization"] = auth
         if accept:
             headers["Accept"] = accept
         conn.request(method, path, headers=headers)
@@ -350,6 +361,34 @@ class GatewayTest(unittest.TestCase):
         status, body, _ = self._raw("GET", path, auth=GOOD_TOKEN_AUTH)
         self.assertEqual(status, 200)
         self.assertEqual(body, f"gitea {path}")
+
+    def test_forwarded_proto_honors_tls_terminating_proxy(self):
+        # Behind an ELB/ALB that terminates TLS and forwards over HTTP on :80,
+        # the gateway must pass the CLIENT-facing scheme downstream (from the
+        # ALB's X-Forwarded-Proto: https), not nginx's own http $scheme — else
+        # Gitea emits http:// 301/302 redirects and devpi http:// file links.
+        status, body, _ = self._raw(
+            "GET", "/forwarded-echo", headers={"X-Forwarded-Proto": "https"})
+        self.assertEqual(status, 200)
+        self.assertIn("proto=https", body)
+        self.assertIn("outside=https://", body)
+
+    def test_forwarded_proto_takes_first_value_of_a_proxy_chain(self):
+        # If a multi-hop chain leaves a comma list, the leftmost (origin) wins.
+        status, body, _ = self._raw(
+            "GET", "/forwarded-echo",
+            headers={"X-Forwarded-Proto": "https, http"})
+        self.assertEqual(status, 200)
+        self.assertIn("proto=https", body)
+        self.assertIn("outside=https://", body)
+
+    def test_forwarded_proto_falls_back_to_connection_scheme(self):
+        # No fronting proxy (direct connection / kubectl port-forward): fall back
+        # to nginx's own $scheme, which is http for this loopback test client.
+        status, body, _ = self._raw("GET", "/forwarded-echo")
+        self.assertEqual(status, 200)
+        self.assertIn("proto=http", body)
+        self.assertIn("outside=http://", body)
 
     def test_gitea_package_api_limited_to_artea_npm_and_pypi(self):
         before = len(self.upstreams["gitea"].requests)
