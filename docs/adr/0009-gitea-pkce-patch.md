@@ -28,8 +28,8 @@ no settings, schema, or dependency changes (`golang.org/x/oauth2` already ships
 the helpers).
 
 Artea therefore **provides a reproducible build of a patched Gitea image**
-(`gitea/build-image.sh`): clone upstream Gitea at the `SOURCE_TAG` pinned in
-`gitea/UPSTREAM`, apply the patch queue (`apply-patches.sh`, via `git apply`),
+(`gitea/build-image.sh`): clone upstream Gitea at the `SOURCE_TAG`/`SOURCE_COMMIT` pins in
+`gitea/UPSTREAM`, verify the tag resolves to that commit, apply the patch queue (`apply-patches.sh`, via `git apply`),
 and build Gitea's own `Dockerfile.rootless`. CI publishes it as
 `ghcr.io/yisding/artea-gitea`.
 

@@ -113,7 +113,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=artea-${{ matrix.name }}
 
   # The PATCHED Gitea image (ADR-0009): clone upstream at gitea/UPSTREAM's
-  # SOURCE_TAG, apply gitea/patches/ (the PKCE patch), build Dockerfile.rootless.
+  # SOURCE_TAG/SOURCE_COMMIT, apply gitea/patches/ (the PKCE patch), build Dockerfile.rootless.
   # Not a `build` matrix entry — there is no checked-in Dockerfile;
   # gitea/build-image.sh does the clone+patch+build. The published image must run
   # on both amd64 and arm64 (e.g. Graviton) nodes, but Gitea's rootless image is a

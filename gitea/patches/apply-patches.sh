@@ -2,7 +2,7 @@
 # Apply the gitea/patches/series queue onto an upstream Gitea source checkout.
 # Usage: apply-patches.sh [--check] <upstream-checkout-dir>
 #   --check  dry-run only; verifies every patch applies cleanly, modifies nothing.
-# The checkout must be at the SOURCE_TAG pinned in gitea/UPSTREAM.
+# The checkout must be at the SOURCE_COMMIT pinned in gitea/UPSTREAM.
 set -eu
 
 usage() {

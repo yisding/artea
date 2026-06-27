@@ -18,10 +18,12 @@ DIGEST=sha256:7d13848af12645600a5f9d93ee2560daa9c6fa6b5b859b7bff3a5e1c0b661031
 # git tag the runtime overlay (app.ini keys, custom/templates) AND the patched
 # image source build (gitea/build-image.sh) are verified against
 SOURCE_TAG=v1.26.2
+# peeled commit for SOURCE_TAG; build-image.sh verifies the fetched tag resolves here
+SOURCE_COMMIT=2c749ce548b1da0a52835861a87b888e67842d29
 
 # Bump procedure (also re-run after any overlay change):
 # 1. Pick the new stable tag from https://github.com/go-gitea/gitea/releases
-#    (and its digest from Docker Hub). Update VERSION/DIGEST/SOURCE_TAG here and
+#    (and its digest from Docker Hub). Update VERSION/DIGEST/SOURCE_TAG/SOURCE_COMMIT here and
 #    gitea.image.tag in deploy/helm/artea/values.yaml.
 # 2. Re-verify the template overlay against upstream template changes — every file
 #    under gitea/custom/templates/ shadows an upstream file wholesale, so upstream
@@ -35,7 +37,7 @@ SOURCE_TAG=v1.26.2
 # 3. Re-verify app.ini keys against the new tag's custom/conf/app.example.ini
 #    (breaking config changes are listed in the upstream release notes).
 # 4. The gitea/patches/ queue is non-empty (PKCE patch, ADR-0009): after bumping
-#    SOURCE_TAG, run `gitea/patches/apply-patches.sh --check <checkout>` against a
+#    SOURCE_TAG and SOURCE_COMMIT, run `gitea/patches/apply-patches.sh --check <checkout>` against a
 #    checkout of the new tag, re-verify the queue applies AND the package
 #    compiles, rebase any failing patch (patches/README.md), then rebuild the
 #    patched image with gitea/build-image.sh.

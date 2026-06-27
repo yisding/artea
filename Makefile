@@ -32,7 +32,7 @@ images: plugins ## build devpi, policy-sync, bootstrap and verdaccio-assets imag
 		-f deploy/docker/verdaccio-assets/Dockerfile verdaccio/plugins
 
 # Build the PATCHED Gitea rootless image (ADR-0009): clone upstream at the
-# SOURCE_TAG in gitea/UPSTREAM, apply gitea/patches/ (the PKCE patch), build
+# SOURCE_TAG/SOURCE_COMMIT in gitea/UPSTREAM, apply gitea/patches/ (the PKCE patch), build
 # Gitea's Dockerfile.rootless. Slow (Go + frontend). Opt-in: values-local.yaml
 # selects it via gitea.image.fullOverride so local dev runs the PKCE build.
 gitea-image: ## build the patched Gitea rootless image (:local) — clone+patch+build, slow
