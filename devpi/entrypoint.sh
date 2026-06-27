@@ -31,6 +31,11 @@ fi
 #   without --absolute-urls devpi emits relative hrefs that break behind the
 #   gateway's /pypi/simple/ -> /root/constrained/+simple/ path translation
 # --restrict-modify root: defense in depth, devpi otherwise allows anonymous signup
+# --enable-core-metadata: serve PEP 658/714 Core Metadata for public wheels (the
+#   data-core-metadata simple-API attribute + the `<file>.metadata` download) so
+#   pip/uv can fetch a wheel's METADATA without the whole wheel. This is the
+#   server-wide switch; the per-mirror mirror_provides_core_metadata=true on
+#   root/pypi (ensure_index.py) actually turns it on for the pull-through cache.
 log "starting devpi-server on 0.0.0.0:${PORT} (outside-url ${OUTSIDE_URL})"
 devpi-server \
   --host 0.0.0.0 \
@@ -38,6 +43,7 @@ devpi-server \
   --serverdir "${SERVERDIR}" \
   --outside-url "${OUTSIDE_URL}" \
   --absolute-urls \
+  --enable-core-metadata \
   --restrict-modify root &
 SERVER_PID=$!
 

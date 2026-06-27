@@ -103,6 +103,25 @@ def test_devpi_join_annotates_upload_time_and_size(stub):
     assert "2.0.0" not in doc["versions"], "version not in the served file set is absent"
 
 
+def test_devpi_preserves_pep658_core_metadata(stub):
+    # PEP 658/714: when devpi's constrained index advertises `core-metadata` for a
+    # wheel (mirror_provides_core_metadata on root/pypi), the enriched v1.1 JSON
+    # must carry it through unchanged so pip/uv can do a metadata-only resolve.
+    fname = "six-1.0.0-py3-none-any.whl"
+    stub.route("/root/constrained/+simple/six/", lambda h: _reply(
+        h, 200, _devpi_simple([{"filename": fname, "url": "http://x/six-1.0.0...whl",
+                                "hashes": {"sha256": "abc"}, "core-metadata": True}]),
+        "application/vnd.pypi.simple.v1+json"))
+    stub.route("/six/json", lambda h: _reply(h, 200, _pypi_json({
+        "1.0.0": [{"filename": fname, "upload_time_iso_8601": "2023-06-15T10:23:45.123456Z", "size": 9}],
+    })))
+
+    doc = enrich.enrich_devpi("six", stub.url, stub.url)
+    assert doc["files"][0]["core-metadata"] is True
+    # and the PEP 700 layering still happened on the same file
+    assert doc["files"][0]["upload-time"] == "2023-06-15T10:23:45.123456Z"
+
+
 def test_devpi_versions_use_authoritative_release_key_not_filename(stub):
     # The base file's name embeds a version string ("1.0.0") that the filename
     # heuristic would extract, but PyPI's authoritative release KEY normalizes it

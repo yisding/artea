@@ -58,7 +58,7 @@ One public entrypoint (the gateway). Everything else is internal.
 | Bootstrap admin | `ARTEA_ADMIN_USER` (default `${ARTEA_NAMESPACE}-admin` when unset), password from Helm `secrets.adminPassword` |
 | Config source | version pins, secrets, and namespace settings live in `deploy/helm/artea/values.yaml` (Gitea image pin kept in sync with `gitea/UPSTREAM`); secrets come from `secrets.*` values (dev placeholders in `values-local.yaml` gated by `allowDevPlaceholders`; real installs via `-f my-secrets.yaml`) |
 | Runtime configs | single-sourced as Helm templates in `deploy/helm/artea/`, rendered into ConfigMaps by Helm (gateway `nginx.conf`, verdaccio `config.yaml`; Gitea config via `gitea.gitea.config` in `values.yaml`) |
-| devpi indexes | `root/pypi` (mirror of pypi.org), `root/constrained` (type=constrained, bases=root/pypi) |
+| devpi indexes | `root/pypi` (mirror of pypi.org, `mirror_provides_core_metadata=true` for PEP 658), `root/constrained` (type=constrained, bases=root/pypi) |
 
 The private namespace has one identity under two names: the Helm chart input
 `global.privateNamespace` sets the `ARTEA_NAMESPACE` runtime env (surfaced in
@@ -176,6 +176,26 @@ devpi redirect that would skip the precedence check.
   file/external-link routes generated from constrained simple pages; raw
   `/root/*/+simple/` browsing is not exposed.
 
+### Simple API metadata (PEP 700 + PEP 658)
+
+The gateway serves more than bare PEP 503/691 so modern resolvers work well:
+
+- **PEP 700 upload-time** (`api-version` 1.1) is synthesized for the JSON Simple
+  API on both branches — see the gateway PEP 700 section (S20).
+- **PEP 658/714 Core Metadata** is served for **public (devpi pull-through)**
+  packages: devpi runs with `--enable-core-metadata` and the `root/pypi` mirror
+  with `mirror_provides_core_metadata=true` (set by `devpi/ensure_index.py`), so
+  its simple pages advertise `data-core-metadata`/`core-metadata` and serve the
+  `<wheel>.metadata` file. pip/uv can then fetch a wheel's METADATA without the
+  whole wheel. The enrichment layer copies the `core-metadata` key through
+  verbatim, and the gateway routes `<wheel>.metadata` through the same devpi file
+  guard (so a metadata file inherits the wheel's own constraint/age/OSV verdict).
+  **Private (Gitea) packages opt out**: Gitea 1.26.2's PyPI registry has no
+  PEP 658 support (no `.metadata` route, no attribute), and the no-fork rule (R7)
+  keeps us from patching it, so Artea must not advertise metadata it cannot serve.
+  Synthesizing private metadata from the stored wheel is a possible future
+  enhancement (would warrant an ADR). S23 pins both behaviors.
+
 ## Auth model
 
 - **Humans**: SSO into Gitea via an OIDC authentication source (Okta works; documented
@@ -264,7 +284,10 @@ constraints and upstream upload time. It also guards direct `root/pypi` public
 file URLs inside devpi; when an age gate is active, a file without known
 project/upload-time context is rejected rather than served unverified. With OSV
 filtering enabled, the same simple-link and direct-file decisions exclude
-versions policy-sync reports as OSV malicious.
+versions policy-sync reports as OSV malicious. A PEP 658 `<wheel>.metadata`
+request resolves to its underlying wheel's mirror link, so the metadata file
+inherits exactly the wheel's allow/deny verdict — no metadata is served for a
+file the gate blocks.
 
 **Failure mode is fail-closed:** if `/policy/npm-rules.yaml` or
 `/policy/upstream-policy.yaml` is missing or unparsable,
@@ -448,3 +471,8 @@ S21 `pnpm publish` a private `@${ARTEA_NAMESPACE}/pnpm-hello-${ARTEA_NAMESPACE}`
     Gitea, then `pnpm add` resolves it back through the gateway (publish → consume loop).
 S22 `uv build` + `uv publish` a `${ARTEA_NAMESPACE}-uv-hello` wheel → Gitea, then
     `uv pip install` resolves it back through the gateway index (publish → consume loop).
+S23 PEP 658/714 Core Metadata: the public (devpi pull-through) Simple API
+    advertises `core-metadata` (HTML `data-core-metadata` + JSON key) and the
+    `<wheel>.metadata` file downloads through the gateway file guard (gated by the
+    wheel's own constraint/age/OSV policy). Private (Gitea) packages opt out —
+    Gitea serves no `.metadata`, so the gateway must not advertise it for them.

@@ -378,7 +378,9 @@ def enrich_devpi(name: str, devpi_url: str, pypi_json_url: str) -> dict:
             continue
         filename = entry.get("filename")
         # Preserve the base entry verbatim (filename/url/hashes/requires-python/
-        # yanked/etc.) then layer the PEP 700 fields on top.
+        # yanked, and PEP 658/714 `core-metadata` when devpi advertises it) then
+        # layer the PEP 700 fields on top. The verbatim copy is what carries
+        # core-metadata through to the JSON Simple API for public wheels.
         out = dict(entry)
         extra = meta_by_filename.get(filename) if isinstance(filename, str) else None
         authoritative_version = None

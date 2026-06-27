@@ -27,11 +27,19 @@ import urllib.error
 import urllib.request
 
 INDEX = "root/constrained"
+PYPI_MIRROR_INDEX = "root/pypi"
 KVDICT = {"type": "constrained", "bases": "root/pypi", "constraints": ["*"], "min_upstream_age": "P0D"}
 
 
 def log(msg):
     print(f"[ensure-index] {msg}", file=sys.stderr)
+
+
+def truthy(value):
+    """devpi may report a boolean index option as a real bool or as a string."""
+    if isinstance(value, bool):
+        return value
+    return isinstance(value, str) and value.strip().lower() in ("true", "1", "yes", "on")
 
 
 def has_expected_base(value):
@@ -41,8 +49,14 @@ def has_expected_base(value):
     return value == "root/pypi" or value == ["root/pypi"]
 
 
-def main():
-    base = sys.argv[1].rstrip("/")
+def root_auth_header():
+    auth = base64.b64encode(
+        f"root:{os.environ['DEVPI_ROOT_PASSWORD']}".encode()
+    ).decode()
+    return f"Basic {auth}"
+
+
+def ensure_constrained_index(base):
     url = f"{base}/{INDEX}"
 
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
@@ -64,9 +78,6 @@ def main():
             log(f"ERROR: GET {url} -> {e.code}")
             return 1
 
-    auth = base64.b64encode(
-        f"root:{os.environ['DEVPI_ROOT_PASSWORD']}".encode()
-    ).decode()
     req = urllib.request.Request(
         url,
         data=json.dumps(KVDICT).encode(),
@@ -74,7 +85,7 @@ def main():
         headers={
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "Authorization": f"Basic {auth}",
+            "Authorization": root_auth_header(),
         },
     )
     try:
@@ -85,6 +96,63 @@ def main():
         return 1
     log(f"created index {INDEX} (type=constrained, bases=root/pypi, "
         "constraints=['*'], min_upstream_age=P0D fail-closed until policy-sync syncs)")
+    return 0
+
+
+def ensure_root_pypi_core_metadata(base):
+    """Idempotently enable PEP 658/714 Core Metadata on the root/pypi mirror.
+
+    devpi gates core-metadata behind BOTH the server-wide --enable-core-metadata
+    flag (entrypoint.sh) AND a per-mirror `mirror_provides_core_metadata` option
+    that defaults off. Without it devpi never advertises `data-core-metadata` and
+    404s every `<file>.metadata` fetch, so pip/uv cannot do a metadata-only
+    resolve of public wheels. Unlike the constrained index this is an
+    optimization, not a fail-closed security gate, so a failure to set it logs a
+    WARNING and does NOT fail the boot — the registry stays available, just
+    without PEP 658 for the pull-through cache.
+    """
+    url = f"{base}/{PYPI_MIRROR_INDEX}"
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            config = json.load(resp).get("result", {})
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError, ValueError) as e:
+        log(f"WARNING: GET {url} failed ({e}); PEP 658 core-metadata not enabled")
+        return
+    if truthy(config.get("mirror_provides_core_metadata")):
+        log(f"{PYPI_MIRROR_INDEX} already advertises core-metadata (PEP 658/714)")
+        return
+
+    # PATCH merges into the existing mirror config (mirror_url, etc. preserved);
+    # the "key=value" list form matches `devpi index ... mirror_provides_core_metadata=True`.
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(["mirror_provides_core_metadata=True"]).encode(),
+        method="PATCH",
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": root_auth_header(),
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10):
+            pass
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError) as e:
+        detail = e.read().decode(errors="replace")[:300] if isinstance(e, urllib.error.HTTPError) else e
+        log(f"WARNING: PATCH {url} failed ({detail}); PEP 658 core-metadata not enabled")
+        return
+    log(f"enabled mirror_provides_core_metadata on {PYPI_MIRROR_INDEX} (PEP 658/714 "
+        "metadata served for public wheels)")
+
+
+def main():
+    base = sys.argv[1].rstrip("/")
+    rc = ensure_constrained_index(base)
+    if rc != 0:
+        return rc
+    # Best-effort, after the fail-closed constrained index is guaranteed.
+    ensure_root_pypi_core_metadata(base)
     return 0
 
 

@@ -178,6 +178,21 @@ Notes:
 - A plain request (no special `Accept`) is unchanged: `pip install` still gets
   the PEP 503 HTML / PEP 691 v1.0 page exactly as before.
 
+### Faster resolution (PEP 658/714 metadata)
+
+For **public** (pull-through) packages the index advertises **PEP 658/714 Core
+Metadata**: each wheel carries `data-core-metadata` (HTML) / `core-metadata`
+(JSON), and the wheel's `METADATA` is downloadable at `<wheel-url>.metadata`.
+pip and uv use this to resolve dependencies by fetching a few KB of metadata
+per candidate instead of downloading whole wheels — noticeably faster locking
+and back-tracking. It needs no client flags (pip ≥ 22.3 / modern uv use it
+automatically). A blocked or too-new wheel's metadata is gated exactly like the
+wheel, so it never leaks past policy.
+
+**Private** (Gitea-hosted) packages do not yet expose PEP 658 metadata — Gitea's
+PyPI registry serves no `.metadata` file — so resolvers fall back to downloading
+the wheel for those, which is fine for the small private packages this targets.
+
 ### Name normalization
 
 Gitea normalizes package names per PEP 503 (`.` and `_` become `-`), so

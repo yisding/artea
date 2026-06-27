@@ -45,6 +45,7 @@ with open(os.environ["FAKE_LOG"], "a") as f:
     f.write("devpi-server " + " ".join(args) + "\\n")
 port = int(args[args.index("--port") + 1])
 marker = os.path.join(os.environ["FAKE_STATE_DIR"], "index_root_constrained")
+core_marker = os.path.join(os.environ["FAKE_STATE_DIR"], "pypi_core_metadata")
 
 class Handler(BaseHTTPRequestHandler):
     def _log(self, line):
@@ -65,6 +66,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(200, '{"result": {"type": "constrained", "bases": %s}}' % json.dumps(bases))
             else:
                 self._reply(404, '{}')
+        elif self.path.startswith("/root/pypi"):
+            self._log("GET /root/pypi")
+            provides = "true" if os.path.exists(core_marker) else "false"
+            self._reply(200, '{"result": {"type": "mirror", "mirror_provides_core_metadata": %s}}' % provides)
         else:  # /+status readiness probe etc.
             self._reply(200, '{}')
 
@@ -73,6 +78,14 @@ class Handler(BaseHTTPRequestHandler):
         authed = "authed" if self.headers.get("Authorization") else "anon"
         self._log("PUT %s %s %s" % (self.path, authed, body))
         open(marker, "w").close()
+        self._reply(200, '{}')
+
+    def do_PATCH(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
+        authed = "authed" if self.headers.get("Authorization") else "anon"
+        self._log("PATCH %s %s %s" % (self.path, authed, body))
+        if self.path.startswith("/root/pypi") and "mirror_provides_core_metadata" in body:
+            open(core_marker, "w").close()
         self._reply(200, '{}')
 
     def log_message(self, *a):
@@ -143,7 +156,25 @@ def test_first_boot_inits_and_creates_index(env):
     assert "--host 0.0.0.0" in server[0]
     assert "--outside-url http://localhost:8080" in server[0]
     assert "--absolute-urls" in server[0]  # file hrefs must be gateway-absolute
+    assert "--enable-core-metadata" in server[0]  # PEP 658/714 server-wide switch
     assert (Path(env["DEVPISERVER_SERVERDIR"]) / ".serverversion").exists()
+    # PEP 658: the per-mirror option is turned on for root/pypi (the server flag
+    # alone does nothing without it).
+    patches = [c for c in lines if c.startswith("PATCH /root/pypi")]
+    assert len(patches) == 1
+    assert "authed" in patches[0]  # sent root credentials
+    assert "mirror_provides_core_metadata" in patches[0]
+
+
+def test_root_pypi_core_metadata_enabled_idempotently(env):
+    # First boot turns on mirror_provides_core_metadata; a second boot sees it
+    # already set (GET /root/pypi) and must NOT PATCH again.
+    assert run_entrypoint(env).returncode == 0
+    seen = len(calls(env))
+    assert run_entrypoint(env).returncode == 0
+    new = calls(env)[seen:]
+    assert any(c == "GET /root/pypi" for c in new), "existence was re-checked"
+    assert not any(c.startswith("PATCH /root/pypi") for c in new), "already enabled, no re-PATCH"
 
 
 def test_second_boot_is_idempotent(env):

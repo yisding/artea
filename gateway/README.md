@@ -23,7 +23,7 @@ gateway's readiness probe is `/-/artea-gateway/health`.
 | `/npm/**` (everything outside the configured private scope) | `verdaccio:4873` (prefix stripped; Verdaccio `url_prefix=/npm/`) | gateway `auth_request` → same njs guard, so Verdaccio service endpoints (`/-/ping`, `/-/v1/search`, audit) are not anonymous and only org members with package-scoped PATs reach the cache; the `Authorization` header still passes through so Verdaccio's auth plugin authorizes npm-level access against Gitea |
 | `/pypi/simple/{name}[/]` | name PEP 503-normalized + trailing slash appended **in the gateway** (see below), then `gitea:3000` → `/api/packages/${ARTEA_NAMESPACE}/pypi/simple/{norm}/`; **on Gitea 404 only** → `devpi:3141` → `/root/constrained/+simple/{norm}/`, where the Artea devpi policy plugin applies PyPI constraints and the shared upstream age gate | same njs guard; org/package-scope successes are cached 30s keyed on the `Authorization` header |
 | `/pypi/simple/` (bare full-index page) | `devpi:3141` → `/root/constrained/+simple/` directly (Gitea has no list-all route) | gateway `auth_request` (same guard) |
-| `/root/pypi/+(f\|e)/**` (devpi file/external-link URLs; devpi may emit `%2Bf`) | `devpi:3141` (path unchanged) | same njs guard, then an internal Artea devpi policy endpoint confirms the mirror file is allowed by the current constrained-index policy; stale blocked file URLs return 403 |
+| `/root/pypi/+(f\|e)/**` (devpi file/external-link URLs; devpi may emit `%2Bf`; includes PEP 658 `<wheel>.metadata` suffixes) | `devpi:3141` (path unchanged) | same njs guard, then an internal Artea devpi policy endpoint confirms the mirror file is allowed by the current constrained-index policy (a `.metadata` request is checked against its underlying wheel's link, so it is allowed iff the wheel is); stale blocked file URLs return 403 |
 | `/root/**` (everything else, including raw devpi simple pages) | none | hidden with 404 so clients cannot bypass constraints or the Gitea-first lookup |
 | `/-/artea-gateway/health` | none (gateway-local liveness, for the k8s liveness/readiness probes) | none |
 | `/api/packages/${ARTEA_NAMESPACE}/npm/**`, `/api/packages/${ARTEA_NAMESPACE}/pypi/**` | `gitea:3000` (raw URI, byte-for-byte) | same gateway guard first, then Gitea enforces package-specific read/write permissions |
@@ -127,6 +127,13 @@ path, leaving every other request byte-for-byte unchanged:
 - Composition: the public base list is devpi's `root/constrained` page, already
   filtered by `pypi-constraints.txt` and `upstream-policy.yaml`, so enrichment
   only annotates files the age gate already permits.
+- PEP 658/714 pass-through: when devpi advertises `core-metadata` for a public
+  wheel, enrichment copies that key through verbatim (it only *adds* upload-time/
+  size), so the JSON Simple API keeps PEP 658 metadata. The non-JSON HTML path
+  proxies devpi's `data-core-metadata` page unchanged. The `<wheel>.metadata`
+  download itself rides the existing `/root/pypi/+f/**` file route. Private
+  (Gitea) packages have no PEP 658 (Gitea serves no `.metadata`), so the Gitea
+  branch never advertises it.
 
 ## npm scope routing (gateway-enforced)
 
