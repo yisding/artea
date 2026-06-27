@@ -310,7 +310,9 @@ Notes:
   pods real VPC addresses) — no `NodePort` hop.
 - The gateway keeps all routing logic (`auth_request`, the PyPI 404-fallback,
   PEP 503 normalization). The ALB does TLS + host routing only; never port any
-  of that into ALB annotations.
+  of that into ALB annotations. The gateway derives upstream forwarded scheme
+  and outside-url headers from `global.baseUrl`, so keep it on the public
+  `https://` origin when TLS terminates at the ALB.
 
 ## 7. Point DNS at the ALB
 
