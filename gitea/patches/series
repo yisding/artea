@@ -10,3 +10,8 @@
 # go-gitea/gitea#21376. Ported onto v1.26.2 (module rename only; PKCE unit tests
 # pass on the stable line).
 0001-oauth2-send-PKCE-code_challenge-for-OIDC-login-sourc.patch
+
+# ADR-0010: bind OAuth link-account registration username/email to the
+# server-side Goth user when the provider supplied those claims. This closes the
+# gap left by the readonly template overlay, which is only a browser hint.
+0002-bind-oauth-link-account-signup-fields-to-claims.patch

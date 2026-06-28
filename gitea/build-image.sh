@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Reproducible build of the PATCHED rootless Gitea image (ADR-0009).
+# Reproducible build of the PATCHED rootless Gitea image (ADR-0009/0010).
 #
 # Clones stock upstream Gitea at the SOURCE_TAG pinned in gitea/UPSTREAM,
-# applies the gitea/patches/ queue (the PKCE patch — see ADR-0009) via
+# applies the gitea/patches/ queue (see ADR-0009 and ADR-0010) via
 # gitea/patches/apply-patches.sh (git apply), and builds the result with
 # Gitea's own Dockerfile.rootless. Output: ghcr.io/yisding/artea-gitea:<tag>
 # (override the image name with $ARTEA_GITEA_IMAGE).
@@ -17,10 +17,10 @@
 #           store (colima k3s shares it): a multi-arch build cannot be --loaded
 #           locally, and local dev only needs the host arch.
 #
-# Deletion path: this whole build exists only because stock Gitea cannot send a
-# PKCE code_challenge on OIDC login sources. Once upstream ships client-side
-# PKCE (go-gitea/gitea#34747 / #21376), drop gitea/patches/, delete this script,
-# and return to the stock image — see ADR-0009.
+# Deletion path: this build exists only for source gaps stock Gitea does not
+# cover. Once upstream ships equivalents for all gitea/patches/ entries, drop
+# the queue, delete this script, and return to the stock image — see ADR-0009
+# and ADR-0010.
 set -euo pipefail
 
 # repo root = parent of this script's directory (gitea/)

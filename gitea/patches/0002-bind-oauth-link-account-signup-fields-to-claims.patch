@@ -1,0 +1,47 @@
+From ef93f9ed735a0d595bb72b30f0fcc033b6f64c6f Mon Sep 17 00:00:00 2001
+From: Yi Ding <yi.s.ding@gmail.com>
+Date: Sat, 27 Jun 2026 18:43:05 +0000
+Subject: [PATCH] auth: bind OAuth signup fields to claims
+
+The link-account signup form may contain username and email values derived
+from the OAuth/OIDC identity. Do not trust submitted form fields for those
+values: re-read the pending Goth user from the server-side link-account
+session and overwrite the registration form before creating the local account.
+
+This preserves fallback behavior for providers that did not supply a username
+or email, while preventing crafted POST bodies from replacing claim-derived
+identity values.
+
+Ported onto Gitea v1.26.2 for Artea (ADR-0010).
+
+Assisted-by: Claude Code:claude-fable-5
+---
+ routers/web/auth/linkaccount.go | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/routers/web/auth/linkaccount.go b/routers/web/auth/linkaccount.go
+index 82f755d..cfc5cd3 100644
+--- a/routers/web/auth/linkaccount.go
++++ b/routers/web/auth/linkaccount.go
+@@ -207,6 +207,18 @@ func LinkAccountPostRegister(ctx *context.Context) {
+ 		ctx.ServerError("UserSignUp", errors.New("not in LinkAccount session"))
+ 		return
+ 	}
++	claimedUserName, err := extractUserNameFromOAuth2(&linkAccountData.GothUser)
++	if err != nil {
++		ctx.ServerError("UserSignUp", err)
++		return
++	}
++	if claimedUserName != "" {
++		form.UserName = claimedUserName
++	}
++	if linkAccountData.GothUser.Email != "" {
++		form.Email = linkAccountData.GothUser.Email
++	}
++
+ 	if ctx.HasError() {
+ 		ctx.HTML(http.StatusOK, tplLinkAccount)
+ 		return
+-- 
+2.43.0
+
