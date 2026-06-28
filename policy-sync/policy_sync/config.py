@@ -28,6 +28,7 @@ class Config:
     policy_file_path: str  # "" = HTTP-only mode (no file write, K8s has no /policy volume)
     upstream_policy_file_path: str  # "" = HTTP-only mode
     pypi_policy_file_path: str
+    parsed_policy_file_path: str
     devpi_url: str
     devpi_root_password: str
     poll_interval: float
@@ -82,6 +83,9 @@ class Config:
         pypi_policy_file_path = env.get("PYPI_POLICY_FILE_PATH")
         if pypi_policy_file_path is None:
             pypi_policy_file_path = _sibling("pypi-constraints.txt")
+        parsed_policy_file_path = env.get("PARSED_POLICY_FILE_PATH")
+        if parsed_policy_file_path is None:
+            parsed_policy_file_path = _sibling("policy.toml")
         namespace = env.get("ARTEA_NAMESPACE", "artea")
 
         return cls(
@@ -92,6 +96,7 @@ class Config:
             policy_file_path=policy_file_path,
             upstream_policy_file_path=upstream_policy_file_path,
             pypi_policy_file_path=pypi_policy_file_path,
+            parsed_policy_file_path=parsed_policy_file_path,
             devpi_url=env.get("DEVPI_URL", "http://devpi:3141").rstrip("/"),
             devpi_root_password=env["DEVPI_ROOT_PASSWORD"],
             poll_interval=poll_interval,

@@ -51,6 +51,10 @@ class Syncer:
         return Path(self.cfg.pypi_policy_file_path) if self.cfg.pypi_policy_file_path else None
 
     @property
+    def parsed_policy_dest(self) -> Path | None:
+        return Path(self.cfg.parsed_policy_file_path) if self.cfg.parsed_policy_file_path else None
+
+    @property
     def upstream_dest(self) -> Path | None:
         return Path(self.cfg.upstream_policy_file_path) if self.cfg.upstream_policy_file_path else None
 
@@ -112,6 +116,7 @@ class Syncer:
             # outage still publishes the npm policy.
             self._emit_upstream(artifacts.upstream_yaml.encode("utf-8"))
             self._emit_npm(artifacts.npm_yaml.encode("utf-8"))
+            self._write(self.parsed_policy_dest, data)
             if self.parsed_policy_store is not None:
                 self.parsed_policy_store.set(policy)
             self._emit_pypi(artifacts.pypi_constraints, artifacts.min_age)

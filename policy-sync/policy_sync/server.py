@@ -313,7 +313,7 @@ def main() -> None:
     # (test/local inspection), where the volume still holds the last synced policy
     store = PolicyStore(fallback_path=cfg.policy_file_path)
     upstream_store = PolicyStore(fallback_path=cfg.upstream_policy_file_path)
-    parsed_policy_store = ParsedPolicyStore()
+    parsed_policy_store = ParsedPolicyStore(fallback_path=cfg.parsed_policy_file_path)
     osv_client = osv.OsvClient(
         api_url=cfg.osv_api_url,
         timeout=cfg.osv_timeout_seconds,

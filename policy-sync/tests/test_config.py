@@ -17,6 +17,7 @@ def test_defaults_match_architecture_contract():
     assert cfg.policy_file_path == "/policy/npm-rules.yaml"
     assert cfg.upstream_policy_file_path == "/policy/upstream-policy.yaml"
     assert cfg.pypi_policy_file_path == "/policy/pypi-constraints.txt"
+    assert cfg.parsed_policy_file_path == "/policy/policy.toml"
     assert cfg.poll_interval == 300
     assert cfg.osv_api_url == "https://api.osv.dev"
     assert cfg.osv_timeout_seconds == 5
@@ -39,6 +40,7 @@ def test_policy_dir_env_still_sets_the_file_location():
     cfg = Config.from_env(dict(REQUIRED, POLICY_DIR="/data/policy/"))
     assert cfg.policy_file_path == "/data/policy/npm-rules.yaml"
     assert cfg.upstream_policy_file_path == "/data/policy/upstream-policy.yaml"
+    assert cfg.parsed_policy_file_path == "/data/policy/policy.toml"
 
 
 def test_policy_file_path_overrides_policy_dir():
@@ -46,6 +48,7 @@ def test_policy_file_path_overrides_policy_dir():
     assert cfg.policy_file_path == "/tmp/private/rules.yaml"
     assert cfg.upstream_policy_file_path == "/tmp/private/upstream-policy.yaml"
     assert cfg.pypi_policy_file_path == "/tmp/private/pypi-constraints.txt"
+    assert cfg.parsed_policy_file_path == "/tmp/private/policy.toml"
 
 
 def test_empty_policy_file_path_means_http_only_mode():
@@ -53,6 +56,7 @@ def test_empty_policy_file_path_means_http_only_mode():
     assert cfg.policy_file_path == ""
     assert cfg.upstream_policy_file_path == ""
     assert cfg.pypi_policy_file_path == ""
+    assert cfg.parsed_policy_file_path == ""
 
 
 def test_upstream_policy_file_path_can_be_overridden():
@@ -63,6 +67,11 @@ def test_upstream_policy_file_path_can_be_overridden():
 def test_pypi_policy_file_path_can_be_overridden():
     cfg = Config.from_env(dict(REQUIRED, PYPI_POLICY_FILE_PATH="/tmp/pypi.txt"))
     assert cfg.pypi_policy_file_path == "/tmp/pypi.txt"
+
+
+def test_parsed_policy_file_path_can_be_overridden():
+    cfg = Config.from_env(dict(REQUIRED, PARSED_POLICY_FILE_PATH="/tmp/policy.toml"))
+    assert cfg.parsed_policy_file_path == "/tmp/policy.toml"
 
 
 @pytest.mark.parametrize("missing", sorted(REQUIRED))
