@@ -198,26 +198,40 @@ pnpm publish
 
 ### pip / twine
 
-pip installs but does not publish — build a distribution and upload it with twine:
+pip installs but does not publish — build a distribution and upload it with twine.
+Do not pass tokens with `--password`; command-line arguments may be visible to
+other local users and CI logs. Store the upload target in `~/.pypirc` instead:
 
 ```sh
+cat >> ~/.pypirc <<EOF
+[distutils]
+index-servers =
+  artea
+
+[artea]
+repository = ${ARTEA_URL}/api/packages/__ARTEA_NAMESPACE__/pypi/
+username = ${ARTEA_USER}
+password = ${ARTEA_TOKEN}
+EOF
+chmod 600 ~/.pypirc
+
 python -m pip install --upgrade build twine
 python -m build                                  # writes dist/*.whl + dist/*.tar.gz
-
-twine upload \
-  --repository-url "${ARTEA_URL}/api/packages/__ARTEA_NAMESPACE__/pypi/" \
-  --username "${ARTEA_USER}" --password "${ARTEA_TOKEN}" \
-  dist/*
+twine upload --repository artea dist/*
 ```
+
+If your workstation has a secure keyring configured, prefer storing the token
+there and omit `password = ...` from `~/.pypirc`; twine will read the repository
+URL and username from `~/.pypirc` and retrieve the token from keyring.
 
 ### uv
 
+uv reads the `~/.netrc` credentials configured in §3, so publish with only the
+upload endpoint on the command line:
+
 ```sh
 uv build                                         # writes dist/
-
-uv publish \
-  --publish-url "${ARTEA_URL}/api/packages/__ARTEA_NAMESPACE__/pypi/" \
-  --username "${ARTEA_USER}" --password "${ARTEA_TOKEN}"
+uv publish --publish-url "${ARTEA_URL}/api/packages/__ARTEA_NAMESPACE__/pypi/"
 ```
 
 ### Endpoints
@@ -276,12 +290,9 @@ EOF
 echo "GREETING = 'hello from Artea'" > "${mod}.py"
 
 python -m build                   # writes dist/  (or: uv build)
-twine upload \
-  --repository-url "${ARTEA_URL}/api/packages/__ARTEA_NAMESPACE__/pypi/" \
-  --username "${ARTEA_USER}" --password "${ARTEA_TOKEN}" dist/*
+twine upload --repository artea dist/*
 # ...or with uv:
-#   uv publish --publish-url "${ARTEA_URL}/api/packages/__ARTEA_NAMESPACE__/pypi/" \
-#     --username "${ARTEA_USER}" --password "${ARTEA_TOKEN}"
+#   uv publish --publish-url "${ARTEA_URL}/api/packages/__ARTEA_NAMESPACE__/pypi/"
 
 # install it back (uses ~/.netrc + the index from §3)
 pip install "${pkg}==0.0.1"
