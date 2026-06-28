@@ -215,6 +215,11 @@ def test_pypi_exact_allows_release_semantics(expr, version, allows):
     assert pypi.exact_allows(expr, version) is allows
 
 
+def test_pypi_exact_allows_rejects_oversized_release_segment():
+    huge_version = "1." + ("9" * 4301)
+    assert pypi.exact_allows("==1.0", huge_version) is False
+
+
 @pytest.mark.parametrize("expr,version,allows", [
     ("1.2.3", "1.2.3", True),
     ("v1.2.3", "1.2.3", True),      # operator/prefix stripped

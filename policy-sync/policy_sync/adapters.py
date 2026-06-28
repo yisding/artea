@@ -151,6 +151,7 @@ _PEP440_COMPLEMENT_OP = {"<": ">=", "<=": ">", ">": "<=", ">=": "<", "==": "!="}
 # a plain dotted-numeric release with no epoch/pre/post/dev/local suffix — the
 # only shape whose ordering a bare int tuple can safely compare.
 _PEP440_PLAIN_RELEASE_RE = re.compile(r"\d+(?:\.\d+)*")
+_PEP440_RELEASE_SEGMENT_MAX_DIGITS = 18
 # a single "==X" with no wildcard (an exact pin used by the allow escape hatch).
 _PEP440_EXACT_RE = re.compile(rf"^\s*==\s*({_PEP440_CORE})\s*$")
 
@@ -235,7 +236,13 @@ class PypiAdapter:
         # a pre/post/dev/local suffix makes simple tuple ordering unsafe; bail out.
         if not _PEP440_PLAIN_RELEASE_RE.fullmatch(version):
             return None
-        return tuple(int(p) for p in version.split("."))
+        parts = version.split(".")
+        if any(len(p) > _PEP440_RELEASE_SEGMENT_MAX_DIGITS for p in parts):
+            return None
+        try:
+            return tuple(int(p) for p in parts)
+        except ValueError:
+            return None
 
     def complement_set_is_empty(self, specs: list[str]) -> bool:
         """Detect a contradictory two-sided combined complement (an empty allow-set).
