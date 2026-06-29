@@ -237,11 +237,16 @@ class PypiAdapter:
         if not _PEP440_PLAIN_RELEASE_RE.fullmatch(version):
             return None
         parts = version.split(".")
+        # An attacker-controlled version segment can be arbitrarily long; CPython
+        # raises ValueError on int() of a string with >4300 digits. Cap each
+        # segment well below that (and within int64) so the int() below is safe —
+        # 18 digits is already far beyond any real release number. Reject rather
+        # than truncate, so two distinct oversized versions never compare equal.
         if any(len(p) > _PEP440_RELEASE_SEGMENT_MAX_DIGITS for p in parts):
             return None
         try:
             return tuple(int(p) for p in parts)
-        except ValueError:
+        except ValueError:  # pragma: no cover - the digit cap above already guards int()
             return None
 
     def complement_set_is_empty(self, specs: list[str]) -> bool:
