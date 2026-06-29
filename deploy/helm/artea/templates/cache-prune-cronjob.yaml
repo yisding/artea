@@ -1,19 +1,31 @@
 {{- if .Values.cachePrune.enabled }}
-# Cache-prune CronJob (opt-in: cachePrune.enabled). Bounds the DISPOSABLE
-# Verdaccio + devpi pull-through cache PVCs by mounting the cache volumes
-# directly. It never receives Kubernetes API credentials, so it cannot exec into
-# workloads elsewhere in the release namespace.
+{{- $caches := list
+  (dict "component" "verdaccio" "suffix" "verdaccio-cache-prune" "native" false "claim" (include "artea.fullname" "verdaccio") "dataDir" "data" "nameFilter" "-name '*.tgz' " "uid" 10001 "gid" 101 "fsGroup" 101 "selector" (dict "app.kubernetes.io/name" "verdaccio" "app.kubernetes.io/instance" .Release.Name))
+  (dict "component" "devpi" "suffix" "devpi-cache-prune" "native" true "claim" (include "artea.fullname" "devpi-data") "dataDir" "+files" "nameFilter" "" "uid" 1000 "gid" 1000 "fsGroup" 1000) }}
+{{- range $c := $caches }}
+---
+{{- if eq $c.component "verdaccio" }}
+# Cache-prune CronJobs (opt-in: cachePrune.enabled) — one per DISPOSABLE
+# pull-through cache (Verdaccio npm, devpi pypi). Each Job mounts ONLY its own
+# cache PVC and is pinned (podAffinity) to the node already running that cache
+# pod, so the ReadWriteOnce volume is mountable here (RWO permits multiple pods
+# on the SAME node). It runs as the cache's own uid/gid so deletes on its files
+# succeed, and carries NO Kubernetes API credentials
+# (automountServiceAccountToken: false) — enabling cache hygiene therefore grants
+# no pod-exec (or any other) API rights in the namespace.
 # Safety invariant: deletes only regenerable cached *files* — never package
-# metadata, keyfs/index state, or directories.
+# metadata, keyfs/index state, or directories; a pruned file is simply re-fetched
+# on the next pull-through.
+{{- end }}
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: {{ include "artea.fullname" "cache-prune" }}
+  name: {{ include "artea.fullname" $c.suffix }}
   labels:
-    {{- include "artea.labels" (dict "ctx" $ "component" "cache-prune") | nindent 4 }}
+    {{- include "artea.labels" (dict "ctx" $ "component" $c.component) | nindent 4 }}
 spec:
-  schedule: {{ .Values.cachePrune.schedule | quote }}
-  {{- with .Values.cachePrune.timeZone }}
+  schedule: {{ $.Values.cachePrune.schedule | quote }}
+  {{- with $.Values.cachePrune.timeZone }}
   timeZone: {{ . | quote }}
   {{- end }}
   concurrencyPolicy: Forbid
@@ -23,21 +35,40 @@ spec:
   jobTemplate:
     metadata:
       labels:
-        {{- include "artea.labels" (dict "ctx" $ "component" "cache-prune") | nindent 8 }}
+        {{- include "artea.labels" (dict "ctx" $ "component" $c.component) | nindent 8 }}
     spec:
       backoffLimit: 1
       activeDeadlineSeconds: 600
       template:
         metadata:
           labels:
-            {{- include "artea.selectorLabels" (dict "ctx" $ "component" "cache-prune") | nindent 12 }}
+            {{- include "artea.selectorLabels" (dict "ctx" $ "component" $c.component) | nindent 12 }}
         spec:
           automountServiceAccountToken: false
           restartPolicy: Never
+          securityContext:
+            # run as the cache's own uid/gid so deletes on its files succeed
+            runAsUser: {{ $c.uid }}
+            runAsGroup: {{ $c.gid }}
+            fsGroup: {{ $c.fsGroup }}
+          # Co-locate with the cache pod so its ReadWriteOnce PVC is mountable
+          # here (RWO allows multiple pods on one node). If the cache pod is
+          # momentarily absent (e.g. mid-rollout) the run is skipped, not broken.
+          affinity:
+            podAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - topologyKey: kubernetes.io/hostname
+                  labelSelector:
+                    matchLabels:
+                      {{- if $c.native }}
+                      {{- include "artea.selectorLabels" (dict "ctx" $ "component" $c.component) | nindent 22 }}
+                      {{- else }}
+                      {{- $c.selector | toYaml | nindent 22 }}
+                      {{- end }}
           containers:
             - name: cache-prune
-              {{- include "artea.containerImage" .Values.cachePrune.image | nindent 14 }}
-              {{- with .Values.cachePrune.resources }}
+              {{- include "artea.containerImage" $.Values.cachePrune.image | nindent 14 }}
+              {{- with $.Values.cachePrune.resources }}
               resources:
                 {{- toYaml . | nindent 16 }}
               {{- end }}
@@ -47,60 +78,26 @@ spec:
                 - |
                   set -euo pipefail
 
-                  # Validated to a positive integer (validations.yaml), so it can
-                  # never alter the `find -mtime` predicate.
-                  MAX_AGE={{ .Values.cachePrune.maxAgeDays }}
-                  echo "artea cache-prune: starting (maxAgeDays=${MAX_AGE})"
-
-                  prune_verdaccio() {
-                    dir=/cache/verdaccio/data
-                    if [ ! -d "$dir" ]; then
-                      echo "[verdaccio] $dir absent; nothing to prune"
-                      return 0
-                    fi
-                    if out=$(find "$dir" -type f -name "*.tgz" -mtime +"$MAX_AGE" -print -exec rm -f -- {} +); then
-                      n=0
-                      if [ -n "$out" ]; then printf "%s\n" "$out"; n=$(printf "%s\n" "$out" | wc -l); fi
-                      echo "[verdaccio] pruned $n cached tarball(s) (*.tgz) older than ${MAX_AGE}d under $dir"
-                    else
-                      rc=$?
-                      if [ -n "$out" ]; then printf "%s\n" "$out"; fi
-                      echo "[verdaccio] ERROR: find/rm failed (exit $rc) under $dir"
-                      return "$rc"
-                    fi
-                  }
-
-                  prune_devpi() {
-                    dir=/cache/devpi/+files
-                    if [ ! -d "$dir" ]; then
-                      echo "[devpi] $dir absent (no pull-through yet); nothing to prune"
-                      return 0
-                    fi
-                    if out=$(find "$dir" -type f -mtime +"$MAX_AGE" -print -exec rm -f -- {} +); then
-                      n=0
-                      if [ -n "$out" ]; then printf "%s\n" "$out"; n=$(printf "%s\n" "$out" | wc -l); fi
-                      echo "[devpi] pruned $n cached mirror file(s) older than ${MAX_AGE}d under $dir"
-                    else
-                      rc=$?
-                      if [ -n "$out" ]; then printf "%s\n" "$out"; fi
-                      echo "[devpi] ERROR: find/rm failed (exit $rc) under $dir"
-                      return "$rc"
-                    fi
-                  }
-
-                  prune_verdaccio
-                  prune_devpi
-                  echo "artea cache-prune: finished"
+                  # maxAgeDays is validated to a positive integer
+                  # (validations.yaml), so it can never alter the find predicate.
+                  MAX_AGE={{ $.Values.cachePrune.maxAgeDays }}
+                  dir="/cache/{{ $c.dataDir }}"
+                  echo "artea cache-prune [{{ $c.component }}]: starting (maxAgeDays=${MAX_AGE})"
+                  if [ ! -d "$dir" ]; then
+                    echo "[{{ $c.component }}] $dir absent (no pull-through yet); nothing to prune"
+                    exit 0
+                  fi
+                  out=$(find "$dir" -type f {{ $c.nameFilter }}-mtime +"$MAX_AGE" -print -exec rm -f -- {} +)
+                  n=0
+                  if [ -n "$out" ]; then printf '%s\n' "$out"; n=$(printf '%s\n' "$out" | wc -l); fi
+                  echo "[{{ $c.component }}] pruned $n cached file(s) older than ${MAX_AGE}d under $dir"
+                  echo "artea cache-prune [{{ $c.component }}]: finished"
               volumeMounts:
-                - name: verdaccio-cache
-                  mountPath: /cache/verdaccio
-                - name: devpi-cache
-                  mountPath: /cache/devpi
+                - name: cache
+                  mountPath: /cache
           volumes:
-            - name: verdaccio-cache
+            - name: cache
               persistentVolumeClaim:
-                claimName: {{ include "artea.fullname" "verdaccio" }}
-            - name: devpi-cache
-              persistentVolumeClaim:
-                claimName: {{ include "artea.fullname" "devpi-data" }}
+                claimName: {{ $c.claim }}
+{{- end }}
 {{- end }}
