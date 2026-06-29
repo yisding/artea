@@ -315,10 +315,11 @@ the admin allowlist, ≥1 required approval), and developers are members of a
    customization is runtime overlay: `deploy/helm/artea/values.yaml`
    `gitea.gitea.config` (the chart-managed Gitea config) and
    `gitea/custom/` templates (Gitea's supported
-   `custom/` directory: template/asset overrides). The one source-level gap that
-   overlays cannot reach — OIDC login sources sending a PKCE `code_challenge` —
-   is covered by an opt-in patched image build (item 3, ADR-0009), not by
-   running stock unmodified everywhere.
+   `custom/` directory: template/asset overrides). The source-level gaps that
+   overlays cannot reach — OIDC login sources sending a PKCE `code_challenge`
+   and server-side binding of OAuth link-account signup fields to claims — are
+   covered by an opt-in patched image build (item 3, ADR-0009 and ADR-0010), not
+   by running stock unmodified everywhere.
 2. **Verdaccio and devpi are consumed as released artifacts.** Our code is plugins
    against their stable plugin APIs (`verdaccio/plugins/*` as npm packages;
    `devpi/artea_devpi_policy` as a Python package). Artea's devpi plugin is
@@ -326,8 +327,9 @@ the admin allowlist, ≥1 required approval), and developers are members of a
    vendored or patched.
 3. **`gitea/patches/`** is a quilt-style patch queue with an apply script and a
    documented bump procedure — the escape hatch for source patches, now in use.
-   It carries one patch (PKCE on OIDC login sources, ADR-0009); the deployed
-   image is built from the patched tree by `gitea/build-image.sh`
+   It carries patches for PKCE on OIDC login sources (ADR-0009) and OAuth
+   link-account claim binding (ADR-0010); the deployed image is built from the
+   patched tree by `gitea/build-image.sh`
    (`ghcr.io/yisding/artea-gitea`), opt-in over the stock default. PAT expiry
    dates remain a deferred candidate. Upgrades = bump pin, re-verify the patch
    queue (`apply-patches.sh --check`) + rebuild, `make dev`, `make e2e`.

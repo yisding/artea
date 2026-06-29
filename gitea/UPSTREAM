@@ -5,7 +5,7 @@
 # IMAGE/VERSION/DIGEST below pin the stock upstream gitea/gitea SOURCE. Artea no
 # longer runs that image unmodified: it builds a PATCHED image
 # `ghcr.io/yisding/artea-gitea` = stock source at SOURCE_TAG + the gitea/patches/
-# queue (currently the PKCE patch, ADR-0009), via gitea/build-image.sh and the
+# queue (currently PKCE and OAuth claim-binding patches; ADR-0009/0010), via
 # `images` CI workflow. The patched image is opt-in — the chart default stays the
 # stock image; `make dev` and production select the patched one (see ADR-0009).
 # Keep IMAGE=gitea/gitea as the SOURCE pin (build base + clone tag), not the

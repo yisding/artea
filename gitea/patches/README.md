@@ -7,12 +7,13 @@ from `gitea/custom/`. This directory is the escape hatch (hard rule R7 in
 the day a source patch becomes unavoidable there is already an agreed mechanism,
 and so that "just fork it" never looks like the easy path.
 
-The queue now carries **one** patch — the PKCE patch
-(`0001-oauth2-send-PKCE-code_challenge-for-OIDC-login-sourc.patch`, ADR-0009),
-which makes Gitea's `openidConnect` login source send a PKCE S256
-`code_challenge`. The deployed Gitea image is therefore built from the patched
-tree by `gitea/build-image.sh` (opt-in; the stock image stays the chart default —
-see ADR-0009).
+The queue carries source patches for Gitea gaps that runtime overlays cannot
+reach: PKCE for OIDC login sources
+(`0001-oauth2-send-PKCE-code_challenge-for-OIDC-login-sourc.patch`, ADR-0009) and
+server-side OAuth link-account claim binding
+(`0002-bind-oauth-link-account-signup-fields-to-claims.patch`, ADR-0010). The
+deployed Gitea image is therefore built from the patched tree by
+`gitea/build-image.sh` (opt-in; the stock image stays the chart default).
 
 ## Policy
 
@@ -20,9 +21,14 @@ see ADR-0009).
   overlay, plugins, or the gateway — and only with an ADR in `docs/adr/` explaining
   why, plus an upstream issue/PR link (every patch must be on a path to deletion,
   either by upstreaming or by an upstream alternative).
-- **First actual patch: PKCE for OIDC login sources** (ADR-0009; upstream
-  go-gitea/gitea#34747, #21376) — added because some OIDC providers require PKCE
-  and stock Gitea never sends a `code_challenge`.
+- **PKCE for OIDC login sources** (ADR-0009; upstream go-gitea/gitea#34747,
+  #21376) — added because some OIDC providers require PKCE and stock Gitea never
+  sends a `code_challenge`.
+- **OAuth link-account claim binding** (ADR-0010) — added because the supported
+  template overlay can make claim-derived signup fields readonly in the browser,
+  but only the Gitea handler can ignore forged `user_name`/`email` fields. No
+  upstream issue exists (upstream treats the editable fields as intended); the
+  path to deletion is upstream adopting server-side claim binding (ADR-0010).
 - **Still deferred: PAT expiry dates.** Gitea PATs are currently non-expiring;
   R5 only needs "up to ~1 year", so v1 ships without expiry and this remains a
   candidate the moment policy requires enforced expiry.

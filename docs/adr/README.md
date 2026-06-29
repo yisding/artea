@@ -19,6 +19,7 @@ header lines (`Amends`, `Amended-by`, `Extends`, `Extended-by`, `Supersedes`,
 | [0006](0006-policy-as-code.md) | Policy as code in a reviewed Gitea repo | accepted (v1); authoring format superseded by ADR-0007 |
 | [0007](0007-unified-policy-schema.md) | Unified cross-ecosystem policy schema | accepted (v1); extends ADR-0006 |
 | [0009](0009-gitea-pkce-patch.md) | Patch Gitea to send PKCE on OIDC login sources | accepted (v1); amends ADR-0004 |
+| [0010](0010-gitea-oauth-signup-claim-binding.md) | Patch Gitea to bind OAuth signup identity fields to claims | accepted (v1); amends ADR-0004 |
 
 ## The 0008 gap
 
