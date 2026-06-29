@@ -117,6 +117,27 @@ def test_curated_pypi_exact_allow_overrides_with_release_equality():
     assert queried_versions == ["2.0.0"]
 
 
+def test_curated_pypi_exact_allow_ignores_oversized_candidate_version():
+    osv = MockOsv()
+    huge_version = "1." + ("9" * 4301)
+    osv.start()
+    try:
+        client = OsvClient(api_url=osv.url)
+        result = client.decide(policy(
+            '[[rules]]\n'
+            'ecosystem = "pypi"\n'
+            'name = "six"\n'
+            'versions = "==1.0"\n'
+            'action = "allow"\n'
+        ), "pypi", "six", [huge_version])
+    finally:
+        osv.stop()
+
+    assert result.status == "ok"
+    assert [(v.version, v.blocked) for v in result.verdicts] == [(huge_version, False)]
+    assert [q["version"] for q in osv.requests[0]["queries"]] == [huge_version]
+
+
 def test_decide_accepts_osv_pypi_ecosystem_alias():
     # The OSV-cased "PyPI" alias must be accepted just like the internal "pypi"
     # and resolve to the same adapter/verdicts (single accepted-input mapping).

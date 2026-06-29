@@ -215,6 +215,22 @@ def test_pypi_exact_allows_release_semantics(expr, version, allows):
     assert pypi.exact_allows(expr, version) is allows
 
 
+def test_pypi_exact_allows_rejects_oversized_release_segment():
+    huge_version = "1." + ("9" * 4301)
+    assert pypi.exact_allows("==1.0", huge_version) is False
+
+
+def test_pypi_exact_allows_segment_digit_bound():
+    # Pin the chosen 18-digit cap: an 18-digit segment still parses and compares,
+    # a 19-digit one is rejected (returns False) rather than risking int() limits.
+    eighteen = "9" * 18
+    nineteen = "9" * 19
+    assert pypi.exact_allows(f"=={eighteen}", eighteen) is True
+    assert pypi.exact_allows(f"=={eighteen}", f"{eighteen}.0") is True
+    assert pypi.exact_allows(f"=={nineteen}", nineteen) is True  # identical-string fast path
+    assert pypi.exact_allows(f"=={nineteen}", f"{nineteen}.0") is False  # oversized → no tuple match
+
+
 @pytest.mark.parametrize("expr,version,allows", [
     ("1.2.3", "1.2.3", True),
     ("v1.2.3", "1.2.3", True),      # operator/prefix stripped
