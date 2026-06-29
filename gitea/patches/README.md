@@ -52,10 +52,11 @@ gitea/patches/apply-patches.sh --check /path/to/gitea-checkout
 gitea/patches/apply-patches.sh /path/to/gitea-checkout
 ```
 
-The checkout must be at exactly the `SOURCE_TAG` from `gitea/UPSTREAM`. The
-deployed Gitea image is built from the patched tree by **`gitea/build-image.sh`**
-(clone upstream at `SOURCE_TAG` → apply this queue → build Gitea's
-`Dockerfile.rootless`), published to `ghcr.io/yisding/artea-gitea` by the `images`
+The checkout must be at exactly the `SOURCE_COMMIT` for `SOURCE_TAG` from
+`gitea/UPSTREAM`. The deployed Gitea image is built from the patched tree by
+**`gitea/build-image.sh`** (clone upstream at `SOURCE_TAG`, verify it resolves
+to `SOURCE_COMMIT` → apply this queue → build Gitea's `Dockerfile.rootless`),
+published to `ghcr.io/yisding/artea-gitea` by the `images`
 CI workflow. `apply-patches.sh --check` + a recompile is the regression gate for
 every rebase.
 
