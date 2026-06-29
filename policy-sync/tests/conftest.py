@@ -212,6 +212,7 @@ def make_config(mock_gitea, mock_devpi, policy_file_path: str) -> Config:
         policy_file_path=policy_file_path,
         upstream_policy_file_path=str(Path(policy_file_path).with_name("upstream-policy.yaml")) if policy_file_path else "",
         pypi_policy_file_path=str(Path(policy_file_path).with_name("pypi-constraints.txt")) if policy_file_path else "",
+        parsed_policy_file_path=str(Path(policy_file_path).with_name("policy.toml")) if policy_file_path else "",
         devpi_url=mock_devpi.url,
         devpi_root_password=TEST_DEVPI_PASSWORD,
         poll_interval=300,

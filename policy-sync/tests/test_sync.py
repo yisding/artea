@@ -18,6 +18,8 @@ def test_full_sync_writes_artifacts_and_applies_constraints(cfg, mock_gitea, moc
     assert b'"event-stream"' in Path(cfg.policy_file_path).read_bytes()
     assert Path(cfg.upstream_policy_file_path).read_bytes() == b'upstream:\n  min_age: "P3D"\n'
     assert Path(cfg.pypi_policy_file_path).read_text() == "urllib3<2\n"
+    # the raw policy.toml is persisted verbatim as the OSV last-known-good fallback
+    assert Path(cfg.parsed_policy_file_path).read_bytes() == UNIFIED
     assert mock_devpi.config["constraints"] == "urllib3<2\n"
     assert mock_devpi.config["min_upstream_age"] == "P3D"
 

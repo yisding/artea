@@ -409,7 +409,7 @@ def _make_enrich_server(stub):
 
     cfg = Config(
         gitea_url=stub.url, sync_token="t", webhook_secret="s", policy_repo="artea/registry-policy",
-        policy_file_path="", upstream_policy_file_path="", pypi_policy_file_path="",
+        policy_file_path="", upstream_policy_file_path="", pypi_policy_file_path="", parsed_policy_file_path="",
         devpi_url=stub.url, devpi_root_password="pw", poll_interval=300,
         namespace="artea", pypi_json_url=stub.url,
     )

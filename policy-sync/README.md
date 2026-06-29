@@ -76,6 +76,7 @@ uid.
 | `POLICY_FILE_PATH` | no | `$POLICY_DIR/npm-rules.yaml` | Where to write the npm policy file. Set to the empty string for **HTTP-only mode** (K8s: no volume, no file write; the `GET /policy/npm-rules.yaml` endpoint is the only npm-policy output). A custom path gets its parent directory created automatically |
 | `UPSTREAM_POLICY_FILE_PATH` | no | sibling `upstream-policy.yaml` next to `$POLICY_FILE_PATH`, or empty when `POLICY_FILE_PATH=""` | Where to write the shared upstream policy file in file mode (test/debug) |
 | `PYPI_POLICY_FILE_PATH` | no | sibling `pypi-constraints.txt` next to `$POLICY_FILE_PATH`, or empty when `POLICY_FILE_PATH=""` | Optional file-mode copy of the PyPI constraints file for debugging/inspection |
+| `PARSED_POLICY_FILE_PATH` | no | sibling `policy.toml` next to `$POLICY_FILE_PATH`, or empty when `POLICY_FILE_PATH=""` | Last-known-good source policy used by inline OSV decisions after restarts. Empty = in-memory only (OSV fails OPEN until the first post-restart sync). The Helm chart sets this to a path on a small ReadWriteOnce PVC (`policySync.persistence`), so in K8s — including the default HTTP-only deployment where `POLICY_FILE_PATH=""` — OSV blocks fail CLOSED across restarts |
 | `POLICY_SYNC_POLL_SECONDS` | no | `300` | Fallback poll interval |
 | `OSV_API_URL` | no | `https://api.osv.dev` | OSV-compatible API base used by `/osv/querybatch` |
 | `OSV_TIMEOUT_SECONDS` | no | `5` | Per-request OSV API timeout |

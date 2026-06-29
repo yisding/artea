@@ -217,3 +217,42 @@ def test_osv_querybatch_endpoint_returns_verdicts():
         "status": "ok",
         "results": [{"version": "1.0.0", "blocked": True, "ids": ["MAL-2026-1"]}],
     }
+
+
+def test_osv_querybatch_endpoint_uses_parsed_policy_fallback(tmp_path):
+    osv = MockOsv()
+    osv.malicious["1.0.0"] = ["MAL-2026-1"]
+    osv.start()
+    fallback = tmp_path / "policy.toml"
+    fallback.write_bytes(b"schema = 1\n[osv]\nmalicious_packages = true\n")
+    parsed_store = ParsedPolicyStore(fallback_path=str(fallback))
+    httpd = PolicySyncHTTPServer(
+        ("127.0.0.1", 0),
+        TEST_SECRET,
+        lambda: None,
+        SyncState(),
+        PolicyStore(),
+        PolicyStore(),
+        parsed_store,
+        OsvClient(api_url=osv.url),
+    )
+    thread = threading.Thread(target=lambda: httpd.serve_forever(poll_interval=0.01), daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{httpd.server_address[1]}/osv/querybatch",
+            data=json.dumps({"ecosystem": "npm", "name": "left-pad", "versions": ["1.0.0"]}).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            body = json.loads(resp.read())
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        osv.stop()
+
+    assert body == {
+        "status": "ok",
+        "results": [{"version": "1.0.0", "blocked": True, "ids": ["MAL-2026-1"]}],
+    }

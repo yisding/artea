@@ -11,10 +11,13 @@ before the first sync of the new process succeeds.
 """
 
 import hashlib
+import logging
 import threading
 from pathlib import Path
 
-from .policy_model import Policy
+from .policy_model import Policy, PolicyError, parse_policy
+
+log = logging.getLogger(__name__)
 
 
 def etag_for(content: bytes) -> str:
@@ -57,9 +60,10 @@ class ParsedPolicyStore:
     an OSV malicious-package hit.
     """
 
-    def __init__(self):
+    def __init__(self, fallback_path: str = ""):
         self._lock = threading.Lock()
         self._policy: Policy | None = None
+        self.fallback_path = fallback_path
 
     def set(self, policy: Policy) -> None:
         with self._lock:
@@ -67,4 +71,12 @@ class ParsedPolicyStore:
 
     def get(self) -> Policy | None:
         with self._lock:
-            return self._policy
+            if self._policy is not None:
+                return self._policy
+        if not self.fallback_path:
+            return None
+        try:
+            return parse_policy(Path(self.fallback_path).read_bytes())
+        except (OSError, PolicyError) as e:
+            log.warning("parsed policy fallback unavailable: %s", e)
+            return None
