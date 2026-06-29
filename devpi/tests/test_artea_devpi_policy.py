@@ -25,9 +25,9 @@ class FakeStage:
 
 
 class FakeLink:
-    def __init__(self, version, filename):
-        self.name = "six"
-        self.project = "six"
+    def __init__(self, version, filename, project="six"):
+        self.name = project
+        self.project = project
         self.version = version
         self.basename = filename
 
@@ -107,10 +107,13 @@ def test_constrain_all_unlisted_project_denies_without_metadata(monkeypatch):
     monkeypatch.setattr(customizer, "_project_metadata", fail_metadata)
 
     result = list(customizer.get_simple_links_filter_iter("unlisted", [
-        FakeLink("1.0.0", "unlisted-1.0.0-py3-none-any.whl"),
-        FakeLink("2.0.0", "unlisted-2.0.0-py3-none-any.whl"),
+        FakeLink("1.0.0", "unlisted-1.0.0-py3-none-any.whl", project="unlisted"),
+        FakeLink("2.0.0", "unlisted-2.0.0-py3-none-any.whl", project="unlisted"),
     ]))
 
+    # An unlisted project under a global `*` constraint is denied for every item
+    # purely by constrain_all — without any upstream metadata fetch (fail_metadata
+    # would raise) — even though the links' versions are otherwise well-formed.
     assert result == [False, False]
 
 
