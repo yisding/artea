@@ -91,36 +91,66 @@ strip_block() { # <file> -> file contents with any prior artea block removed (st
 strip_netrc_machine() { # <host> ; drop every `machine <host>` entry from stdin
   # netrc has no single parse rule: uv/pip/twine (Python) read the LAST matching
   # machine, curl the first — so a leftover duplicate for the host silently
-  # shadows ours. Remove them all; the caller writes exactly one. netrc is a
-  # whitespace-separated TOKEN stream (entries may share a physical line), so
-  # tokenize and rebuild: a `machine <host>` entry runs through its login/
-  # password/account value-pairs (a value equal to a keyword is consumed as a
-  # value, never a boundary). macdef (FTP macros) is not used by these clients.
+  # shadows ours. Remove them all; the caller writes exactly one. netrc allows
+  # entries to share a physical line, but comments and macdef bodies are not
+  # credentials. Parse physical lines so ignored text stays ignored, while still
+  # tokenizing active entry lines to remove one-line duplicate machine stanzas.
+  # Assumes each `machine` keyword and its host value share a physical line (the
+  # universal real-world layout, and what we write); a host split onto its own
+  # line is treated as unsupported rather than rewritten into a broken entry.
   awk -v host="$1" '
-    { blob = blob " " $0 }
-    END {
-      n = split(blob, t, /[ \t\r\n]+/)
+    function emit_pair(k, v) { if (keep) printf "  %s %s\n", k, v }
+    function parse_active(text,   n, t, i) {
+      n = split(text, t, /[ \t\r\n]+/)
       i = 1
       while (i <= n) {
         if (t[i] == "") { i++; continue }
         if (t[i] == "machine") {
+          # host missing on this line (split across lines, unsupported): drop
+          # this entry. Emitting a bare "machine" or letting its login/password
+          # bleed onto the next active line would corrupt an adjacent entry.
+          if (t[i + 1] == "") { keep = 0; i += 2; continue }
           keep = (t[i + 1] != host)
           if (keep) printf "machine %s\n", t[i + 1]
           i += 2
-          while (i <= n && (t[i] == "login" || t[i] == "password" || t[i] == "account")) {
-            if (keep) printf "  %s %s\n", t[i], t[i + 1]
-            i += 2
-          }
         } else if (t[i] == "default") {
-          print "default"; i++
-          while (i <= n && (t[i] == "login" || t[i] == "password" || t[i] == "account")) {
-            printf "  %s %s\n", t[i], t[i + 1]; i += 2
-          }
-        } else { i++ }   # stray/unsupported token (e.g. macdef): skip
+          keep = 1
+          print "default"
+          i++
+        } else if (t[i] == "login" || t[i] == "password" || t[i] == "account") {
+          emit_pair(t[i], t[i + 1])
+          i += 2
+        } else if (t[i] == "macdef") {
+          keep = 1
+          printf "macdef %s\n", t[i + 1]
+          in_macdef = 1
+          i = n + 1
+        } else { i++ }
       }
+    }
+    in_macdef {
+      print
+      if ($0 == "") in_macdef = 0
+      next
+    }
+    {
+      line = $0
+      comment = ""
+      # A # only starts a comment at a token boundary (line start or after
+      # whitespace), matching curl and the Python netrc lexer. A # inside a
+      # value (e.g. a password like pa#ss) is part of the value, not a comment,
+      # so it must be preserved verbatim.
+      if (match(line, /(^|[ \t])#/)) {
+        hashpos = RSTART + RLENGTH - 1
+        comment = substr(line, hashpos)
+        line = substr(line, 1, hashpos - 1)
+      }
+      parse_active(line)
+      if (comment != "") print comment
     }
   '
 }
+
 write_block() { # <file> <block-body> <append|prepend>
   local f="$1" body="$2" pos="${3:-append}" rest
   mkdir -p "$(dirname "$f")"; backup "$f"   # backup() no-ops if $f doesn't exist yet
