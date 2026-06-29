@@ -198,26 +198,45 @@ pnpm publish
 
 ### pip / twine
 
-pip installs but does not publish — build a distribution and upload it with twine:
+pip installs but does not publish — build a distribution and upload it with twine.
+Do not pass tokens with `--password`; command-line arguments may be visible to
+other local users and CI logs. Store the upload target in `~/.pypirc` instead:
 
 ```sh
+# Add an [artea] repository to ~/.pypirc. Idempotent (skips if already present)
+# and appends rather than clobbering indexes you already use. If you already keep
+# a [distutils] section, add just the [artea] block below to it by hand instead.
+if ! grep -qs '^\[artea\]' ~/.pypirc; then
+  cat >> ~/.pypirc <<EOF
+[distutils]
+index-servers =
+  artea
+
+[artea]
+repository = ${ARTEA_URL}/api/packages/__ARTEA_NAMESPACE__/pypi/
+username = ${ARTEA_USER}
+password = ${ARTEA_TOKEN}
+EOF
+fi
+chmod 600 ~/.pypirc
+
 python -m pip install --upgrade build twine
 python -m build                                  # writes dist/*.whl + dist/*.tar.gz
-
-twine upload \
-  --repository-url "${ARTEA_URL}/api/packages/__ARTEA_NAMESPACE__/pypi/" \
-  --username "${ARTEA_USER}" --password "${ARTEA_TOKEN}" \
-  dist/*
+twine upload --repository artea dist/*
 ```
+
+If your workstation has a secure keyring configured, prefer storing the token
+there and omit `password = ...` from `~/.pypirc`; twine will read the repository
+URL and username from `~/.pypirc` and retrieve the token from keyring.
 
 ### uv
 
+uv reads the `~/.netrc` credentials configured in §3, so publish with only the
+upload endpoint on the command line:
+
 ```sh
 uv build                                         # writes dist/
-
-uv publish \
-  --publish-url "${ARTEA_URL}/api/packages/__ARTEA_NAMESPACE__/pypi/" \
-  --username "${ARTEA_USER}" --password "${ARTEA_TOKEN}"
+uv publish --publish-url "${ARTEA_URL}/api/packages/__ARTEA_NAMESPACE__/pypi/"
 ```
 
 ### Endpoints
@@ -276,12 +295,9 @@ EOF
 echo "GREETING = 'hello from Artea'" > "${mod}.py"
 
 python -m build                   # writes dist/  (or: uv build)
-twine upload \
-  --repository-url "${ARTEA_URL}/api/packages/__ARTEA_NAMESPACE__/pypi/" \
-  --username "${ARTEA_USER}" --password "${ARTEA_TOKEN}" dist/*
-# ...or with uv:
-#   uv publish --publish-url "${ARTEA_URL}/api/packages/__ARTEA_NAMESPACE__/pypi/" \
-#     --username "${ARTEA_USER}" --password "${ARTEA_TOKEN}"
+twine upload --repository artea dist/*   # reuses the ~/.pypirc [artea] entry from §4
+# ...or with uv (reads ~/.netrc from §3):
+#   uv publish --publish-url "${ARTEA_URL}/api/packages/__ARTEA_NAMESPACE__/pypi/"
 
 # install it back (uses ~/.netrc + the index from §3)
 pip install "${pkg}==0.0.1"
@@ -295,14 +311,18 @@ with a `write:package` token + org membership:
 
 - **Web UI:** `__ARTEA_PUBLIC_URL__/__ARTEA_NAMESPACE__/-/packages` → pick the
   package → the version → **Delete**.
-- **API** — `DELETE /api/v1/packages/__ARTEA_NAMESPACE__/<type>/<name>/<version>`:
+- **API** — `DELETE /api/v1/packages/__ARTEA_NAMESPACE__/<type>/<name>/<version>`.
+  The token is fed to curl on stdin (`-K -`) so it never lands in argv (visible
+  via `ps`/`/proc`) or shell history:
 
 ```sh
 # Python (type = pypi; name = the project name)
-curl -fsS -X DELETE -H "Authorization: token ${ARTEA_TOKEN}" \
+printf 'header = "Authorization: token %s"\n' "${ARTEA_TOKEN}" | \
+  curl -fsS -K - -X DELETE \
   "${ARTEA_URL}/api/v1/packages/__ARTEA_NAMESPACE__/pypi/__ARTEA_NAMESPACE__-hello-$USER/0.0.1"
 
 # npm (type = npm; the scoped name is URL-encoded: @x/y -> %40x%2Fy)
-curl -fsS -X DELETE -H "Authorization: token ${ARTEA_TOKEN}" \
+printf 'header = "Authorization: token %s"\n' "${ARTEA_TOKEN}" | \
+  curl -fsS -K - -X DELETE \
   "${ARTEA_URL}/api/v1/packages/__ARTEA_NAMESPACE__/npm/%40__ARTEA_NAMESPACE__%2Fhello-$USER/0.0.1"
 ```
