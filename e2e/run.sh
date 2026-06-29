@@ -19,6 +19,7 @@
 # Exit code is non-zero when any scenario fails; per-scenario PASS/FAIL with
 # logs under e2e/tmp/run-<id>/logs/.
 set -uo pipefail
+umask 077
 cd "$(dirname "$0")/.." || exit 1
 
 # shellcheck disable=SC1091
@@ -59,6 +60,7 @@ WORK="${ROOT}/e2e/tmp/run-${RUN_ID}"
 LOG_DIR="${WORK}/logs"
 RESULT_DIR="${WORK}/results" # one file per scenario so parallel jobs can report
 mkdir -p "${LOG_DIR}" "${RESULT_DIR}"
+chmod 700 "${WORK}" "${LOG_DIR}" "${RESULT_DIR}"
 
 # Per-run package versions keep the suite re-runnable without depending on
 # cleanup having succeeded; cleanup deletes them anyway to avoid clutter.
