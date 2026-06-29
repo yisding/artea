@@ -14,4 +14,8 @@
 # ADR-0010: bind OAuth link-account registration username/email to the
 # server-side Goth user when the provider supplied those claims. This closes the
 # gap left by the readonly template overlay, which is only a browser hint.
+# Upstream (deletion path): no tracking issue — upstream treats the editable
+# link-account signup fields as intended, so this is Artea-specific hardening;
+# drop it once Gitea binds those fields to claims server-side or offers an
+# equivalent supported option (ADR-0010 Consequences).
 0002-bind-oauth-link-account-signup-fields-to-claims.patch

@@ -26,7 +26,9 @@ deployed Gitea image is therefore built from the patched tree by
   sends a `code_challenge`.
 - **OAuth link-account claim binding** (ADR-0010) — added because the supported
   template overlay can make claim-derived signup fields readonly in the browser,
-  but only the Gitea handler can ignore forged `user_name`/`email` fields.
+  but only the Gitea handler can ignore forged `user_name`/`email` fields. No
+  upstream issue exists (upstream treats the editable fields as intended); the
+  path to deletion is upstream adopting server-side claim binding (ADR-0010).
 - **Still deferred: PAT expiry dates.** Gitea PATs are currently non-expiring;
   R5 only needs "up to ~1 year", so v1 ships without expiry and this remains a
   candidate the moment policy requires enforced expiry.
