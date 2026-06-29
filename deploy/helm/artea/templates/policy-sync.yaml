@@ -4,6 +4,29 @@
 # Constraints are still pushed into devpi. POLICY_SYNC_TOKEN is minted by the
 # bootstrap Job, which patches the artea-policy-sync Secret and restarts this
 # Deployment; until then the service idles with failing syncs.
+{{- if .Values.policySync.persistence.enabled }}
+# Last-known-good policy state. policy-sync holds OSV malicious-package blocks
+# only in memory; after a restart that memory is empty until the first sync from
+# Gitea succeeds, during which OSV decisions would fail OPEN. This small PVC
+# persists the last successfully-synced policy.toml (PARSED_POLICY_FILE_PATH) so
+# the OSV fallback fails CLOSED across restarts.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "artea.fullname" "policy-sync-state" }}
+  labels:
+    {{- include "artea.labels" (dict "ctx" $ "component" "policy-sync") | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.policySync.persistence.size }}
+  {{- with .Values.policySync.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+---
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -12,6 +35,11 @@ metadata:
     {{- include "artea.labels" (dict "ctx" $ "component" "policy-sync") | nindent 4 }}
 spec:
   replicas: 1
+  {{- if .Values.policySync.persistence.enabled }}
+  # the state PVC is ReadWriteOnce, so never run two pods at once
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       {{- include "artea.selectorLabels" (dict "ctx" $ "component" "policy-sync") | nindent 6 }}
@@ -24,6 +52,11 @@ spec:
         # token Secret is excluded: bootstrap restarts the Deployment itself)
         checksum/secrets: {{ printf "%s/%s" .Values.secrets.webhookSecret .Values.secrets.devpiRootPassword | sha256sum }}
     spec:
+      {{- if .Values.policySync.persistence.enabled }}
+      securityContext:
+        # make the state PVC writable by the policysync user (uid/gid 8920)
+        fsGroup: 8920
+      {{- end }}
       containers:
         - name: policy-sync
           {{- include "artea.containerImage" .Values.policySync.image | nindent 10 }}
@@ -32,6 +65,12 @@ spec:
             # make every sync fail trying to write /policy/npm-rules.yaml
             - name: POLICY_FILE_PATH
               value: ""
+            {{- if .Values.policySync.persistence.enabled }}
+            # Persist the last-known-good parsed policy onto the state PVC so OSV
+            # blocks fail CLOSED across a restart (see the PVC comment above).
+            - name: PARSED_POLICY_FILE_PATH
+              value: /var/lib/artea/policy-state/policy.toml
+            {{- end }}
             - name: GITEA_URL
               value: {{ include "artea.giteaUrl" . | quote }}
             - name: DEVPI_URL
@@ -59,5 +98,16 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- if .Values.policySync.persistence.enabled }}
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/artea/policy-state
+          {{- end }}
+      {{- if .Values.policySync.persistence.enabled }}
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: {{ include "artea.fullname" "policy-sync-state" }}
+      {{- end }}
 ---
 {{ include "artea.service" (dict "ctx" $ "component" "policy-sync" "port" 8920) }}

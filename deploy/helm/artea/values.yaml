@@ -120,6 +120,18 @@ policySync:
   # only for package versions that clients actually request.
   osvApiUrl: "https://api.osv.dev"
   resources: {}
+  # Last-known-good policy state. policy-sync keeps OSV malicious-package blocks
+  # in memory only; on a restart that memory is empty until the first sync from
+  # Gitea succeeds, and OSV decisions fail OPEN during that window. This small
+  # ReadWriteOnce PVC persists the last successfully-synced policy.toml so the
+  # OSV fallback fails CLOSED across restarts. Disable only for stateless/dev or
+  # file-mode setups that mount their own policy volume.
+  persistence:
+    enabled: true
+    # Holds a single small policy.toml; 1Gi clears common storage-class minimums
+    # (e.g. AWS EBS) — the data itself is only a few KB.
+    size: 1Gi
+    storageClass: ""
 
 # ---- bootstrap Job (post-install/post-upgrade hook) ---------------------------
 bootstrap:
