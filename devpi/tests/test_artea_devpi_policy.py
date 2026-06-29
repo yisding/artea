@@ -25,9 +25,9 @@ class FakeStage:
 
 
 class FakeLink:
-    def __init__(self, version, filename):
-        self.name = "six"
-        self.project = "six"
+    def __init__(self, version, filename, project="six"):
+        self.name = project
+        self.project = project
         self.version = version
         self.basename = filename
 
@@ -95,6 +95,26 @@ def test_simple_links_filter_applies_min_upstream_age(monkeypatch):
     ]))
 
     assert result == [True, False]
+
+
+def test_constrain_all_unlisted_project_denies_without_metadata(monkeypatch):
+    customizer = make_stage("P3D")
+    customizer.stage.ixconfig["constraints"] = ["*"]
+
+    def fail_metadata(project):
+        raise AssertionError(f"metadata should not be fetched for {project}")
+
+    monkeypatch.setattr(customizer, "_project_metadata", fail_metadata)
+
+    result = list(customizer.get_simple_links_filter_iter("unlisted", [
+        FakeLink("1.0.0", "unlisted-1.0.0-py3-none-any.whl", project="unlisted"),
+        FakeLink("2.0.0", "unlisted-2.0.0-py3-none-any.whl", project="unlisted"),
+    ]))
+
+    # An unlisted project under a global `*` constraint is denied for every item
+    # purely by constrain_all — without any upstream metadata fetch (fail_metadata
+    # would raise) — even though the links' versions are otherwise well-formed.
+    assert result == [False, False]
 
 
 def test_simple_links_filter_applies_osv_malicious_verdict(monkeypatch):

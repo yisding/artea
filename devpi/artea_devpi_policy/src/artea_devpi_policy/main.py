@@ -309,7 +309,8 @@ class ConstrainedStage:
         opinion" (iters yield nothing, ``link_allowed`` returns ``True``). When
         the whole index is constrained but the project is not listed, this raises
         the per-item decision by returning a tuple whose ``version_filter`` is
-        None with ``constrain_all`` active, which the matcher resolves to a deny.
+        None with ``constrain_all`` active, which the per-item filters resolve to
+        an immediate deny before fetching metadata or querying OSV.
         """
         constraints = self.constraints
         version_filter = constraints.get(project)
@@ -334,6 +335,10 @@ class ConstrainedStage:
         if decision is None:
             return
         version_filter, include_legacy, needs_age, needs_osv = decision
+        if version_filter is None and constraints.constrain_all:
+            for _item in items:
+                yield False
+            return
         metadata = self._project_metadata(project) if needs_age else None
         pending: list[tuple[Any, str | None, bool]] = []
         for item in items:
