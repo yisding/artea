@@ -35,6 +35,10 @@ class Config:
     # PyPI Simple-API enrichment (PEP 700) reads these; defaults keep existing
     # Config(...) construction sites (tests) working without changes.
     namespace: str = "artea"
+    # Retained for env/config parity (PYPI_JSON_URL). The public Simple-API
+    # enrichment hot path no longer reads this — it sources per-file metadata from
+    # devpi's intra-cluster /+artea/project-meta endpoint, which the devpi age-gate
+    # plugin populates from its own (index-configured) pypi_json_url.
     pypi_json_url: str = DEFAULT_PYPI_JSON_URL
     osv_api_url: str = DEFAULT_OSV_API_URL
     osv_timeout_seconds: float = 5.0

@@ -141,9 +141,9 @@ class PolicySyncHandler(BaseHTTPRequestHandler):
 
         cfg = self.server.cfg
         if cfg is None:
-            # Enrichment needs gitea_url/devpi_url/namespace/pypi_json_url; if the
-            # server was constructed without a Config (e.g. a minimal test), this
-            # endpoint is simply unavailable rather than crashing the worker.
+            # Enrichment needs gitea_url/devpi_url/namespace; if the server was
+            # constructed without a Config (e.g. a minimal test), this endpoint is
+            # simply unavailable rather than crashing the worker.
             self._respond(503, {"error": "enrichment not configured"})
             return
         authorization = self.headers.get("Authorization") or ""
@@ -156,7 +156,10 @@ class PolicySyncHandler(BaseHTTPRequestHandler):
                     self._respond(404, {"error": "no such private package"})
                     return
             else:
-                doc = enrich.enrich_devpi(name, cfg.devpi_url, cfg.pypi_json_url)
+                # Public path now sources per-file metadata from devpi's intra-
+                # cluster /+artea/project-meta endpoint (cfg.pypi_json_url is no
+                # longer consulted here — see enrich._fetch_devpi_file_meta).
+                doc = enrich.enrich_devpi(name, cfg.devpi_url)
         except enrich.EnrichNotFound:
             # The public mirror has no such project — a real 404 ("no
             # candidates"), not a transient 502. Mirrors the uncached HTML
@@ -282,8 +285,8 @@ class PolicySyncHTTPServer(ThreadingHTTPServer):
         self.upstream_store = upstream_store
         self.parsed_policy_store = parsed_policy_store or ParsedPolicyStore()
         self.osv_client = osv_client or osv.OsvClient()
-        # Enrichment endpoint reads cfg.gitea_url / cfg.devpi_url / cfg.namespace
-        # / cfg.pypi_json_url; None leaves that endpoint disabled (503).
+        # Enrichment endpoint reads cfg.gitea_url / cfg.devpi_url / cfg.namespace;
+        # None leaves that endpoint disabled (503).
         self.cfg = cfg
 
 
