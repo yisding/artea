@@ -171,24 +171,28 @@ jobs:
       - name: assemble multi-arch manifest
         env:
           ARTEA_GITEA_IMAGE: ghcr.io/${{ github.repository_owner }}/artea-gitea
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GITHUB_REF_SAFE: ${{ github.ref }}
+          GITHUB_REF_NAME_SAFE: ${{ github.ref_name }}
           SHA: sha-${{ github.sha }}
         run: |
-          tags="-t $ARTEA_GITEA_IMAGE:$SHA"
-          if [ "${{ github.ref }}" = "refs/heads/${{ github.event.repository.default_branch }}" ]; then
-            tags="$tags -t $ARTEA_GITEA_IMAGE:latest"
+          tags=(-t "$ARTEA_GITEA_IMAGE:$SHA")
+          if [ "$GITHUB_REF_SAFE" = "refs/heads/$DEFAULT_BRANCH" ]; then
+            tags+=( -t "$ARTEA_GITEA_IMAGE:latest" )
           fi
-          case "${{ github.ref }}" in
+          case "$GITHUB_REF_SAFE" in
             refs/tags/v*)
-              ver="${{ github.ref_name }}"; ver="${ver#v}"
+              ver="${GITHUB_REF_NAME_SAFE#v}"
               if printf '%s' "$ver" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
                 # X.Y.Z plus X.Y, matching docker/metadata-action's semver patterns
-                tags="$tags -t $ARTEA_GITEA_IMAGE:$ver -t $ARTEA_GITEA_IMAGE:${ver%.*}"
+                tags+=( -t "$ARTEA_GITEA_IMAGE:$ver" -t "$ARTEA_GITEA_IMAGE:${ver%.*}" )
               else
-                tags="$tags -t $ARTEA_GITEA_IMAGE:$ver"
+                echo "::error::Release image tags must match vMAJOR.MINOR.PATCH." >&2
+                exit 1
               fi
               ;;
           esac
-          docker buildx imagetools create $tags \
+          docker buildx imagetools create "${tags[@]}" \
             "$ARTEA_GITEA_IMAGE:$SHA-amd64" \
             "$ARTEA_GITEA_IMAGE:$SHA-arm64"
 
