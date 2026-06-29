@@ -19,6 +19,7 @@ on:
       - 'e2e/**'
       - 'deploy/**'
       - '.dockerignore'
+      - '.github/actions/build-image/action.yml'
       - '.github/workflows/kind-e2e.yml'
   push:
     branches: [main]
@@ -33,6 +34,7 @@ on:
       - 'e2e/**'
       - 'deploy/**'
       - '.dockerignore'
+      - '.github/actions/build-image/action.yml'
       - '.github/workflows/kind-e2e.yml'
 
 permissions:
