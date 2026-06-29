@@ -23,11 +23,50 @@ assert_eq() { # <expected> <actual> <message>
   [ "$1" = "$2" ] || { echo "${3}: expected '${1}', got '${2}'"; return 1; }
 }
 
+redact_curl_args() { # <curl args...> -> diagnostic-safe curl args
+  local redact_next=0 arg
+  for arg in "$@"; do
+    if [ "$redact_next" = 1 ]; then
+      printf ' %q' '<redacted>'
+      redact_next=0
+      continue
+    fi
+    case "$arg" in
+      -u|--user|--proxy-user|-U)
+        printf ' %q' "$arg"
+        redact_next=1
+        ;;
+      --user=*|--proxy-user=*)
+        printf ' %q' "${arg%%=*}=<redacted>"
+        ;;
+      -u*)
+        printf ' %q' '-u<redacted>'
+        ;;
+      -U*)
+        printf ' %q' '-U<redacted>'
+        ;;
+      Authorization:*|authorization:*)
+        printf ' %q' 'Authorization: <redacted>'
+        ;;
+      *://*@*)
+        printf ' %q' "$(sed -E 's#(://)[^/@]+@#\1<redacted>@#' <<<"$arg")"
+        ;;
+      *)
+        printf ' %q' "$arg"
+        ;;
+    esac
+  done
+}
+
 assert_code() { # <expected-code> <curl args...> ; runs http_code on the curl args
-  local expected=$1 code
+  local expected=$1 code safe_args
   shift
   code=$(http_code "$@")
-  [ "$code" = "$expected" ] || { echo "expected HTTP ${expected}, got ${code} for: $*"; return 1; }
+  if [ "$code" != "$expected" ]; then
+    safe_args=$(redact_curl_args "$@")
+    echo "expected HTTP ${expected}, got ${code} for:${safe_args}"
+    return 1
+  fi
 }
 
 # True if CLI output reports HTTP <code> as a *status*. npm prints "code E<code>";
