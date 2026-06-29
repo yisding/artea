@@ -68,7 +68,8 @@ export function compilePolicy(doc: unknown): CompiledPolicy {
     if (typeof upstream !== 'object' || Array.isArray(upstream)) {
       throw new Error('"upstream" must be a mapping');
     }
-    const raw = (upstream as { min_age?: unknown }).min_age;
+    const raw = (upstream as { min_age?: unknown; minimum_age?: unknown }).min_age
+      ?? (upstream as { minimum_age?: unknown }).minimum_age;
     policy.minAgeMs = parseDurationMs(raw);
   }
   if (blocked == null) {

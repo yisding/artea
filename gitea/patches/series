@@ -1,5 +1,5 @@
 # quilt-style patch queue: one patch filename per line, applied in order with
-# `git apply` (not patch -p1 — see patches/README.md) against the SOURCE_TAG
+# `git apply` (not patch -p1 — see patches/README.md) against the SOURCE_COMMIT for SOURCE_TAG
 # pinned in gitea/UPSTREAM. See patches/README.md and the ADR before adding anything.
 #
 # ADR-0009: PKCE for OIDC login sources. Stock Gitea, acting as an OIDC client,

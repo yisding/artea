@@ -163,6 +163,10 @@ delete_dev1_token() { # <name> ; tolerates 404/422 (already gone)
 }
 
 # ---- npm helpers -------------------------------------------------------------------
+prepare_npmrc() { # <file> ; npmrc files contain live tokens, keep them owner-only
+  install -m 600 /dev/null "$1"
+}
+
 write_npmrc() { # <file> <token> ; the documented single-URL client contract
   # (docs/guides/clients-npm.md): ONE registry — the gateway routes the
   # configured private scope under /npm/ to Gitea server-side (ADR-0002).
@@ -173,6 +177,7 @@ write_npmrc() { # <file> <token> ; the documented single-URL client contract
   #                  checks only the registry's exact nerf-dart, never //host/.
   local b64
   b64=$(printf 'dev1:%s' "$2" | json_b64)
+  prepare_npmrc "$1"
   cat > "$1" <<EOF
 registry=${GATEWAY_URL}/npm/
 //${GATEWAY_HOSTPORT}/:_auth=${b64}
@@ -189,6 +194,7 @@ write_npmrc_legacy() { # <file> <token> ; the OLD two-registry contract — kept
   # gateway (the legacy /api/packages/<namespace>/npm/ URLs bypass /npm/ routing).
   local b64
   b64=$(printf 'dev1:%s' "$2" | json_b64)
+  prepare_npmrc "$1"
   cat > "$1" <<EOF
 registry=${GATEWAY_URL}/npm/
 @${ARTEA_NAMESPACE}:registry=${GATEWAY_URL}/api/packages/${ARTEA_NAMESPACE}/npm/

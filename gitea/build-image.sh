@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Reproducible build of the PATCHED rootless Gitea image (ADR-0009/0010).
 #
-# Clones stock upstream Gitea at the SOURCE_TAG pinned in gitea/UPSTREAM,
-# applies the gitea/patches/ queue (see ADR-0009 and ADR-0010) via
+# Clones stock upstream Gitea at the SOURCE_TAG/SOURCE_COMMIT pinned in
+# gitea/UPSTREAM, verifies the tag resolves to that commit, applies the
+# gitea/patches/ queue (see ADR-0009 and ADR-0010) via
 # gitea/patches/apply-patches.sh (git apply), and builds the result with
 # Gitea's own Dockerfile.rootless. Output: ghcr.io/yisding/artea-gitea:<tag>
 # (override the image name with $ARTEA_GITEA_IMAGE).
@@ -41,17 +42,38 @@ upstream="$repo_root/gitea/UPSTREAM"
 [ -f "$upstream" ] || { echo "error: missing $upstream" >&2; exit 1; }
 VERSION=$(grep -E '^VERSION=' "$upstream" | head -n1 | sed 's/^VERSION=//')
 SOURCE_TAG=$(grep -E '^SOURCE_TAG=' "$upstream" | head -n1 | sed 's/^SOURCE_TAG=//')
+SOURCE_COMMIT=$(grep -E '^SOURCE_COMMIT=' "$upstream" | head -n1 | sed 's/^SOURCE_COMMIT=//')
 [ -n "$VERSION" ] || { echo "error: VERSION not found in $upstream" >&2; exit 1; }
 [ -n "$SOURCE_TAG" ] || { echo "error: SOURCE_TAG not found in $upstream" >&2; exit 1; }
+[ -n "$SOURCE_COMMIT" ] || { echo "error: SOURCE_COMMIT not found in $upstream" >&2; exit 1; }
+case "$SOURCE_COMMIT" in
+	*[!0-9a-f]*)
+		echo "error: SOURCE_COMMIT must be a 40-character lowercase hex commit" >&2
+		exit 1
+		;;
+esac
+if [ "${#SOURCE_COMMIT}" -ne 40 ]; then
+	echo "error: SOURCE_COMMIT must be a 40-character lowercase hex commit" >&2
+	exit 1
+fi
 
 IMAGE="${ARTEA_GITEA_IMAGE:-ghcr.io/yisding/artea-gitea}"
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-echo "==> cloning go-gitea/gitea at $SOURCE_TAG"
-git clone --quiet --depth 1 --branch "$SOURCE_TAG" \
-	https://github.com/go-gitea/gitea.git "$tmp/src"
+echo "==> cloning go-gitea/gitea at $SOURCE_TAG ($SOURCE_COMMIT)"
+mkdir -p "$tmp/src"
+git -C "$tmp/src" init --quiet
+git -C "$tmp/src" remote add origin https://github.com/go-gitea/gitea.git
+git -C "$tmp/src" fetch --quiet --depth 1 origin \
+	"refs/tags/$SOURCE_TAG:refs/tags/$SOURCE_TAG"
+resolved_commit=$(git -C "$tmp/src" rev-parse "$SOURCE_TAG^{}")
+if [ "$resolved_commit" != "$SOURCE_COMMIT" ]; then
+	echo "error: $SOURCE_TAG resolved to $resolved_commit, expected $SOURCE_COMMIT" >&2
+	exit 1
+fi
+git -C "$tmp/src" checkout --quiet --detach "$SOURCE_COMMIT"
 
 echo "==> applying gitea/patches/ queue"
 "$repo_root/gitea/patches/apply-patches.sh" "$tmp/src"

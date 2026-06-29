@@ -105,6 +105,17 @@ describe('verdaccio-filter-artea', () => {
       expect((output.time as Record<string, string>)['1.3.0']).toBeUndefined();
     });
 
+    it('honors the legacy upstream minimum_age alias', async () => {
+      const file = tmpPolicyPath();
+      writePolicy(file, 'upstream:\n  minimum_age: P3D\nblocked: {}\n');
+      const plugin = makePlugin(file);
+      const recent = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+
+      const output = await plugin.filter_metadata(packument('left-pad', ['1.3.0'], '1.3.0', { '1.3.0': recent }));
+
+      expect(output.versions).toEqual({});
+    });
+
     it('hides versions with unknown publish time when an age gate is active', async () => {
       const file = tmpPolicyPath();
       writePolicy(file, 'upstream:\n  min_age: PT0.001S\nblocked: {}\n');
@@ -364,6 +375,19 @@ describe('verdaccio-filter-artea', () => {
     it('rejects too-new tarballs after metadata has populated publish times', async () => {
       const file = tmpPolicyPath();
       writePolicy(file, 'upstream:\n  min_age: P3D\nblocked: {}\n');
+      const plugin = makePlugin(file);
+      const recent = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+
+      await plugin.filter_metadata(packument('left-pad', ['1.3.0'], '1.3.0', { '1.3.0': recent }));
+      const result = await runMiddlewareAsync(plugin, '/left-pad/-/left-pad-1.3.0.tgz');
+
+      expect(result.status).toBe(403);
+      expect(result.body!.error).toContain('minimum upstream age');
+    });
+
+    it('applies the legacy upstream minimum_age alias to tarball age checks', async () => {
+      const file = tmpPolicyPath();
+      writePolicy(file, 'upstream:\n  minimum_age: P3D\nblocked: {}\n');
       const plugin = makePlugin(file);
       const recent = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
 

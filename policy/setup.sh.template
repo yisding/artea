@@ -257,7 +257,7 @@ if [ "$UNINSTALL" = 1 ]; then
       "$PIPBIN" config unset global.index-url >/dev/null 2>&1 \
         && say "  unset pip global.index-url" || true
     elif [ -n "$cur" ]; then
-      say "  left pip global.index-url unchanged (not Artea: $cur)"
+      say "  left pip global.index-url unchanged (not Artea)"
     fi
   fi
   say "Done. Artea settings removed."
