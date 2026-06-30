@@ -79,6 +79,7 @@ class ProjectMetadata:
     # yanked: str|True (only when truthy), version: <releases dict KEY>}. Distinct
     # from `files`/`versions` (epoch floats the age gate reads) — leave those as is.
     file_meta: dict[str, dict] = field(default_factory=dict)
+    metadata_available: bool = True
 
 
 metadata_cache: dict[tuple[str, str], ProjectMetadata] = {}
@@ -429,7 +430,7 @@ class ConstrainedStage:
             return fetch_project_metadata(project, self.pypi_json_url)
         except MetadataUnavailable as e:
             log.warning("pypi metadata unavailable for %s: %s", project, e)
-            return ProjectMetadata(fetched_at=time.time(), files={}, versions={})
+            return ProjectMetadata(fetched_at=time.time(), files={}, versions={}, metadata_available=False)
 
     def _version_old_enough(self, metadata: ProjectMetadata, version: str) -> bool:
         uploads = metadata.versions.get(version) or []
@@ -535,9 +536,9 @@ def project_meta_view(request):
     making it re-fetch pypi.org (a multi-MB Fastly round-trip) on the hot path.
 
     Read-only and side-effect-free: it only reads the (TTL-cached) ProjectMetadata
-    the gate builds. On a pypi.org outage `_project_metadata` returns an empty
-    ProjectMetadata, so this responds 200 with an empty `file_meta` — policy-sync
-    then degrades to an un-stamped base list (fail open) rather than seeing a 5xx.
+    the gate builds. On a pypi.org outage `_project_metadata` marks metadata
+    unavailable, so policy-sync can serve an un-stamped base list without caching
+    that degraded document as a successful enrichment.
     """
     name = normalize_name(request.params.get("name", ""))
     if not name:
@@ -546,7 +547,10 @@ def project_meta_view(request):
     if customizer is None:
         raise HTTPForbidden("constrained index is unavailable")
     metadata = customizer._project_metadata(name)
-    body = json.dumps({"file_meta": metadata.file_meta}).encode()
+    body = json.dumps({
+        "file_meta": metadata.file_meta,
+        "metadata_available": metadata.metadata_available,
+    }).encode()
     return Response(body=body, content_type="application/json")
 
 

@@ -268,14 +268,13 @@ def _fetch_devpi_file_meta(name: str, devpi_url: str) -> dict[str, dict]:
     JSON over Fastly on the public hot path — the value still originates from the
     same authoritative source the gate consulted.
 
-    devpi returns {"file_meta": {filename: {upload-time, size?, yanked?, version}}}
-    with upload-time BYTE-IDENTICAL to PyPI's reported value (so PEP 700 callers
-    see exactly what PyPI reports). We only rename the authoritative release key
-    ``version`` -> the internal ``__version`` (the merge loop builds top-level
-    versions[] from it and strips it from the emitted file object). requires-python
-    is intentionally NOT carried here: it already rides on devpi's verbatim base
-    +simple entry. On a pypi.org outage devpi returns an empty file_meta (200),
-    which yields no annotations — the same safe direction as a per-file miss.
+    devpi returns {"file_meta": {filename: {upload-time, size?, yanked?, version}},
+    "metadata_available": bool} with upload-time BYTE-IDENTICAL to PyPI's reported
+    value (so PEP 700 callers see exactly what PyPI reports). We only rename the
+    authoritative release key ``version`` -> the internal ``__version`` (the merge
+    loop builds top-level versions[] from it and strips it from the emitted file
+    object). requires-python is intentionally NOT carried here: it already rides
+    on devpi's verbatim base +simple entry.
 
     Raises EnrichUnavailable if the endpoint is unreachable/garbled so the caller
     keeps its existing fail-open behaviour (serve stale-or-base-un-stamped)."""
@@ -289,10 +288,17 @@ def _fetch_devpi_file_meta(name: str, devpi_url: str) -> dict[str, dict]:
     if not isinstance(data, dict):
         raise EnrichUnavailable(f"devpi project-meta {url}: invalid JSON payload")
 
-    out: dict[str, dict] = {}
+    metadata_available = data.get("metadata_available")
+    if metadata_available is False:
+        raise EnrichUnavailable(f"devpi project-meta {url}: metadata unavailable")
+
     file_meta = data.get("file_meta")
     if not isinstance(file_meta, dict):
-        return out
+        raise EnrichUnavailable(f"devpi project-meta {url}: invalid file_meta")
+    if not file_meta and metadata_available is not True:
+        raise EnrichUnavailable(f"devpi project-meta {url}: empty file_meta")
+
+    out: dict[str, dict] = {}
     for filename, meta in file_meta.items():
         if not isinstance(filename, str) or not isinstance(meta, dict):
             continue

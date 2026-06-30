@@ -483,6 +483,7 @@ def test_project_meta_endpoint_returns_file_meta():
     assert resp.status_code == 200
     assert resp.content_type == "application/json"
     body = json.loads(resp.body)
+    assert body["metadata_available"] is True
     assert body["file_meta"]["six-1.0.0-py3-none-any.whl"] == {
         "upload-time": "2023-06-15T10:23:45.123456Z", "size": 12345, "version": "1.0.0"}
 
@@ -504,9 +505,9 @@ def test_project_meta_endpoint_normalizes_name():
 
 
 def test_project_meta_endpoint_empty_file_meta_on_pypi_outage(monkeypatch):
-    # pypi.org down -> _project_metadata returns an empty ProjectMetadata, so the
-    # endpoint responds 200 with an empty file_meta (policy-sync fails open to an
-    # un-stamped base list) rather than a 5xx.
+    # pypi.org down -> _project_metadata marks metadata unavailable, so the
+    # endpoint still responds 200 and lets policy-sync fail open to an un-stamped
+    # base list without caching that degraded response.
     customizer = make_stage("P3D")
 
     def boom(project, pypi_json_url, now=time.time):
@@ -516,7 +517,7 @@ def test_project_meta_endpoint_empty_file_meta_on_pypi_outage(monkeypatch):
     resp = project_meta_view(FakeRequest(
         "/+artea/project-meta", registry=_meta_registry(customizer), params={"name": "six"}))
     assert resp.status_code == 200
-    assert json.loads(resp.body) == {"file_meta": {}}
+    assert json.loads(resp.body) == {"file_meta": {}, "metadata_available": False}
 
 
 def test_project_meta_endpoint_rejects_missing_name():
