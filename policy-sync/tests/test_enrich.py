@@ -68,25 +68,32 @@ def _devpi_simple(files):
     return json.dumps({"meta": {"api-version": "1.0"}, "name": "six", "files": files})
 
 
-def _pypi_json(release_files):
-    return json.dumps({"releases": release_files})
+def _devpi_meta(file_meta, metadata_available=True):
+    """The devpi /+artea/project-meta payload: filename -> per-file metadata.
+
+    Mirrors what the devpi age-gate plugin serves from the pypi.org JSON it
+    already parsed: {upload-time (raw, byte-identical), size?, yanked?, version}.
+    """
+    return json.dumps({"file_meta": file_meta, "metadata_available": metadata_available})
 
 
 def test_devpi_join_annotates_upload_time_and_size(stub):
-    # devpi lists ONE file; PyPI JSON has that file plus another (B) that must
+    # devpi lists ONE file; project-meta has that file plus another (B) that must
     # NOT leak in (the constrained list is authoritative for the file set).
     fileA = "six-1.0.0-py3-none-any.whl"
     fileB = "six-2.0.0-py3-none-any.whl"
+    # requires-python now rides on devpi's verbatim base +simple entry (PEP 691),
+    # not the per-file metadata endpoint — set it on the base file accordingly.
     stub.route("/root/constrained/+simple/six/", lambda h: _reply(
-        h, 200, _devpi_simple([{"filename": fileA, "url": "http://x/six-1.0.0...whl", "hashes": {"sha256": "abc"}}]),
+        h, 200, _devpi_simple([{"filename": fileA, "url": "http://x/six-1.0.0...whl",
+                                "hashes": {"sha256": "abc"}, "requires-python": ">=3.6"}]),
         "application/vnd.pypi.simple.v1+json"))
-    stub.route("/six/json", lambda h: _reply(h, 200, _pypi_json({
-        "1.0.0": [{"filename": fileA, "upload_time_iso_8601": "2023-06-15T10:23:45.123456Z", "size": 12345,
-                   "requires_python": ">=3.6", "yanked": False}],
-        "2.0.0": [{"filename": fileB, "upload_time_iso_8601": "2024-01-01T00:00:00Z", "size": 999}],
+    stub.route("/+artea/project-meta", lambda h: _reply(h, 200, _devpi_meta({
+        fileA: {"upload-time": "2023-06-15T10:23:45.123456Z", "size": 12345, "version": "1.0.0"},
+        fileB: {"upload-time": "2024-01-01T00:00:00.000000Z", "size": 999, "version": "2.0.0"},
     })))
 
-    doc = enrich.enrich_devpi("six", stub.url, stub.url)
+    doc = enrich.enrich_devpi("six", stub.url)
 
     assert doc["meta"]["api-version"] == "1.1"
     assert doc["name"] == "six"
@@ -112,14 +119,32 @@ def test_devpi_preserves_pep658_core_metadata(stub):
         h, 200, _devpi_simple([{"filename": fname, "url": "http://x/six-1.0.0...whl",
                                 "hashes": {"sha256": "abc"}, "core-metadata": True}]),
         "application/vnd.pypi.simple.v1+json"))
-    stub.route("/six/json", lambda h: _reply(h, 200, _pypi_json({
-        "1.0.0": [{"filename": fname, "upload_time_iso_8601": "2023-06-15T10:23:45.123456Z", "size": 9}],
+    stub.route("/+artea/project-meta", lambda h: _reply(h, 200, _devpi_meta({
+        fname: {"upload-time": "2023-06-15T10:23:45.123456Z", "size": 9, "version": "1.0.0"},
     })))
 
-    doc = enrich.enrich_devpi("six", stub.url, stub.url)
+    doc = enrich.enrich_devpi("six", stub.url)
     assert doc["files"][0]["core-metadata"] is True
     # and the PEP 700 layering still happened on the same file
     assert doc["files"][0]["upload-time"] == "2023-06-15T10:23:45.123456Z"
+
+
+def test_devpi_ignores_bool_size_metadata(stub):
+    fname = "six-1.0.0-py3-none-any.whl"
+    stub.route("/root/constrained/+simple/six/", lambda h: _reply(
+        h, 200, _devpi_simple([{"filename": fname, "url": "http://x/f.whl", "hashes": {}}]),
+        "application/vnd.pypi.simple.v1+json"))
+    stub.route("/+artea/project-meta", lambda h: _reply(h, 200, _devpi_meta({
+        fname: {
+            "upload-time": "2023-06-15T10:23:45.123456Z",
+            "size": True,
+            "version": "1.0.0",
+        },
+    })))
+
+    doc = enrich.enrich_devpi("six", stub.url)
+    assert doc["files"][0]["upload-time"] == "2023-06-15T10:23:45.123456Z"
+    assert "size" not in doc["files"][0]
 
 
 def test_devpi_versions_use_authoritative_release_key_not_filename(stub):
@@ -132,11 +157,11 @@ def test_devpi_versions_use_authoritative_release_key_not_filename(stub):
         h, 200, json.dumps({"meta": {"api-version": "1.0"}, "name": "weird-pkg",
                             "files": [{"filename": fname, "url": "http://x/f.whl", "hashes": {}}]}),
         "application/vnd.pypi.simple.v1+json"))
-    stub.route("/weird-pkg/json", lambda h: _reply(h, 200, _pypi_json({
-        "1.0.0.post1+local": [{"filename": fname, "upload_time_iso_8601": "2023-06-15T10:23:45.123456Z"}],
+    stub.route("/+artea/project-meta", lambda h: _reply(h, 200, _devpi_meta({
+        fname: {"upload-time": "2023-06-15T10:23:45.123456Z", "version": "1.0.0.post1+local"},
     })))
 
-    doc = enrich.enrich_devpi("weird-pkg", stub.url, stub.url)
+    doc = enrich.enrich_devpi("weird-pkg", stub.url)
     assert doc["versions"] == ["1.0.0.post1+local"], "authoritative release key, not the heuristic 1.0.0"
     # heuristic would have produced "1.0.0"; prove it did not
     assert "1.0.0" not in doc["versions"]
@@ -150,11 +175,11 @@ def test_devpi_version_falls_back_to_filename_when_no_pypi_match(stub):
     stub.route("/root/constrained/+simple/six/", lambda h: _reply(
         h, 200, _devpi_simple([{"filename": fname, "url": "http://x/f.whl", "hashes": {}}]),
         "application/vnd.pypi.simple.v1+json"))
-    stub.route("/six/json", lambda h: _reply(h, 200, _pypi_json({
-        "1.0.0": [{"filename": "six-1.0.0-py3-none-any.whl", "upload_time_iso_8601": "2023-06-15T10:23:45.123456Z"}],
+    stub.route("/+artea/project-meta", lambda h: _reply(h, 200, _devpi_meta({
+        "six-1.0.0-py3-none-any.whl": {"upload-time": "2023-06-15T10:23:45.123456Z", "version": "1.0.0"},
     })))
 
-    doc = enrich.enrich_devpi("six", stub.url, stub.url)
+    doc = enrich.enrich_devpi("six", stub.url)
     assert doc["versions"] == ["9.9.9"], "no PyPI match -> filename heuristic fallback"
 
 
@@ -165,30 +190,84 @@ def test_devpi_filename_miss_keeps_file_without_upload_time(stub):
     stub.route("/root/constrained/+simple/six/", lambda h: _reply(
         h, 200, _devpi_simple([{"filename": fname, "url": "http://x/f.whl", "hashes": {}}]),
         "application/vnd.pypi.simple.v1+json"))
-    stub.route("/six/json", lambda h: _reply(h, 200, _pypi_json({
-        "1.0.0": [{"filename": "six-1.0.0-py3-none-any.whl", "upload_time_iso_8601": "2023-06-15T10:23:45.123456Z"}],
+    stub.route("/+artea/project-meta", lambda h: _reply(h, 200, _devpi_meta({
+        "six-1.0.0-py3-none-any.whl": {"upload-time": "2023-06-15T10:23:45.123456Z", "version": "1.0.0"},
     })))
 
-    doc = enrich.enrich_devpi("six", stub.url, stub.url)
+    doc = enrich.enrich_devpi("six", stub.url)
     assert doc["meta"]["api-version"] == "1.1"
     assert len(doc["files"]) == 1
     assert "upload-time" not in doc["files"][0]
 
 
-def test_devpi_pypi_json_unavailable_serves_base_index_without_upload_time(stub):
-    # devpi list ok, but PyPI JSON 500s and no cache exists. The base index IS
-    # reachable, so we must NOT 502 a plain `pip/uv install <public pkg>`: serve
-    # the installable v1.1 list un-stamped. upload-time is spec-optional, and a
-    # time-filtering client that needs it simply won't match the un-stamped file.
+def test_devpi_meta_unavailable_serves_base_index_without_upload_time(stub):
+    # devpi list ok, but the project-meta endpoint 500s and no cache exists. The
+    # base index IS reachable, so we must NOT 502 a plain `pip/uv install <public
+    # pkg>`: serve the installable v1.1 list un-stamped. upload-time is spec-
+    # optional, and a time-filtering client that needs it simply won't match the
+    # un-stamped file.
     stub.route("/root/constrained/+simple/six/", lambda h: _reply(
         h, 200, _devpi_simple([{"filename": "six-1.0.0-py3-none-any.whl", "url": "http://x", "hashes": {}}]),
         "application/vnd.pypi.simple.v1+json"))
-    stub.route("/six/json", lambda h: _reply(h, 500, "boom", "text/plain"))
+    stub.route("/+artea/project-meta", lambda h: _reply(h, 500, "boom", "text/plain"))
 
-    doc = enrich.enrich_devpi("six", stub.url, stub.url)
+    doc = enrich.enrich_devpi("six", stub.url)
     assert doc["meta"]["api-version"] == "1.1"
     assert len(doc["files"]) == 1
     assert doc["files"][0]["filename"] == "six-1.0.0-py3-none-any.whl"
+    assert "upload-time" not in doc["files"][0]
+
+
+def test_devpi_meta_empty_on_pypi_outage_serves_base_index(stub):
+    # devpi degrades pypi.org outages to a 200, but marks metadata unavailable
+    # so policy-sync serves the installable base list un-stamped without caching
+    # that degraded document.
+    state = {"meta_ok": False}
+    stub.route("/root/constrained/+simple/six/", lambda h: _reply(
+        h, 200, _devpi_simple([{"filename": "six-1.0.0-py3-none-any.whl", "url": "http://x", "hashes": {}}]),
+        "application/vnd.pypi.simple.v1+json"))
+
+    def meta(h):
+        if state["meta_ok"]:
+            _reply(h, 200, _devpi_meta({
+                "six-1.0.0-py3-none-any.whl": {"upload-time": "2023-06-15T10:23:45.123456Z", "version": "1.0.0"}}))
+        else:
+            _reply(h, 200, _devpi_meta({}, metadata_available=False))
+    stub.route("/+artea/project-meta", meta)
+
+    doc = enrich.enrich_devpi("six", stub.url)
+    assert doc["meta"]["api-version"] == "1.1"
+    assert len(doc["files"]) == 1
+    assert "upload-time" not in doc["files"][0]
+    state["meta_ok"] = True
+    recovered = enrich.enrich_devpi("six", stub.url)
+    assert recovered["files"][0]["upload-time"] == "2023-06-15T10:23:45.123456Z"
+
+
+def test_devpi_meta_non_object_payload_serves_base_index(stub):
+    # A malformed-but-valid JSON payload from project-meta is metadata degradation,
+    # not an enriched-index outage: serve the base list un-stamped.
+    stub.route("/root/constrained/+simple/six/", lambda h: _reply(
+        h, 200, _devpi_simple([{"filename": "six-1.0.0-py3-none-any.whl", "url": "http://x", "hashes": {}}]),
+        "application/vnd.pypi.simple.v1+json"))
+    stub.route("/+artea/project-meta", lambda h: _reply(h, 200, "[]", "application/json"))
+
+    doc = enrich.enrich_devpi("six", stub.url)
+    assert doc["meta"]["api-version"] == "1.1"
+    assert len(doc["files"]) == 1
+    assert "upload-time" not in doc["files"][0]
+
+
+def test_devpi_meta_non_object_file_meta_serves_base_index(stub):
+    stub.route("/root/constrained/+simple/six/", lambda h: _reply(
+        h, 200, _devpi_simple([{"filename": "six-1.0.0-py3-none-any.whl", "url": "http://x", "hashes": {}}]),
+        "application/vnd.pypi.simple.v1+json"))
+    stub.route("/+artea/project-meta", lambda h: _reply(
+        h, 200, json.dumps({"file_meta": [], "metadata_available": True}), "application/json"))
+
+    doc = enrich.enrich_devpi("six", stub.url)
+    assert doc["meta"]["api-version"] == "1.1"
+    assert len(doc["files"]) == 1
     assert "upload-time" not in doc["files"][0]
 
 
@@ -197,10 +276,10 @@ def test_devpi_base_list_unavailable_fails_closed(stub):
     # (a synthesized empty list would look like "no such package"). This is the
     # kind of failure that becomes a gateway 502; metadata outages do not.
     # A genuine 404 is a DIFFERENT case (no such project -> EnrichNotFound below).
-    stub.route("/six/json", lambda h: _reply(h, 200, _pypi_json({})))  # pypi up
+    stub.route("/+artea/project-meta", lambda h: _reply(h, 200, _devpi_meta({})))  # meta up
     stub.route("/root/constrained/+simple/six/", lambda h: _reply(h, 503, "down", "text/plain"))
     with pytest.raises(enrich.EnrichUnavailable):
-        enrich.enrich_devpi("six", stub.url, stub.url)
+        enrich.enrich_devpi("six", stub.url)
 
 
 def test_devpi_base_list_404_is_not_found_not_unavailable(stub):
@@ -209,55 +288,86 @@ def test_devpi_base_list_404_is_not_found_not_unavailable(stub):
     # (the server turns it into 404 "no candidates"), NOT EnrichUnavailable
     # (which would 502 and make JSON pip/uv retry a missing package). A 404 must
     # never serve stale, so even a warm cache does not mask it.
-    stub.route("/six/json", lambda h: _reply(h, 200, _pypi_json({})))  # pypi up
+    stub.route("/+artea/project-meta", lambda h: _reply(h, 200, _devpi_meta({})))  # meta up
     stub.route("/root/constrained/+simple/six/", lambda h: _reply(h, 404, "nope", "text/plain"))
     with pytest.raises(enrich.EnrichNotFound):
-        enrich.enrich_devpi("six", stub.url, stub.url)
+        enrich.enrich_devpi("six", stub.url)
 
 
 def test_devpi_metadata_degraded_doc_is_not_cached(stub):
-    # A metadata-degraded list must not be pinned for the TTL: once PyPI JSON
-    # recovers, the very next request must produce the enriched (stamped) list.
-    state = {"pypi_ok": False}
+    # A metadata-degraded list must not be pinned for the TTL: once the project-
+    # meta endpoint recovers, the very next request must produce the enriched
+    # (stamped) list.
+    state = {"meta_ok": False}
     stub.route("/root/constrained/+simple/six/", lambda h: _reply(
         h, 200, _devpi_simple([{"filename": "six-1.0.0-py3-none-any.whl", "url": "http://x", "hashes": {}}]),
         "application/vnd.pypi.simple.v1+json"))
 
-    def pypi(h):
-        if state["pypi_ok"]:
-            _reply(h, 200, _pypi_json({"1.0.0": [
-                {"filename": "six-1.0.0-py3-none-any.whl", "upload_time_iso_8601": "2023-06-15T10:23:45.123456Z"}]}))
+    def meta(h):
+        if state["meta_ok"]:
+            _reply(h, 200, _devpi_meta({
+                "six-1.0.0-py3-none-any.whl": {"upload-time": "2023-06-15T10:23:45.123456Z", "version": "1.0.0"}}))
         else:
             _reply(h, 500, "down", "text/plain")
-    stub.route("/six/json", pypi)
+    stub.route("/+artea/project-meta", meta)
 
-    degraded = enrich.enrich_devpi("six", stub.url, stub.url)
+    degraded = enrich.enrich_devpi("six", stub.url)
     assert "upload-time" not in degraded["files"][0]
-    state["pypi_ok"] = True
-    recovered = enrich.enrich_devpi("six", stub.url, stub.url)
+    state["meta_ok"] = True
+    recovered = enrich.enrich_devpi("six", stub.url)
     assert recovered["files"][0]["upload-time"] == "2023-06-15T10:23:45.123456Z"
 
 
-def test_devpi_stale_cache_served_when_pypi_json_unavailable(stub):
-    # First call succeeds and caches; then PyPI JSON goes down -> stale served.
-    state = {"pypi_ok": True}
+def test_devpi_stale_cache_served_when_meta_unavailable(stub):
+    # First call succeeds and caches; then the project-meta endpoint goes down. We
+    # age the cached entry past the read-through TTL so the fresh-collapse misses
+    # and the stale-serve path is the one exercised here.
+    state = {"meta_ok": True}
     stub.route("/root/constrained/+simple/six/", lambda h: _reply(
         h, 200, _devpi_simple([{"filename": "six-1.0.0-py3-none-any.whl", "url": "http://x", "hashes": {}}]),
         "application/vnd.pypi.simple.v1+json"))
 
-    def pypi(h):
-        if state["pypi_ok"]:
-            _reply(h, 200, _pypi_json({"1.0.0": [
-                {"filename": "six-1.0.0-py3-none-any.whl", "upload_time_iso_8601": "2023-06-15T10:23:45.123456Z"}]}))
+    def meta(h):
+        if state["meta_ok"]:
+            _reply(h, 200, _devpi_meta({
+                "six-1.0.0-py3-none-any.whl": {"upload-time": "2023-06-15T10:23:45.123456Z", "version": "1.0.0"}}))
         else:
             _reply(h, 500, "down", "text/plain")
-    stub.route("/six/json", pypi)
+    stub.route("/+artea/project-meta", meta)
 
-    first = enrich.enrich_devpi("six", stub.url, stub.url)
+    first = enrich.enrich_devpi("six", stub.url)
     assert first["files"][0]["upload-time"] == "2023-06-15T10:23:45.123456Z"
-    state["pypi_ok"] = False
-    second = enrich.enrich_devpi("six", stub.url, stub.url)  # served from stale cache
+    # Age the cached doc past ENRICH_TTL_SECONDS (still within STALE_MAX_SECONDS)
+    # so the within-TTL read-through misses and the stale path is taken.
+    key = ("devpi", "six")
+    stored_at, value = enrich._enrich_cache._data[key]
+    enrich._enrich_cache._data[key] = (stored_at - enrich.ENRICH_TTL_SECONDS - 1, value)
+    state["meta_ok"] = False
+    second = enrich.enrich_devpi("six", stub.url)  # served from stale cache
     assert second["files"][0]["upload-time"] == "2023-06-15T10:23:45.123456Z"
+
+
+def test_devpi_within_ttl_read_through_collapses_without_refetch(stub):
+    # TASK B: a within-TTL enriched doc is served without re-hitting devpi or the
+    # meta endpoint, so repeat/concurrent same-package resolves collapse.
+    calls = {"base": 0, "meta": 0}
+
+    def base(h):
+        calls["base"] += 1
+        _reply(h, 200, _devpi_simple([{"filename": "six-1.0.0-py3-none-any.whl", "url": "http://x", "hashes": {}}]),
+               "application/vnd.pypi.simple.v1+json")
+
+    def meta(h):
+        calls["meta"] += 1
+        _reply(h, 200, _devpi_meta({
+            "six-1.0.0-py3-none-any.whl": {"upload-time": "2023-06-15T10:23:45.123456Z", "version": "1.0.0"}}))
+    stub.route("/root/constrained/+simple/six/", base)
+    stub.route("/+artea/project-meta", meta)
+
+    first = enrich.enrich_devpi("six", stub.url)
+    second = enrich.enrich_devpi("six", stub.url)
+    assert second == first
+    assert calls == {"base": 1, "meta": 1}, "second resolve served from the fresh cache"
 
 
 # ---- private (Gitea) path -------------------------------------------------------
@@ -438,8 +548,8 @@ def test_endpoint_devpi_returns_v1_1_with_content_type(stub):
     stub.route("/root/constrained/+simple/six/", lambda h: _reply(
         h, 200, _devpi_simple([{"filename": "six-1.0.0-py3-none-any.whl", "url": "http://x", "hashes": {"sha256": "a"}}]),
         "application/vnd.pypi.simple.v1+json"))
-    stub.route("/six/json", lambda h: _reply(h, 200, _pypi_json({
-        "1.0.0": [{"filename": "six-1.0.0-py3-none-any.whl", "upload_time_iso_8601": "2023-06-15T10:23:45.123456Z"}]})))
+    stub.route("/+artea/project-meta", lambda h: _reply(h, 200, _devpi_meta({
+        "six-1.0.0-py3-none-any.whl": {"upload-time": "2023-06-15T10:23:45.123456Z", "version": "1.0.0"}})))
     httpd, get = _make_enrich_server(stub)
     try:
         status, ctype, body = get("/pypi/simple-enrich?upstream=devpi&name=six")

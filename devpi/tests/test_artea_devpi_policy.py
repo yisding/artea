@@ -1,3 +1,4 @@
+import json
 import sys
 import time
 import tomllib
@@ -8,15 +9,19 @@ import pytest
 PLUGIN_SRC = Path(__file__).resolve().parents[1] / "artea_devpi_policy" / "src"
 sys.path.insert(0, str(PLUGIN_SRC))
 
+from artea_devpi_policy import main  # noqa: E402
 from artea_devpi_policy.main import (  # noqa: E402
     ConstrainedStage,
+    MetadataUnavailable,
     ProjectMetadata,
     file_age_tween_factory,
+    fetch_project_metadata,
     link_entrypath,
+    project_meta_view,
     pypi_file_allowed_view,
     parse_iso_duration_seconds,
 )
-from pyramid.httpexceptions import HTTPForbidden  # noqa: E402
+from pyramid.httpexceptions import HTTPBadRequest, HTTPForbidden  # noqa: E402
 
 
 class FakeStage:
@@ -394,3 +399,155 @@ def test_direct_public_file_tween_enforces_osv_malicious_verdict(monkeypatch):
 
     with pytest.raises(HTTPForbidden):
         tween(FakeRequest("/root/pypi/+f/abc/six-2.0.0-py3-none-any.whl"))
+
+
+# ---- per-file metadata for policy-sync's PEP 700 enrichment ---------------------
+
+
+class _FakeResp:
+    """Minimal urlopen() stand-in: context manager whose read() yields JSON."""
+
+    def __init__(self, payload):
+        self._data = json.dumps(payload).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, *a):
+        return self._data
+
+
+def _meta_registry(customizer):
+    class FakeConstrainedStage:
+        def __init__(self, c):
+            self.customizer = c
+
+    class FakeModel:
+        def getstage(self, name):
+            return {"root/constrained": FakeConstrainedStage(customizer)}.get(name)
+
+    class FakeXom:
+        model = FakeModel()
+
+    return {"xom": FakeXom()}
+
+
+def test_fetch_project_metadata_populates_file_meta(monkeypatch):
+    # The same pypi.org JSON the age gate parses now also yields per-file metadata
+    # (upload-time/size/yanked/version) for policy-sync — no extra fetch. The epoch
+    # `files`/`versions` the age gate reads must stay populated and unchanged.
+    main.metadata_cache.clear()
+    payload = {"releases": {
+        "1.0.0": [{"filename": "six-1.0.0-py3-none-any.whl",
+                   "upload_time_iso_8601": "2023-06-15T10:23:45.123456Z",
+                   "size": 12345, "requires_python": ">=3.6", "yanked": False}],
+        "2.0.0": [{"filename": "six-2.0.0-py3-none-any.whl",
+                   "upload_time_iso_8601": "2024-01-01T00:00:00.000000Z",
+                   "size": 999, "yanked": "broken"}],
+        "3.0.0": [{"filename": "six-3.0.0-py3-none-any.whl",
+                   "upload_time_iso_8601": "2024-02-01T00:00:00.000000Z",
+                   "size": True}],
+    }}
+    monkeypatch.setattr(main.urllib.request, "urlopen",
+                        lambda req, timeout=10: _FakeResp(payload))
+
+    meta = fetch_project_metadata("six", "https://pypi.example.test/pypi")
+
+    # upload-time is the RAW PyPI string (byte-identical), version is the releases
+    # dict KEY, size carried, false-yanked dropped, truthy-yanked surfaced.
+    assert meta.file_meta["six-1.0.0-py3-none-any.whl"] == {
+        "upload-time": "2023-06-15T10:23:45.123456Z", "version": "1.0.0", "size": 12345,
+    }
+    assert "yanked" not in meta.file_meta["six-1.0.0-py3-none-any.whl"]
+    assert meta.file_meta["six-2.0.0-py3-none-any.whl"]["yanked"] == "broken"
+    assert meta.file_meta["six-2.0.0-py3-none-any.whl"]["version"] == "2.0.0"
+    assert "size" not in meta.file_meta["six-3.0.0-py3-none-any.whl"]
+    # Age-gate contract unchanged: epoch files + versions still present.
+    assert set(meta.files) == {
+        "six-1.0.0-py3-none-any.whl",
+        "six-2.0.0-py3-none-any.whl",
+        "six-3.0.0-py3-none-any.whl",
+    }
+    assert {"1.0.0", "2.0.0", "3.0.0"} <= set(meta.versions)
+    assert all(isinstance(v, float) for v in meta.files.values())
+
+
+def test_fetch_project_metadata_rejects_malformed_releases(monkeypatch):
+    cases = (
+        ([], "root must be an object"),
+        ({}, "releases must be an object"),
+        ({"releases": []}, "releases must be an object"),
+    )
+    for payload, match in cases:
+        main.metadata_cache.clear()
+
+        def fake_urlopen(*_args, payload=payload, **_kwargs):
+            return _FakeResp(payload)
+
+        monkeypatch.setattr(main.urllib.request, "urlopen", fake_urlopen)
+
+        with pytest.raises(MetadataUnavailable, match=match):
+            fetch_project_metadata("six", "https://pypi.example.test/pypi")
+
+
+def test_project_meta_endpoint_returns_file_meta():
+    customizer = make_stage("P3D")
+    metadata = ProjectMetadata(
+        fetched_at=time.time(),
+        files={"six-1.0.0-py3-none-any.whl": 123.0},
+        versions={"1.0.0": [123.0]},
+        file_meta={"six-1.0.0-py3-none-any.whl": {
+            "upload-time": "2023-06-15T10:23:45.123456Z", "size": 12345, "version": "1.0.0"}},
+    )
+    customizer._project_metadata = lambda project: metadata
+
+    resp = project_meta_view(FakeRequest(
+        "/+artea/project-meta", registry=_meta_registry(customizer), params={"name": "six"}))
+    assert resp.status_code == 200
+    assert resp.content_type == "application/json"
+    body = json.loads(resp.body)
+    assert body["metadata_available"] is True
+    assert body["file_meta"]["six-1.0.0-py3-none-any.whl"] == {
+        "upload-time": "2023-06-15T10:23:45.123456Z", "size": 12345, "version": "1.0.0"}
+
+
+def test_project_meta_endpoint_normalizes_name():
+    # The view normalizes the requested name before looking up metadata, so a
+    # caller's un-normalized form still resolves the right project.
+    seen = {}
+    customizer = make_stage("P3D")
+
+    def fake_meta(project):
+        seen["project"] = project
+        return ProjectMetadata(fetched_at=time.time(), files={}, versions={}, file_meta={})
+    customizer._project_metadata = fake_meta
+
+    project_meta_view(FakeRequest(
+        "/+artea/project-meta", registry=_meta_registry(customizer), params={"name": "Flask_Login"}))
+    assert seen["project"] == "flask-login"
+
+
+def test_project_meta_endpoint_empty_file_meta_on_pypi_outage(monkeypatch):
+    # pypi.org down -> _project_metadata marks metadata unavailable, so the
+    # endpoint still responds 200 and lets policy-sync fail open to an un-stamped
+    # base list without caching that degraded response.
+    customizer = make_stage("P3D")
+
+    def boom(project, pypi_json_url, now=time.time):
+        raise MetadataUnavailable("pypi down")
+    monkeypatch.setattr(main, "fetch_project_metadata", boom)
+
+    resp = project_meta_view(FakeRequest(
+        "/+artea/project-meta", registry=_meta_registry(customizer), params={"name": "six"}))
+    assert resp.status_code == 200
+    assert json.loads(resp.body) == {"file_meta": {}, "metadata_available": False}
+
+
+def test_project_meta_endpoint_rejects_missing_name():
+    customizer = make_stage("P0D")
+    with pytest.raises(HTTPBadRequest):
+        project_meta_view(FakeRequest(
+            "/+artea/project-meta", registry=_meta_registry(customizer), params={}))

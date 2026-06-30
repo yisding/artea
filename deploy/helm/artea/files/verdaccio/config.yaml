@@ -27,6 +27,15 @@ auth:
   auth-gitea:
     gitea_url: {{ include "artea.giteaUrl" . }}
     private_namespace: '{{ include "artea.privateNamespace" . }}'
+    # Positive auth-cache TTL (ms). Every npm/pnpm request re-validates the PAT
+    # against Gitea (/api/v1/user + paginated /user/orgs + /user/teams) unless a
+    # fresh cache entry exists. The plugin default is 30s, which re-auths
+    # mid-install on long installs (e.g. webpack ~43s) and serializes redundant
+    # Gitea round-trips on Verdaccio's single event loop. Raised to 300s so one
+    # install (and bursts of parallel tarball fetches) reuses a single
+    # validation. Re-validation is kept (not disabled) for defense-in-depth;
+    # the tradeoff is that a revoked PAT stays accepted here for up to this TTL.
+    cache_ttl_ms: 300000
 
 filters:
   # missing/unparsable policy FAILS CLOSED (public packages rejected)

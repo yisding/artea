@@ -16,7 +16,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -27,6 +27,7 @@ from packaging_legacy.version import LegacyVersion
 from packaging_legacy.version import parse as parse_version
 from pluggy import HookimplMarker
 from pyramid.httpexceptions import HTTPBadRequest, HTTPForbidden, HTTPNoContent
+from pyramid.response import Response
 import pkg_resources
 
 server_hookimpl = HookimplMarker("devpiserver")
@@ -72,6 +73,13 @@ class ProjectMetadata:
     fetched_at: float
     files: dict[str, float]
     versions: dict[str, list[float]]
+    # Per-file metadata for policy-sync's PEP 700 Simple-API enrichment, parsed
+    # from the SAME pypi.org JSON the age gate already fetched (no extra fetch).
+    # filename -> {upload-time: <raw PyPI ISO string, byte-identical>, size: int,
+    # yanked: str|True (only when truthy), version: <releases dict KEY>}. Distinct
+    # from `files`/`versions` (epoch floats the age gate reads) — leave those as is.
+    file_meta: dict[str, dict] = field(default_factory=dict)
+    metadata_available: bool = True
 
 
 metadata_cache: dict[tuple[str, str], ProjectMetadata] = {}
@@ -169,26 +177,43 @@ def fetch_project_metadata(project: str, pypi_json_url: str, now=time.time) -> P
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
         raise MetadataUnavailable(f"{url}: {e}") from e
 
+    if not isinstance(data, dict):
+        raise MetadataUnavailable(f"{url}: invalid PyPI JSON: root must be an object")
+
     files: dict[str, float] = {}
     versions: dict[str, list[float]] = {}
+    file_meta: dict[str, dict] = {}
     releases = data.get("releases")
-    if isinstance(releases, dict):
-        for version, release_files in releases.items():
-            if not isinstance(release_files, list):
+    if not isinstance(releases, dict):
+        raise MetadataUnavailable(f"{url}: invalid PyPI JSON: releases must be an object")
+    for version, release_files in releases.items():
+        if not isinstance(release_files, list):
+            continue
+        for item in release_files:
+            if not isinstance(item, dict):
                 continue
-            for item in release_files:
-                if not isinstance(item, dict):
-                    continue
-                filename = item.get("filename")
-                uploaded_raw = item.get("upload_time_iso_8601") or item.get("upload_time")
-                if not isinstance(filename, str) or not isinstance(uploaded_raw, str):
-                    continue
-                uploaded = iso_to_epoch(uploaded_raw)
-                if uploaded is None:
-                    continue
-                files[filename] = uploaded
-                versions.setdefault(str(version), []).append(uploaded)
-    metadata = ProjectMetadata(fetched_at=now(), files=files, versions=versions)
+            filename = item.get("filename")
+            uploaded_raw = item.get("upload_time_iso_8601") or item.get("upload_time")
+            if not isinstance(filename, str) or not isinstance(uploaded_raw, str):
+                continue
+            uploaded = iso_to_epoch(uploaded_raw)
+            if uploaded is None:
+                continue
+            files[filename] = uploaded
+            versions.setdefault(str(version), []).append(uploaded)
+            # Same JSON, same loop: capture the per-file metadata policy-sync
+            # needs for PEP 700 enrichment so it need not re-fetch pypi.org.
+            # upload-time stays the RAW PyPI string (byte-identical — NOT the
+            # epoch in `files`); version is the authoritative releases KEY.
+            meta: dict = {"upload-time": uploaded_raw, "version": str(version)}
+            size = item.get("size")
+            if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
+                meta["size"] = size
+            yanked = item.get("yanked")
+            if yanked:  # PyPI sends false/None for not-yanked; only surface truthy
+                meta["yanked"] = yanked if isinstance(yanked, str) else True
+            file_meta[filename] = meta
+    metadata = ProjectMetadata(fetched_at=now(), files=files, versions=versions, file_meta=file_meta)
     metadata_cache[cache_key] = metadata
     return metadata
 
@@ -409,7 +434,7 @@ class ConstrainedStage:
             return fetch_project_metadata(project, self.pypi_json_url)
         except MetadataUnavailable as e:
             log.warning("pypi metadata unavailable for %s: %s", project, e)
-            return ProjectMetadata(fetched_at=time.time(), files={}, versions={})
+            return ProjectMetadata(fetched_at=time.time(), files={}, versions={}, metadata_available=False)
 
     def _version_old_enough(self, metadata: ProjectMetadata, version: str) -> bool:
         uploads = metadata.versions.get(version) or []
@@ -505,11 +530,41 @@ def pypi_file_allowed_view(request):
     return HTTPNoContent()
 
 
+def project_meta_view(request):
+    """Serve devpi's already-parsed per-file PyPI metadata to policy-sync.
+
+    policy-sync's PEP 700 enrichment needs per-file upload-time/size/yanked plus
+    the authoritative release version for each public file. The age-gate plugin
+    ALREADY fetched and parsed pypi.org's project JSON to decide upstream age, so
+    this endpoint hands policy-sync that cached, intra-cluster result instead of
+    making it re-fetch pypi.org (a multi-MB Fastly round-trip) on the hot path.
+
+    Read-only and side-effect-free: it only reads the (TTL-cached) ProjectMetadata
+    the gate builds. On a pypi.org outage `_project_metadata` marks metadata
+    unavailable, so policy-sync can serve an un-stamped base list without caching
+    that degraded document as a successful enrichment.
+    """
+    name = normalize_name(request.params.get("name", ""))
+    if not name:
+        raise HTTPBadRequest("name is required")
+    customizer = constrained_customizer(request.registry)
+    if customizer is None:
+        raise HTTPForbidden("constrained index is unavailable")
+    metadata = customizer._project_metadata(name)
+    body = json.dumps({
+        "file_meta": metadata.file_meta,
+        "metadata_available": metadata.metadata_available,
+    }).encode()
+    return Response(body=body, content_type="application/json")
+
+
 @server_hookimpl
 def devpiserver_pyramid_configure(config, pyramid_config):
     pyramid_config.add_tween("artea_devpi_policy.main.file_age_tween_factory")
     pyramid_config.add_route("artea_pypi_file_allowed", "/+artea/file-allowed")
     pyramid_config.add_view(pypi_file_allowed_view, route_name="artea_pypi_file_allowed", request_method="GET")
+    pyramid_config.add_route("artea_project_meta", "/+artea/project-meta")
+    pyramid_config.add_view(project_meta_view, route_name="artea_project_meta", request_method="GET")
 
 
 @server_hookimpl

@@ -108,13 +108,20 @@ class _TTLCache:
         self._lock = threading.Lock()
         self._data: dict = {}
 
-    def get(self, key):
+    def get(self, key, max_age: float | None = None):
+        """Return a value younger than max_age (default: the cache TTL), else None.
+
+        The explicit max_age lets a caller name the freshness window at the call
+        site (e.g. the enrich read-through collapse) instead of silently relying
+        on the cache's configured TTL.
+        """
+        horizon = self._ttl if max_age is None else max_age
         with self._lock:
             entry = self._data.get(key)
             if entry is None:
                 return None
             stored_at, value = entry
-            if self._now() - stored_at >= self._ttl:
+            if self._now() - stored_at >= horizon:
                 return None
             return value
 
@@ -251,78 +258,104 @@ def build_v1_1(name: str, files: list[dict], versions: list[str]) -> dict:
 
 # ---- public (devpi) -------------------------------------------------------------
 
-def _fetch_pypi_file_meta(name: str, pypi_json_url: str) -> dict[str, dict]:
-    """Map exact filename -> {upload-time, size, requires-python, yanked} from
-    the PyPI JSON API. This is the same source the devpi policy plugin parses
-    for the age gate, so the value we surface matches the value the gate used.
+def _fetch_devpi_file_meta(name: str, devpi_url: str) -> dict[str, dict]:
+    """Map exact filename -> {upload-time, size, yanked, __version} from devpi's
+    intra-cluster `/+artea/project-meta` endpoint.
 
-    Each entry also carries the AUTHORITATIVE canonical PEP 440 version under the
-    internal ``__version`` key (the `releases` dict KEY for that file), so the
-    caller can build top-level versions[] from PyPI's own normalization rather
-    than re-deriving it from the filename. ``__version`` is internal-only: callers
-    MUST NOT copy it into the emitted file object (it is filtered there)."""
-    url = f"{pypi_json_url.rstrip('/')}/{urllib.parse.quote(name)}/json"
+    The devpi age-gate plugin ALREADY fetched and parsed pypi.org's project JSON
+    to enforce min_upstream_age, so it serves that (cached) per-file metadata here.
+    Reusing it avoids policy-sync independently re-fetching the multi-MB pypi.org
+    JSON over Fastly on the public hot path — the value still originates from the
+    same authoritative source the gate consulted.
+
+    devpi returns {"file_meta": {filename: {upload-time, size?, yanked?, version}},
+    "metadata_available": bool} with upload-time BYTE-IDENTICAL to PyPI's reported
+    value (so PEP 700 callers see exactly what PyPI reports). We only rename the
+    authoritative release key ``version`` -> the internal ``__version`` (the merge
+    loop builds top-level versions[] from it and strips it from the emitted file
+    object). requires-python is intentionally NOT carried here: it already rides
+    on devpi's verbatim base +simple entry.
+
+    Raises EnrichUnavailable if the endpoint is unreachable/garbled so the caller
+    keeps its existing fail-open behaviour (serve stale-or-base-un-stamped)."""
+    url = f"{devpi_url.rstrip('/')}/+artea/project-meta?name={urllib.parse.quote(name)}"
     try:
         raw = _get(url, {"Accept": "application/json"})
         data = json.loads(raw)
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
-        raise EnrichUnavailable(f"pypi json {url}: {e}") from e
+        raise EnrichUnavailable(f"devpi project-meta {url}: {e}") from e
+
+    if not isinstance(data, dict):
+        raise EnrichUnavailable(f"devpi project-meta {url}: invalid JSON payload")
+
+    metadata_available = data.get("metadata_available")
+    if metadata_available is False:
+        raise EnrichUnavailable(f"devpi project-meta {url}: metadata unavailable")
+
+    file_meta = data.get("file_meta")
+    if not isinstance(file_meta, dict):
+        raise EnrichUnavailable(f"devpi project-meta {url}: invalid file_meta")
+    if not file_meta and metadata_available is not True:
+        raise EnrichUnavailable(f"devpi project-meta {url}: empty file_meta")
 
     out: dict[str, dict] = {}
-    releases = data.get("releases")
-    if not isinstance(releases, dict):
-        return out
-    for version, release_files in releases.items():
-        if not isinstance(release_files, list):
+    for filename, meta in file_meta.items():
+        if not isinstance(filename, str) or not isinstance(meta, dict):
             continue
-        for item in release_files:
-            if not isinstance(item, dict):
-                continue
-            filename = item.get("filename")
-            if not isinstance(filename, str):
-                continue
-            # Authoritative version is the releases dict KEY (PyPI's own canonical
-            # PEP 440 normalization), not a filename heuristic. Internal-only.
-            entry: dict = {"__version": version} if isinstance(version, str) else {}
-            uploaded_raw = item.get("upload_time_iso_8601") or item.get("upload_time")
-            iso = normalize_to_iso_z(uploaded_raw) if isinstance(uploaded_raw, str) else None
-            if iso is not None:
-                entry["upload-time"] = iso
-            size = item.get("size")
-            if isinstance(size, int) and size >= 0:
-                entry["size"] = size
-            requires_python = item.get("requires_python")
-            if isinstance(requires_python, str) and requires_python:
-                entry["requires-python"] = requires_python
-            yanked = item.get("yanked")
-            if yanked:  # PyPI sends false/None for not-yanked; only surface truthy
-                entry["yanked"] = yanked if isinstance(yanked, str) else True
-            out[filename] = entry
+        # Authoritative version is the releases dict KEY devpi captured (PyPI's own
+        # canonical PEP 440 normalization), not a filename heuristic. Internal-only.
+        version = meta.get("version")
+        entry: dict = {"__version": version} if isinstance(version, str) else {}
+        upload_time = meta.get("upload-time")
+        # Byte-identical pass-through: devpi already kept PyPI's raw ISO string.
+        if isinstance(upload_time, str) and upload_time:
+            entry["upload-time"] = upload_time
+        size = meta.get("size")
+        if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
+            entry["size"] = size
+        yanked = meta.get("yanked")
+        if yanked:  # devpi only emits yanked when truthy; mirror that
+            entry["yanked"] = yanked if isinstance(yanked, str) else True
+        out[filename] = entry
     return out
 
 
-def enrich_devpi(name: str, devpi_url: str, pypi_json_url: str) -> dict:
+def enrich_devpi(name: str, devpi_url: str) -> dict:
     """Build a v1.1 document for a PUBLIC package from devpi's constrained index.
 
     The base file list is devpi's POST-policy PEP 691 JSON, so only permitted
-    files are annotated. upload-time/size come from the PyPI JSON API (the
-    authoritative source the age gate already consulted). Files with no metadata
-    match keep no upload-time (it is spec-optional); a time-filtering client
-    simply will not select them, which is the safe direction.
+    files are annotated. upload-time/size come from devpi's `/+artea/project-meta`
+    endpoint (the per-file metadata devpi's age gate already parsed from pypi.org),
+    an intra-cluster call instead of an independent pypi.org re-fetch. Files with
+    no metadata match keep no upload-time (it is spec-optional); a time-filtering
+    client simply will not select them, which is the safe direction.
+
+    Read-through collapse: a TTL-fresh enriched document is returned immediately,
+    so repeat/concurrent resolves of the same PUBLIC package within the cache TTL
+    skip the devpi base + meta fetches entirely. This is safe for public packages
+    because the age gate's min_upstream_age hides newly-published public files for
+    days (>> the cache TTL), so a within-TTL public document cannot omit a freshly
+    installable file. (The private Gitea path deliberately does NOT collapse.)
 
     Availability vs. metadata are decoupled. The devpi constrained list is the
-    *index* (which files exist); the PyPI JSON is *optional metadata*
+    *index* (which files exist); the project-meta is *optional metadata*
     (upload-time/size). If the base list is unreachable and no stale enriched
     document exists, we fail closed (EnrichUnavailable -> 502): a synthesized
     empty list would look like "no such package". But if the base list is
-    reachable and only the PyPI JSON is down, we serve the base list as-is
+    reachable and only the metadata endpoint is down, we serve the base list as-is
     (still a complete, installable v1.1 index) rather than 502 — upload-time is
     spec-optional, and a time-filtering client that needs it simply will not
     match the un-stamped files, the same safe direction the per-file-miss path
     already relies on. We do NOT cache a metadata-degraded document, so the next
-    request retries PyPI JSON instead of pinning the degraded list for the TTL.
+    request retries the metadata endpoint instead of pinning the degraded list.
     """
     cache_key = ("devpi", name)
+    # Read-through: a within-TTL enriched doc collapses repeat/concurrent same-
+    # package resolves without re-fetching devpi+meta (only fully-enriched docs are
+    # ever cached, so this never serves a metadata-degraded list).
+    fresh = _enrich_cache.get(cache_key, ENRICH_TTL_SECONDS)
+    if fresh is not None:
+        return fresh
     base_url = f"{devpi_url.rstrip('/')}/root/constrained/+simple/{urllib.parse.quote(name)}/"
     try:
         raw = _get(base_url, {"Accept": SIMPLE_JSON_ACCEPT})
@@ -356,7 +389,7 @@ def enrich_devpi(name: str, devpi_url: str, pypi_json_url: str) -> dict:
 
     metadata_degraded = False
     try:
-        meta_by_filename = _fetch_pypi_file_meta(name, pypi_json_url)
+        meta_by_filename = _fetch_devpi_file_meta(name, devpi_url)
     except EnrichUnavailable as e:
         # The base index IS reachable; only the optional upload-time/size source
         # is down. Prefer a stale enriched doc (keeps upload-time), else serve
@@ -364,9 +397,9 @@ def enrich_devpi(name: str, devpi_url: str, pypi_json_url: str) -> dict:
         # total install outage for plain `pip/uv install <public pkg>`.
         stale = _enrich_cache.get_stale(cache_key, STALE_MAX_SECONDS)
         if stale is not None:
-            log.warning("pypi metadata unavailable for %s (%s); serving stale enriched", name, e)
+            log.warning("devpi project-meta unavailable for %s (%s); serving stale enriched", name, e)
             return stale
-        log.warning("pypi metadata unavailable for %s (%s); serving base index without upload-time", name, e)
+        log.warning("devpi project-meta unavailable for %s (%s); serving base index without upload-time", name, e)
         meta_by_filename = {}
         metadata_degraded = True
 
@@ -396,7 +429,7 @@ def enrich_devpi(name: str, devpi_url: str, pypi_json_url: str) -> dict:
             if "upload-time" not in out:
                 missing += 1
             # Prefer PyPI's authoritative release key; fall back to the filename
-            # heuristic only for base files with no PyPI-JSON match (e.g. the
+            # heuristic only for base files with no project-meta match (e.g. the
             # metadata-degraded path, or a devpi file absent from PyPI).
             ver = authoritative_version or version_from_filename(filename, name)
             if ver:
@@ -404,11 +437,11 @@ def enrich_devpi(name: str, devpi_url: str, pypi_json_url: str) -> dict:
         files.append(out)
 
     if missing:
-        log.info("enrich_devpi %s: %d/%d files without a PyPI upload-time match", name, missing, len(files))
+        log.info("enrich_devpi %s: %d/%d files without a project-meta upload-time match", name, missing, len(files))
 
     doc = build_v1_1(base.get("name", name), files, versions)
     # Only cache a fully-enriched document; a metadata-degraded list must not be
-    # pinned for the whole TTL (next request retries PyPI JSON).
+    # pinned for the whole TTL (next request retries the devpi project-meta endpoint).
     if not metadata_degraded:
         _enrich_cache.put(cache_key, doc)
     return doc

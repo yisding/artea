@@ -498,6 +498,19 @@ class GatewayTest(unittest.TestCase):
                                     auth=GOOD_AUTH)
         self.assertEqual((status, body), (403, "blocked by policy"))
 
+    def test_npm_public_tarball_reaches_verdaccio_every_time(self):
+        # S13/S15 rely on Verdaccio's tarball middleware seeing every direct
+        # public tarball GET so policy changes and fail-closed states apply.
+        path = "/cache-probe/-/cache-probe-1.0.0.tgz"
+        before = len([p for p in self.seen("verdaccio") if p == path])
+
+        for _ in range(2):
+            status, body, _ = self._raw("GET", f"/npm{path}", auth=GOOD_AUTH)
+            self.assertEqual(status, 200)
+            self.assertEqual(body, f"verdaccio {path}")
+
+        self.assertEqual(len([p for p in self.seen("verdaccio") if p == path]), before + 2)
+
     def test_npm_root_redirects(self):
         status, _, headers = self._raw("GET", "/npm")
         self.assertEqual(status, 301)
