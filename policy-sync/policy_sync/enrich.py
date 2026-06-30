@@ -397,9 +397,9 @@ def enrich_devpi(name: str, devpi_url: str) -> dict:
         # total install outage for plain `pip/uv install <public pkg>`.
         stale = _enrich_cache.get_stale(cache_key, STALE_MAX_SECONDS)
         if stale is not None:
-            log.warning("pypi metadata unavailable for %s (%s); serving stale enriched", name, e)
+            log.warning("devpi project-meta unavailable for %s (%s); serving stale enriched", name, e)
             return stale
-        log.warning("pypi metadata unavailable for %s (%s); serving base index without upload-time", name, e)
+        log.warning("devpi project-meta unavailable for %s (%s); serving base index without upload-time", name, e)
         meta_by_filename = {}
         metadata_degraded = True
 
@@ -429,7 +429,7 @@ def enrich_devpi(name: str, devpi_url: str) -> dict:
             if "upload-time" not in out:
                 missing += 1
             # Prefer PyPI's authoritative release key; fall back to the filename
-            # heuristic only for base files with no PyPI-JSON match (e.g. the
+            # heuristic only for base files with no project-meta match (e.g. the
             # metadata-degraded path, or a devpi file absent from PyPI).
             ver = authoritative_version or version_from_filename(filename, name)
             if ver:
@@ -437,11 +437,11 @@ def enrich_devpi(name: str, devpi_url: str) -> dict:
         files.append(out)
 
     if missing:
-        log.info("enrich_devpi %s: %d/%d files without a PyPI upload-time match", name, missing, len(files))
+        log.info("enrich_devpi %s: %d/%d files without a project-meta upload-time match", name, missing, len(files))
 
     doc = build_v1_1(base.get("name", name), files, versions)
     # Only cache a fully-enriched document; a metadata-degraded list must not be
-    # pinned for the whole TTL (next request retries PyPI JSON).
+    # pinned for the whole TTL (next request retries the devpi project-meta endpoint).
     if not metadata_degraded:
         _enrich_cache.put(cache_key, doc)
     return doc

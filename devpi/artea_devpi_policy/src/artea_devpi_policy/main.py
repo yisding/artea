@@ -181,34 +181,35 @@ def fetch_project_metadata(project: str, pypi_json_url: str, now=time.time) -> P
     versions: dict[str, list[float]] = {}
     file_meta: dict[str, dict] = {}
     releases = data.get("releases")
-    if isinstance(releases, dict):
-        for version, release_files in releases.items():
-            if not isinstance(release_files, list):
+    if not isinstance(releases, dict):
+        raise MetadataUnavailable(f"{url}: invalid PyPI JSON: releases must be an object")
+    for version, release_files in releases.items():
+        if not isinstance(release_files, list):
+            continue
+        for item in release_files:
+            if not isinstance(item, dict):
                 continue
-            for item in release_files:
-                if not isinstance(item, dict):
-                    continue
-                filename = item.get("filename")
-                uploaded_raw = item.get("upload_time_iso_8601") or item.get("upload_time")
-                if not isinstance(filename, str) or not isinstance(uploaded_raw, str):
-                    continue
-                uploaded = iso_to_epoch(uploaded_raw)
-                if uploaded is None:
-                    continue
-                files[filename] = uploaded
-                versions.setdefault(str(version), []).append(uploaded)
-                # Same JSON, same loop: capture the per-file metadata policy-sync
-                # needs for PEP 700 enrichment so it need not re-fetch pypi.org.
-                # upload-time stays the RAW PyPI string (byte-identical — NOT the
-                # epoch in `files`); version is the authoritative releases KEY.
-                meta: dict = {"upload-time": uploaded_raw, "version": str(version)}
-                size = item.get("size")
-                if isinstance(size, int) and size >= 0:
-                    meta["size"] = size
-                yanked = item.get("yanked")
-                if yanked:  # PyPI sends false/None for not-yanked; only surface truthy
-                    meta["yanked"] = yanked if isinstance(yanked, str) else True
-                file_meta[filename] = meta
+            filename = item.get("filename")
+            uploaded_raw = item.get("upload_time_iso_8601") or item.get("upload_time")
+            if not isinstance(filename, str) or not isinstance(uploaded_raw, str):
+                continue
+            uploaded = iso_to_epoch(uploaded_raw)
+            if uploaded is None:
+                continue
+            files[filename] = uploaded
+            versions.setdefault(str(version), []).append(uploaded)
+            # Same JSON, same loop: capture the per-file metadata policy-sync
+            # needs for PEP 700 enrichment so it need not re-fetch pypi.org.
+            # upload-time stays the RAW PyPI string (byte-identical — NOT the
+            # epoch in `files`); version is the authoritative releases KEY.
+            meta: dict = {"upload-time": uploaded_raw, "version": str(version)}
+            size = item.get("size")
+            if isinstance(size, int) and size >= 0:
+                meta["size"] = size
+            yanked = item.get("yanked")
+            if yanked:  # PyPI sends false/None for not-yanked; only surface truthy
+                meta["yanked"] = yanked if isinstance(yanked, str) else True
+            file_meta[filename] = meta
     metadata = ProjectMetadata(fetched_at=now(), files=files, versions=versions, file_meta=file_meta)
     metadata_cache[cache_key] = metadata
     return metadata

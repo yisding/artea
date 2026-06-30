@@ -467,6 +467,16 @@ def test_fetch_project_metadata_populates_file_meta(monkeypatch):
     assert all(isinstance(v, float) for v in meta.files.values())
 
 
+def test_fetch_project_metadata_rejects_malformed_releases(monkeypatch):
+    for payload in ({}, {"releases": []}):
+        main.metadata_cache.clear()
+        monkeypatch.setattr(main.urllib.request, "urlopen",
+                            lambda req, timeout=10, payload=payload: _FakeResp(payload))
+
+        with pytest.raises(MetadataUnavailable, match="releases must be an object"):
+            fetch_project_metadata("six", "https://pypi.example.test/pypi")
+
+
 def test_project_meta_endpoint_returns_file_meta():
     customizer = make_stage("P3D")
     metadata = ProjectMetadata(
