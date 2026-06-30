@@ -24,8 +24,9 @@ describe('OSV decision wire shape (shared vectors)', () => {
     );
     const client = new OsvDecisionClient('http://policy-sync.example/osv/querybatch', makeLogger());
 
-    const blocked = await client.blockedVersions('npm', vectors.request.name, vectors.request.versions);
+    const { blocked, complete } = await client.blockedVersions('npm', vectors.request.name, vectors.request.versions);
 
+    expect(complete).toBe(true);
     expect([...blocked.keys()].sort()).toEqual([...vectors.expected.blockedVersions].sort());
     for (const [version, ids] of Object.entries(vectors.expected.blockedIds)) {
       expect(blocked.get(version)).toEqual(ids);

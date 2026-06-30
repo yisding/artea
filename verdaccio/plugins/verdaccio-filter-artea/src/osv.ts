@@ -9,6 +9,18 @@ interface OsvResponse {
   reason?: unknown;
 }
 
+/**
+ * Result of an OSV decision lookup. `complete` is false when the verdict cannot be
+ * trusted as final — the request failed and we failed open, or the endpoint reported
+ * a degraded/partial result. Callers must not cache a non-complete decision, or the
+ * fail-open window would outlive the outage (and a version OSV blocks once it recovers
+ * would keep being served).
+ */
+export interface OsvDecision {
+  blocked: Map<string, string[]>;
+  complete: boolean;
+}
+
 const DEFAULT_OSV_TIMEOUT_MS = 5000;
 
 export class OsvDecisionClient {
@@ -25,10 +37,10 @@ export class OsvDecisionClient {
     this.logger = logger;
   }
 
-  public async blockedVersions(ecosystem: 'npm', name: string, versions: string[]): Promise<Map<string, string[]>> {
+  public async blockedVersions(ecosystem: 'npm', name: string, versions: string[]): Promise<OsvDecision> {
     const unique = [...new Set(versions.filter((v) => v.length > 0))];
     if (unique.length === 0) {
-      return new Map();
+      return { blocked: new Map(), complete: true };
     }
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -44,19 +56,20 @@ export class OsvDecisionClient {
       }
       const body = (await res.json()) as OsvResponse;
       const blocked = parseResponse(body);
-      if (body.status === 'degraded') {
+      const degraded = body.status === 'degraded';
+      if (degraded) {
         this.logger.warn(
           { name, reason: typeof body.reason === 'string' ? body.reason : 'unknown' },
           'filter-artea: OSV lookup for @{name} degraded: @{reason}',
         );
       }
-      return blocked;
+      return { blocked, complete: !degraded };
     } catch (e) {
       this.logger.warn(
         { name, msg: (e as Error).message },
         'filter-artea: OSV lookup for @{name} failed open: @{msg}',
       );
-      return new Map();
+      return { blocked: new Map(), complete: false };
     } finally {
       clearTimeout(timeout);
     }

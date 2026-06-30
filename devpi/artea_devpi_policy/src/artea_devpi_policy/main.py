@@ -44,6 +44,16 @@ PYPI_FILE_PREFIXES = ("root/pypi/+f/", "root/pypi/+e/")
 # this suffix — a metadata file is allowed iff its distribution is.
 METADATA_SUFFIX = ".metadata"
 OSV_TIMEOUT_SECONDS = 5
+# OSV block decisions are cached per (endpoint, project, version-set) for this
+# long so the constrained-index build — fetched per package on every cold pip
+# resolve — does not re-pay the OSV round-trip (measured 0.4-4s/package) each
+# time. Matches the metadata cache TTL; safe because min_upstream_age delays
+# newly-published public files by days (>> this TTL), so a freshly-flagged brand-
+# new malicious version is not installable during the window anyway, and OSV
+# flags on already-aged versions are stable. Only SUCCESSFUL lookups are cached
+# (see query_osv_blocked_versions) so a transient OSV outage never pins an
+# empty/fail-open result.
+OSV_CACHE_SECONDS = DEFAULT_METADATA_CACHE_SECONDS
 
 ISO_DURATION_RE = re.compile(
     r"^P(?:(?P<weeks>\d+(?:\.\d+)?)W)?(?:(?P<days>\d+(?:\.\d+)?)D)?"
@@ -83,6 +93,11 @@ class ProjectMetadata:
 
 
 metadata_cache: dict[tuple[str, str], ProjectMetadata] = {}
+
+# (osv_url, project, sorted version tuple) -> (fetched_at, blocked frozenset).
+# Only successful OSV responses are stored; fail-open/error results are not (so a
+# transient OSV outage retries instead of pinning "nothing blocked" for the TTL).
+osv_cache: dict[tuple[str, str, tuple[str, ...]], tuple[float, frozenset[str]]] = {}
 
 
 def default_osv_url() -> str:
@@ -218,10 +233,14 @@ def fetch_project_metadata(project: str, pypi_json_url: str, now=time.time) -> P
     return metadata
 
 
-def query_osv_blocked_versions(osv_url: str, project: str, versions: list[str]) -> set[str]:
+def query_osv_blocked_versions(osv_url: str, project: str, versions: list[str], now=time.time) -> set[str]:
     unique = sorted({s for s in (str(version) for version in versions) if s})
     if not osv_url or not unique:
         return set()
+    cache_key = (osv_url, project, tuple(unique))
+    cached = osv_cache.get(cache_key)
+    if cached is not None and now() - cached[0] < OSV_CACHE_SECONDS:
+        return set(cached[1])
     payload = json.dumps({"ecosystem": "pypi", "name": project, "versions": unique}).encode()
     req = urllib.request.Request(
         osv_url,
@@ -246,6 +265,8 @@ def query_osv_blocked_versions(osv_url: str, project: str, versions: list[str]) 
         version = item.get("version")
         if item.get("blocked") is True and isinstance(version, str):
             blocked.add(version)
+    # Cache successful lookups only (the two fail-open returns above never store).
+    osv_cache[cache_key] = (now(), frozenset(blocked))
     return blocked
 
 
