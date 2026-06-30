@@ -311,7 +311,7 @@ def _fetch_devpi_file_meta(name: str, devpi_url: str) -> dict[str, dict]:
         if isinstance(upload_time, str) and upload_time:
             entry["upload-time"] = upload_time
         size = meta.get("size")
-        if isinstance(size, int) and size >= 0:
+        if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
             entry["size"] = size
         yanked = meta.get("yanked")
         if yanked:  # devpi only emits yanked when truthy; mirror that

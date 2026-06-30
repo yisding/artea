@@ -207,7 +207,7 @@ def fetch_project_metadata(project: str, pypi_json_url: str, now=time.time) -> P
             # epoch in `files`); version is the authoritative releases KEY.
             meta: dict = {"upload-time": uploaded_raw, "version": str(version)}
             size = item.get("size")
-            if isinstance(size, int) and size >= 0:
+            if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
                 meta["size"] = size
             yanked = item.get("yanked")
             if yanked:  # PyPI sends false/None for not-yanked; only surface truthy

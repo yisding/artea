@@ -129,6 +129,24 @@ def test_devpi_preserves_pep658_core_metadata(stub):
     assert doc["files"][0]["upload-time"] == "2023-06-15T10:23:45.123456Z"
 
 
+def test_devpi_ignores_bool_size_metadata(stub):
+    fname = "six-1.0.0-py3-none-any.whl"
+    stub.route("/root/constrained/+simple/six/", lambda h: _reply(
+        h, 200, _devpi_simple([{"filename": fname, "url": "http://x/f.whl", "hashes": {}}]),
+        "application/vnd.pypi.simple.v1+json"))
+    stub.route("/+artea/project-meta", lambda h: _reply(h, 200, _devpi_meta({
+        fname: {
+            "upload-time": "2023-06-15T10:23:45.123456Z",
+            "size": True,
+            "version": "1.0.0",
+        },
+    })))
+
+    doc = enrich.enrich_devpi("six", stub.url)
+    assert doc["files"][0]["upload-time"] == "2023-06-15T10:23:45.123456Z"
+    assert "size" not in doc["files"][0]
+
+
 def test_devpi_versions_use_authoritative_release_key_not_filename(stub):
     # The base file's name embeds a version string ("1.0.0") that the filename
     # heuristic would extract, but PyPI's authoritative release KEY normalizes it

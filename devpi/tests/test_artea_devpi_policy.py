@@ -447,6 +447,9 @@ def test_fetch_project_metadata_populates_file_meta(monkeypatch):
         "2.0.0": [{"filename": "six-2.0.0-py3-none-any.whl",
                    "upload_time_iso_8601": "2024-01-01T00:00:00.000000Z",
                    "size": 999, "yanked": "broken"}],
+        "3.0.0": [{"filename": "six-3.0.0-py3-none-any.whl",
+                   "upload_time_iso_8601": "2024-02-01T00:00:00.000000Z",
+                   "size": True}],
     }}
     monkeypatch.setattr(main.urllib.request, "urlopen",
                         lambda req, timeout=10: _FakeResp(payload))
@@ -461,9 +464,14 @@ def test_fetch_project_metadata_populates_file_meta(monkeypatch):
     assert "yanked" not in meta.file_meta["six-1.0.0-py3-none-any.whl"]
     assert meta.file_meta["six-2.0.0-py3-none-any.whl"]["yanked"] == "broken"
     assert meta.file_meta["six-2.0.0-py3-none-any.whl"]["version"] == "2.0.0"
+    assert "size" not in meta.file_meta["six-3.0.0-py3-none-any.whl"]
     # Age-gate contract unchanged: epoch files + versions still present.
-    assert set(meta.files) == {"six-1.0.0-py3-none-any.whl", "six-2.0.0-py3-none-any.whl"}
-    assert "1.0.0" in meta.versions and "2.0.0" in meta.versions
+    assert set(meta.files) == {
+        "six-1.0.0-py3-none-any.whl",
+        "six-2.0.0-py3-none-any.whl",
+        "six-3.0.0-py3-none-any.whl",
+    }
+    assert {"1.0.0", "2.0.0", "3.0.0"} <= set(meta.versions)
     assert all(isinstance(v, float) for v in meta.files.values())
 
 
