@@ -177,6 +177,9 @@ def fetch_project_metadata(project: str, pypi_json_url: str, now=time.time) -> P
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
         raise MetadataUnavailable(f"{url}: {e}") from e
 
+    if not isinstance(data, dict):
+        raise MetadataUnavailable(f"{url}: invalid PyPI JSON: root must be an object")
+
     files: dict[str, float] = {}
     versions: dict[str, list[float]] = {}
     file_meta: dict[str, dict] = {}

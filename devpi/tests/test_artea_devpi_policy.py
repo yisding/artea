@@ -468,12 +468,20 @@ def test_fetch_project_metadata_populates_file_meta(monkeypatch):
 
 
 def test_fetch_project_metadata_rejects_malformed_releases(monkeypatch):
-    for payload in ({}, {"releases": []}):
+    cases = (
+        ([], "root must be an object"),
+        ({}, "releases must be an object"),
+        ({"releases": []}, "releases must be an object"),
+    )
+    for payload, match in cases:
         main.metadata_cache.clear()
-        monkeypatch.setattr(main.urllib.request, "urlopen",
-                            lambda req, timeout=10, payload=payload: _FakeResp(payload))
 
-        with pytest.raises(MetadataUnavailable, match="releases must be an object"):
+        def fake_urlopen(*_args, payload=payload, **_kwargs):
+            return _FakeResp(payload)
+
+        monkeypatch.setattr(main.urllib.request, "urlopen", fake_urlopen)
+
+        with pytest.raises(MetadataUnavailable, match=match):
             fetch_project_metadata("six", "https://pypi.example.test/pypi")
 
 
