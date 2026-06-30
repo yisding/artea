@@ -286,6 +286,9 @@ def _fetch_devpi_file_meta(name: str, devpi_url: str) -> dict[str, dict]:
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
         raise EnrichUnavailable(f"devpi project-meta {url}: {e}") from e
 
+    if not isinstance(data, dict):
+        raise EnrichUnavailable(f"devpi project-meta {url}: invalid JSON payload")
+
     out: dict[str, dict] = {}
     file_meta = data.get("file_meta")
     if not isinstance(file_meta, dict):

@@ -215,6 +215,20 @@ def test_devpi_meta_empty_on_pypi_outage_serves_base_index(stub):
     assert "upload-time" not in doc["files"][0]
 
 
+def test_devpi_meta_non_object_payload_serves_base_index(stub):
+    # A malformed-but-valid JSON payload from project-meta is metadata degradation,
+    # not an enriched-index outage: serve the base list un-stamped.
+    stub.route("/root/constrained/+simple/six/", lambda h: _reply(
+        h, 200, _devpi_simple([{"filename": "six-1.0.0-py3-none-any.whl", "url": "http://x", "hashes": {}}]),
+        "application/vnd.pypi.simple.v1+json"))
+    stub.route("/+artea/project-meta", lambda h: _reply(h, 200, "[]", "application/json"))
+
+    doc = enrich.enrich_devpi("six", stub.url)
+    assert doc["meta"]["api-version"] == "1.1"
+    assert len(doc["files"]) == 1
+    assert "upload-time" not in doc["files"][0]
+
+
 def test_devpi_base_list_unavailable_fails_closed(stub):
     # The base index is down (5xx) and no cache exists -> EnrichUnavailable
     # (a synthesized empty list would look like "no such package"). This is the
