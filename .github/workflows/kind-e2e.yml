@@ -94,7 +94,7 @@ jobs:
           cache-dependency-path: e2e/run.sh
 
       - name: cache helm dependencies
-        uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             deploy/helm/artea/charts
@@ -102,7 +102,7 @@ jobs:
           key: helm-${{ runner.os }}-${{ hashFiles('deploy/helm/artea/Chart.lock') }}
 
       - name: cache e2e python venv
-        uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: e2e/tmp/venv
           key: e2e-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('e2e/run.sh') }}
