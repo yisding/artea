@@ -1,7 +1,7 @@
 import * as semver from 'semver';
 import type { pluginUtils } from '@verdaccio/core';
 import type { Logger, Manifest } from '@verdaccio/types';
-import { type PolicyLoader, type PolicySourceConfig, SEMVER_OPTS, createPolicyLoader, isNameBlocked, isVersionBlocked } from './policy';
+import { type CompiledPolicy, type PolicyLoader, type PolicySourceConfig, SEMVER_OPTS, createPolicyLoader, isNameBlocked, isVersionBlocked } from './policy';
 import { OsvDecisionClient } from './osv';
 
 export interface FilterArteaConfig extends PolicySourceConfig {
@@ -11,6 +11,24 @@ export interface FilterArteaConfig extends PolicySourceConfig {
   osv_url?: string;
   /** OSV decision endpoint timeout in ms (default 5000). */
   osv_timeout_ms?: number;
+  /**
+   * Per-package filter-decision cache TTL in ms (default 120000; 0 disables).
+   * Bounds how stale a cached min_age/OSV decision may be — see the decision cache
+   * note on filter_metadata.
+   */
+  decision_cache_ttl_ms?: number;
+}
+
+/** Matches the npmjs uplink `maxage: 2m` in config.yaml: within that window Verdaccio
+ *  hands us the same cached upstream packument, so re-deriving the decision is wasted. */
+export const DEFAULT_DECISION_CACHE_TTL_MS = 120_000;
+/** Hard cap so the cache can never grow without bound; oldest stored entry is evicted. */
+const DECISION_CACHE_MAX_ENTRIES = 4096;
+
+interface DecisionCacheEntry {
+  fp: string;
+  result: Manifest;
+  expiresAt: number;
 }
 
 // minimal structural express types — keeps the plugin free of an express dependency
@@ -57,6 +75,17 @@ export function parseTarballPath(rawPath: string): TarballRef | null {
   // hyphens, so strip the exact name prefix instead of splitting on '-'
   const version = file.startsWith(`${base}-`) ? file.slice(base.length + 1) : null;
   return { name, version };
+}
+
+/** Validates the optional decision-cache TTL, falling back to the default. */
+function resolveDecisionCacheTtl(raw: number | undefined): number {
+  if (raw === undefined) {
+    return DEFAULT_DECISION_CACHE_TTL_MS;
+  }
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) {
+    throw new Error('filter-artea: decision_cache_ttl_ms must be a non-negative number of milliseconds');
+  }
+  return raw;
 }
 
 /** The packument's per-version publish-time map (`time`), or undefined when absent. */
@@ -117,6 +146,8 @@ export default class FilterArtea
   private readonly npmRegistryUrl: string;
   private readonly osvClient: OsvDecisionClient | null;
   private readonly publishTimes = new Map<string, Map<string, number>>();
+  private readonly decisionCacheTtlMs: number;
+  private readonly decisionCache = new Map<string, DecisionCacheEntry>();
 
   public constructor(config: FilterArteaConfig, options: pluginUtils.PluginOptions) {
     this.logger = options.logger;
@@ -125,6 +156,7 @@ export default class FilterArtea
     this.osvClient = config.osv_url
       ? new OsvDecisionClient(config.osv_url, this.logger, config.osv_timeout_ms)
       : null;
+    this.decisionCacheTtlMs = resolveDecisionCacheTtl(config.decision_cache_ttl_ms);
   }
 
   /** Not part of the verdaccio plugin API; lets tests/embedders stop URL polling. */
@@ -142,7 +174,6 @@ export default class FilterArtea
       return this.blockAll(metadata);
     }
     const policy = state.policy;
-    this.rememberPublishTimes(metadata);
     if (isNameBlocked(policy, name)) {
       this.logger.info({ name }, 'filter-artea: blocked package @{name} entirely');
       return this.blockAll(metadata);
@@ -151,17 +182,48 @@ export default class FilterArtea
     if ((!ranges.length && policy.minAgeMs <= 0 && this.osvClient === null) || !metadata.versions) {
       return metadata;
     }
+    // Per-package decision cache. Without it, a packument with a long version
+    // history (e.g. react-dom, ~2,800 versions) is re-walked AND re-POSTed to OSV
+    // in full on every request, so per-request cost scales with version count.
+    // The fingerprint pins the decision to the upstream version set + the
+    // package-scoped policy signal; the TTL bounds the wall-clock drift inherent
+    // to min_age (a version aging past the gate) and OSV (a verdict changing).
+    const fp = this.decisionFingerprint(metadata, policy, ranges);
+    if (this.decisionCacheTtlMs > 0) {
+      const hit = this.decisionCache.get(name);
+      if (hit !== undefined && hit.fp === fp && hit.expiresAt > Date.now()) {
+        return hit.result;
+      }
+    }
+    // miss: (re)populate publish times for the tarball guard and recompute. This
+    // only runs when filtering actually applies (ranges/min_age/OSV) and the cache
+    // is cold/stale, so the guard always has fresh times for the live version set.
+    this.rememberPublishTimes(metadata);
     const removed = new Set(Object.keys(metadata.versions).filter((v) =>
       ranges.some((range) => semver.satisfies(v, range, SEMVER_OPTS))
         || isTooYoung(publishTimeMs(metadata, v), policy.minAgeMs),
     ));
+    let osvComplete = true;
     if (this.osvClient !== null) {
       const candidates = Object.keys(metadata.versions).filter((version) => !removed.has(version));
-      const blocked = await this.osvClient.blockedVersions('npm', name, candidates);
-      for (const version of blocked.keys()) {
+      const decision = await this.osvClient.blockedVersions('npm', name, candidates);
+      osvComplete = decision.complete;
+      for (const version of decision.blocked.keys()) {
         removed.add(version);
       }
     }
+    const result = this.applyRemovals(metadata, removed, name);
+    // Only cache a trustworthy decision. A failed/degraded OSV lookup failed open;
+    // caching that would keep serving the fail-open verdict (and any version OSV
+    // would block) for the whole TTL, outliving the outage.
+    if (this.decisionCacheTtlMs > 0 && osvComplete) {
+      this.storeDecision(name, fp, result);
+    }
+    return result;
+  }
+
+  /** Produces the filtered packument, or returns the input unchanged when nothing is removed. */
+  private applyRemovals(metadata: Manifest, removed: Set<string>, name: string): Manifest {
     if (removed.size === 0) {
       return metadata;
     }
@@ -176,6 +238,34 @@ export default class FilterArtea
     repairDistTags(clone, removed);
     this.logger.info({ name, count: removed.size }, 'filter-artea: removed @{count} blocked version(s) of @{name}');
     return clone;
+  }
+
+  /**
+   * Fingerprint of the inputs that determine the filter decision: the upstream
+   * version set (count + the npm `modified` marker, which advances on any packument
+   * change, + `latest`) and the package-scoped policy signal (global min_age and
+   * this package's blocked ranges). A change here forces a recompute; everything
+   * else — clock drift, OSV-DB updates — is bounded by the cache TTL instead.
+   */
+  private decisionFingerprint(metadata: Manifest, policy: CompiledPolicy, ranges: string[]): string {
+    const count = Object.keys(metadata.versions ?? {}).length;
+    const modifiedRaw = timeMap(metadata)?.modified;
+    const modified = typeof modifiedRaw === 'string' ? modifiedRaw : '';
+    const latest = metadata['dist-tags']?.latest ?? '';
+    return [modified, count, latest, policy.minAgeMs, ranges.join(',')].join(' ');
+  }
+
+  private storeDecision(name: string, fp: string, result: Manifest): void {
+    // delete-then-set so the most recently stored key moves to the end of the Map's
+    // insertion order, making the eviction below drop the least-recently-stored entry
+    this.decisionCache.delete(name);
+    this.decisionCache.set(name, { fp, result, expiresAt: Date.now() + this.decisionCacheTtlMs });
+    if (this.decisionCache.size > DECISION_CACHE_MAX_ENTRIES) {
+      const oldest = this.decisionCache.keys().next().value;
+      if (oldest !== undefined) {
+        this.decisionCache.delete(oldest);
+      }
+    }
   }
 
   /** Middleware role: runs before verdaccio's npm endpoints and guards tarball GETs. */
@@ -214,7 +304,7 @@ export default class FilterArtea
       return;
     }
     if (ref.version !== null && this.osvClient !== null) {
-      const blocked = await this.osvClient.blockedVersions('npm', ref.name, [ref.version]);
+      const { blocked } = await this.osvClient.blockedVersions('npm', ref.name, [ref.version]);
       const ids = blocked.get(ref.version);
       if (ids !== undefined) {
         this.logger.info({ name: ref.name, version: ref.version, ids: ids.join(',') }, 'filter-artea: blocked OSV malicious tarball download of @{name}@@{version}');

@@ -551,3 +551,97 @@ def test_project_meta_endpoint_rejects_missing_name():
     with pytest.raises(HTTPBadRequest):
         project_meta_view(FakeRequest(
             "/+artea/project-meta", registry=_meta_registry(customizer), params={}))
+
+
+def test_query_osv_blocked_versions_caches_successful_lookups(monkeypatch):
+    # The constrained-index build runs query_osv_blocked_versions per package on
+    # every cold pip resolve; a repeat lookup for the same (url, project, version
+    # set) within the TTL must be served from cache without a second OSV round-trip.
+    main.osv_cache.clear()
+    calls = []
+
+    def fake_urlopen(req, timeout=None):
+        calls.append(1)
+        return _FakeResp({"status": "ok", "results": [{"version": "2.0.0", "blocked": True}]})
+
+    monkeypatch.setattr(main.urllib.request, "urlopen", fake_urlopen)
+    url = "http://policy-sync.example/osv/querybatch"
+    first = main.query_osv_blocked_versions(url, "six", ["1.0.0", "2.0.0"])
+    second = main.query_osv_blocked_versions(url, "six", ["2.0.0", "1.0.0"])  # same set, diff order
+    assert first == {"2.0.0"}
+    assert second == {"2.0.0"}
+    assert len(calls) == 1  # second served from cache (key is the sorted version set)
+    main.query_osv_blocked_versions(url, "six", ["1.0.0", "2.0.0", "3.0.0"])  # different set -> miss
+    assert len(calls) == 2
+
+
+def test_query_osv_blocked_versions_refetches_after_ttl(monkeypatch):
+    main.osv_cache.clear()
+    calls = []
+
+    def fake_urlopen(req, timeout=None):
+        calls.append(1)
+        return _FakeResp({"status": "ok", "results": [{"version": "2.0.0", "blocked": True}]})
+
+    monkeypatch.setattr(main.urllib.request, "urlopen", fake_urlopen)
+    url = "http://policy-sync.example/osv/querybatch"
+    clock = [1000.0]
+    now = lambda: clock[0]
+    assert main.query_osv_blocked_versions(url, "six", ["2.0.0"], now=now) == {"2.0.0"}
+    clock[0] += main.OSV_CACHE_SECONDS
+    assert main.query_osv_blocked_versions(url, "six", ["2.0.0"], now=now) == {"2.0.0"}
+    assert len(calls) == 2
+
+
+def test_query_osv_blocked_versions_does_not_cache_failures(monkeypatch):
+    # Fail-open (OSV unreachable) must NOT be cached, so a transient OSV outage
+    # never pins an empty "nothing blocked" result for the whole TTL.
+    main.osv_cache.clear()
+    calls = []
+
+    def boom(req, timeout=None):
+        calls.append(1)
+        raise main.urllib.error.URLError("down")
+
+    monkeypatch.setattr(main.urllib.request, "urlopen", boom)
+    url = "http://policy-sync.example/osv/querybatch"
+    assert main.query_osv_blocked_versions(url, "six", ["1.0.0"]) == set()
+    assert main.query_osv_blocked_versions(url, "six", ["1.0.0"]) == set()
+    assert len(calls) == 2  # not cached -> retried
+
+
+@pytest.mark.parametrize("status", ["degraded", "policy_unavailable"])
+def test_query_osv_blocked_versions_does_not_cache_fail_open_status(monkeypatch, status):
+    main.osv_cache.clear()
+    calls = []
+    responses = [
+        {"status": status, "reason": "temporary outage", "results": [{"version": "2.0.0", "blocked": False}]},
+        {"status": "ok", "results": [{"version": "2.0.0", "blocked": True}]},
+    ]
+
+    def fake_urlopen(req, timeout=None):
+        calls.append(1)
+        return _FakeResp(responses.pop(0))
+
+    monkeypatch.setattr(main.urllib.request, "urlopen", fake_urlopen)
+    url = "http://policy-sync.example/osv/querybatch"
+    assert main.query_osv_blocked_versions(url, "six", ["2.0.0"]) == set()
+    assert main.query_osv_blocked_versions(url, "six", ["2.0.0"]) == {"2.0.0"}
+    assert len(calls) == 2
+
+
+def test_query_osv_blocked_versions_bounds_cache(monkeypatch):
+    main.osv_cache.clear()
+    monkeypatch.setattr(main, "OSV_CACHE_MAX_ENTRIES", 2)
+
+    def fake_urlopen(req, timeout=None):
+        return _FakeResp({"status": "ok", "results": []})
+
+    monkeypatch.setattr(main.urllib.request, "urlopen", fake_urlopen)
+    url = "http://policy-sync.example/osv/querybatch"
+    main.query_osv_blocked_versions(url, "one", ["1.0.0"])
+    main.query_osv_blocked_versions(url, "two", ["1.0.0"])
+    main.query_osv_blocked_versions(url, "three", ["1.0.0"])
+
+    assert len(main.osv_cache) == 2
+    assert (url, "one", ("1.0.0",)) not in main.osv_cache
