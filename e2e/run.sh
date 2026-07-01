@@ -551,12 +551,17 @@ s12_revocation() {
   [ "$elapsed" -le 60 ] || { echo "revocation took ${elapsed}s, budget is 60s"; return 1; }
 }
 
-# ---- S13: tarball enforcement (+ anonymous /npm/ service endpoints) ---------------------------
+# ---- S13: tarball enforcement/redirects (+ anonymous /npm/ service endpoints) -----------------
 TARBALL_BLOCKED="${GATEWAY_URL}/npm/left-pad/-/left-pad-1.3.0.tgz"
 TARBALL_ALLOWED="${GATEWAY_URL}/npm/left-pad/-/left-pad-1.2.0.tgz"
 
 tarball_130_blocked() { [ "$(http_code -u "dev1:${DEV1_TOKEN}" "${TARBALL_BLOCKED}")" = 403 ]; }
-tarball_130_allowed() { [ "$(http_code -u "dev1:${DEV1_TOKEN}" "${TARBALL_BLOCKED}")" = 200 ]; }
+tarball_130_allowed() { [ "$(http_code -u "dev1:${DEV1_TOKEN}" "${TARBALL_BLOCKED}")" = 302 ]; }
+assert_public_tarball_redirect() { # <url> <expected-upstream-url>
+  local actual
+  actual=$(curl -s -o /dev/null -w '%{http_code} %header{location}' -u "dev1:${DEV1_TOKEN}" "$1")
+  assert_eq "302 $2" "$actual" "policy-cleared public tarball should redirect to npmjs" || return 1
+}
 
 s13_tarball_enforcement() {
   local body
@@ -572,10 +577,10 @@ s13_tarball_enforcement() {
   body=$(curl -s -u "dev1:${DEV1_TOKEN}" "${TARBALL_BLOCKED}")
   assert_contains 'blocked by registry policy' "$body" \
     "403 body is not the policy middleware's JSON error: ${body}" || return 1
-  assert_code 200 -u "dev1:${DEV1_TOKEN}" "${TARBALL_ALLOWED}" || return 1
-  echo "blocked 1.3.0 tarball -> 403 (policy JSON); unblocked 1.2.0 tarball -> 200"
+  assert_public_tarball_redirect "${TARBALL_ALLOWED}" "https://registry.npmjs.org/left-pad/-/left-pad-1.2.0.tgz" || return 1
+  echo "blocked 1.3.0 tarball -> 403 (policy JSON); unblocked 1.2.0 tarball -> 302 npmjs redirect"
   put_policy_file policy.toml "${ORIG_POLICY}" "test(e2e): S13 revert policy" || return 1
-  wait_for 45 2 "tarball served again after revert" tarball_130_allowed || return 1
+  wait_for 45 2 "tarball redirects again after revert" tarball_130_allowed || return 1
   POLICY_DIRTY=0
 }
 
@@ -631,7 +636,7 @@ npm_outage_rejected() { # tarballs 503 AND packument stripped to zero versions
     | jq -e '(.versions // {}) | length == 0' >/dev/null
 }
 npm_recovered() {
-  [ "$(http_code -u "dev1:${DEV1_TOKEN}" "${TARBALL_BLOCKED}")" = 200 ] || return 1
+  [ "$(http_code -u "dev1:${DEV1_TOKEN}" "${TARBALL_BLOCKED}")" = 302 ] || return 1
   curl -s -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/left-pad" \
     | jq -e '.versions | length > 0' >/dev/null
 }
@@ -1124,7 +1129,7 @@ run_scenario S8 "pip install six via gateway -> devpi -> PyPI" s8_pip_install_pu
 run_scenario S10 "policy.toml constrains urllib3 to <2 via gateway" s10_pypi_policy_constraint
 run_scenario S11 "read:package PAT installs but gets 401 on publish" s11_token_scopes
 run_scenario S12 "revoked PAT stops installing within 60s" s12_revocation
-run_scenario S13 "blocked version's tarball GET -> 403; anonymous /npm/ -> 401" s13_tarball_enforcement
+run_scenario S13 "blocked tarball -> 403; policy-cleared public tarball -> npmjs redirect" s13_tarball_enforcement
 run_scenario S14 "dev1 cannot push registry-policy@main; admin allowlist works" s14_branch_protection
 run_scenario S15 "fail-closed: missing npm policy / wiped devpi, then recovery" s15_fail_closed
 run_scenario S16 "non-canonical pypi spellings still resolve to the private package" s16_normalization
