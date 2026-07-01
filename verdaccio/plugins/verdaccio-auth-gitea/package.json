@@ -20,7 +20,7 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^25.9.3",
     "@verdaccio/core": "^8.1.1",
-    "@verdaccio/types": "^13.0.1",
+    "@verdaccio/types": "^13.0.2",
     "typescript": "^6.0.3",
     "vitest": "^4.1.9"
   }
