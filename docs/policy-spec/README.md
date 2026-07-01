@@ -18,6 +18,7 @@ shipping.
   wire shape. This is a field-name/shape contract (not a compute lockstep):
   produced by `policy-sync` (`osv.response_payload`, Py) and parsed by both
   `verdaccio-filter-artea` (`OsvDecisionClient`, TS) and `devpi`
-  (`query_osv_blocked_versions`, Py). `status`/`reason` are observability-only —
-  the npm consumer logs a degraded status, the PyPI consumer ignores them — so
-  that asymmetry is intentional, not drift.
+  (`query_osv_blocked_versions`, Py). `status` drives cacheability: only `ok`
+  is cache-complete; non-`ok` responses may still carry blocking verdicts, but
+  consumers must not cache them because they may also contain fail-open allowed
+  entries. `reason` is observability-only.
