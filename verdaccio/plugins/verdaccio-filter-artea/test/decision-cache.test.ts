@@ -168,6 +168,29 @@ describe('decision cache', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2); // fail-open verdict was not pinned in the cache
   });
 
+  it.each(['degraded', 'policy_unavailable'])(
+    'does not cache a %s OSV decision (re-queries on the next request)',
+    async (status) => {
+      const file = tmpPolicyPath('blocked: {}\n');
+      const plugin = makePlugin(file, { osv_url: OSV_URL });
+      const fetchMock = vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          status,
+          reason: 'temporary outage',
+          results: [{ version: '1.3.0', blocked: false, ids: [] }],
+        }),
+      }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      await plugin.filter_metadata(packument('left-pad', ['1.3.0'], '1.3.0'));
+      await plugin.filter_metadata(packument('left-pad', ['1.3.0'], '1.3.0'));
+
+      expect(fetchMock).toHaveBeenCalledTimes(2); // non-OK verdict was not pinned in the cache
+    },
+  );
+
   it('disables caching when decision_cache_ttl_ms is 0', async () => {
     const file = tmpPolicyPath('blocked: {}\n');
     const plugin = makePlugin(file, { osv_url: OSV_URL, decision_cache_ttl_ms: 0 });

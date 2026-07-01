@@ -12,9 +12,8 @@ interface OsvResponse {
 /**
  * Result of an OSV decision lookup. `complete` is false when the verdict cannot be
  * trusted as final — the request failed and we failed open, or the endpoint reported
- * a degraded/partial result. Callers must not cache a non-complete decision, or the
- * fail-open window would outlive the outage (and a version OSV blocks once it recovers
- * would keep being served).
+ * a non-OK status such as degraded or policy_unavailable. Callers must not cache a
+ * non-complete decision, or the fail-open window would outlive the outage.
  */
 export interface OsvDecision {
   blocked: Map<string, string[]>;
@@ -56,14 +55,15 @@ export class OsvDecisionClient {
       }
       const body = (await res.json()) as OsvResponse;
       const blocked = parseResponse(body);
-      const degraded = body.status === 'degraded';
-      if (degraded) {
+      const status = typeof body.status === 'string' ? body.status : 'unknown';
+      const complete = status === 'ok';
+      if (!complete) {
         this.logger.warn(
-          { name, reason: typeof body.reason === 'string' ? body.reason : 'unknown' },
-          'filter-artea: OSV lookup for @{name} degraded: @{reason}',
+          { name, status, reason: typeof body.reason === 'string' ? body.reason : 'unknown' },
+          'filter-artea: OSV lookup for @{name} returned @{status}: @{reason}',
         );
       }
-      return { blocked, complete: !degraded };
+      return { blocked, complete };
     } catch (e) {
       this.logger.warn(
         { name, msg: (e as Error).message },
