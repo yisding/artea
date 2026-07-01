@@ -23,7 +23,7 @@
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
     "@types/jsonwebtoken": "^9.0.10",
-    "@types/node": "^25.9.3",
+    "@types/node": "^26.0.1",
     "@types/semver": "^7.5.8",
     "@verdaccio/core": "^8.1.1",
     "@verdaccio/types": "^13.0.1",
