@@ -20,8 +20,8 @@ importers:
         specifier: ^8.1.1
         version: 8.1.1
       '@verdaccio/types':
-        specifier: ^13.0.1
-        version: 13.0.1
+        specifier: ^13.0.2
+        version: 13.0.2
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -54,8 +54,8 @@ importers:
         specifier: ^8.1.1
         version: 8.1.1
       '@verdaccio/types':
-        specifier: ^13.0.1
-        version: 13.0.1
+        specifier: ^13.0.2
+        version: 13.0.2
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -212,8 +212,8 @@ packages:
     resolution: {integrity: sha512-IIgi8PucT67ymIwxwzc+5CGQF97xAPWlqb7M2nidfIpPtlghPjURDP6xHDcBLuE57adZKcklO24kr6zFSQa7cg==}
     engines: {node: '>=18'}
 
-  '@verdaccio/types@13.0.1':
-    resolution: {integrity: sha512-hmiplDvPBjTp9hmUWQKsXjPVOW3her7bnSSxU5EFL3YkrzVLuXavkwoEUEhfdhy5eMCiZovyhSPQMTrRZ0rgsw==}
+  '@verdaccio/types@13.0.2':
+    resolution: {integrity: sha512-0KwWvRl1EJYlUvZbZOpIAviqsp9sdiV//xTIQ/naPSUDmmWshcxWkLEneuct2oy4xxwQs2lS9qzd23gcyUM75A==}
     engines: {node: '>=18'}
 
   '@vitest/expect@4.1.9':
@@ -704,7 +704,7 @@ snapshots:
       process-warning: 1.0.0
       semver: 7.7.4
 
-  '@verdaccio/types@13.0.1': {}
+  '@verdaccio/types@13.0.2': {}
 
   '@vitest/expect@4.1.9':
     dependencies:

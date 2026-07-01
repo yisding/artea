@@ -26,7 +26,7 @@
     "@types/node": "^25.9.3",
     "@types/semver": "^7.5.8",
     "@verdaccio/core": "^8.1.1",
-    "@verdaccio/types": "^13.0.1",
+    "@verdaccio/types": "^13.0.2",
     "typescript": "^6.0.3",
     "vitest": "^4.1.9"
   }
