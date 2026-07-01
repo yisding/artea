@@ -17,8 +17,8 @@ importers:
         specifier: ^26.0.1
         version: 26.0.1
       '@verdaccio/core':
-        specifier: ^8.1.1
-        version: 8.1.1
+        specifier: ^8.1.2
+        version: 8.1.2
       '@verdaccio/types':
         specifier: ^13.0.2
         version: 13.0.2
@@ -51,8 +51,8 @@ importers:
         specifier: ^7.5.8
         version: 7.7.1
       '@verdaccio/core':
-        specifier: ^8.1.1
-        version: 8.1.1
+        specifier: ^8.1.2
+        version: 8.1.2
       '@verdaccio/types':
         specifier: ^13.0.2
         version: 13.0.2
@@ -208,8 +208,8 @@ packages:
   '@types/semver@7.7.1':
     resolution: {integrity: sha512-FmgJfu+MOcQ370SD0ev7EI8TlCAfKYU+B4m5T3yXc1CiRN94g/SZPtsCkk506aUDtlMnFZvasDwHHUcZUEaYuA==}
 
-  '@verdaccio/core@8.1.1':
-    resolution: {integrity: sha512-IIgi8PucT67ymIwxwzc+5CGQF97xAPWlqb7M2nidfIpPtlghPjURDP6xHDcBLuE57adZKcklO24kr6zFSQa7cg==}
+  '@verdaccio/core@8.1.2':
+    resolution: {integrity: sha512-VtpBz9R61GTFUxPiQmBhCOffQZRJZMA2EXO/FzbaoNczm/Xt2KkDJq0PPwV5qmRGeouDRxEKUQ+caJGVN0W7Ww==}
     engines: {node: '>=18'}
 
   '@verdaccio/types@13.0.2':
@@ -289,8 +289,8 @@ packages:
   fast-deep-equal@3.1.3:
     resolution: {integrity: sha512-f3qQ9oQy9j2AhBe/H9VC91wLmKBCCU/gDOnKNAYG5hswO7BLKj09Hc5HYNz9cGI++xlpDCIgDaitVs03ATR84Q==}
 
-  fast-uri@3.1.2:
-    resolution: {integrity: sha512-rVjf7ArG3LTk+FS6Yw81V1DLuZl1bRbNrev6Tmd/9RaroeeRRJhAt7jg/6YFxbvAQXUCavSoZhPPj6oOx+5KjQ==}
+  fast-uri@3.1.3:
+    resolution: {integrity: sha512-i70LwGWUduXqzicKXWshooq+sWL1K3WUU5rKZNG/0i3a1OSoX3HqhH5WbWwTmqWfor4urUakGPiRQcleRZTwOg==}
 
   fdir@6.5.0:
     resolution: {integrity: sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==}
@@ -695,7 +695,7 @@ snapshots:
 
   '@types/semver@7.7.1': {}
 
-  '@verdaccio/core@8.1.1':
+  '@verdaccio/core@8.1.2':
     dependencies:
       ajv: 8.18.0
       http-errors: 2.0.1
@@ -750,7 +750,7 @@ snapshots:
   ajv@8.18.0:
     dependencies:
       fast-deep-equal: 3.1.3
-      fast-uri: 3.1.2
+      fast-uri: 3.1.3
       json-schema-traverse: 1.0.0
       require-from-string: 2.0.2
 
@@ -782,7 +782,7 @@ snapshots:
 
   fast-deep-equal@3.1.3: {}
 
-  fast-uri@3.1.2: {}
+  fast-uri@3.1.3: {}
 
   fdir@6.5.0(picomatch@4.0.4):
     optionalDependencies:
