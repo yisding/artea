@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import FilterArtea, { parseTarballPath, type FilterArteaConfig } from '../src/index';
+import { clearOsvDecisionCacheForTests } from '../src/osv';
 import { makeLogger, packument, runMiddleware, runMiddlewareAsync } from './helpers';
 
 function makePlugin(policyFile: string, extra: Omit<FilterArteaConfig, 'policy_file'> = {}): FilterArtea {
@@ -35,6 +36,7 @@ describe('verdaccio-filter-artea', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    clearOsvDecisionCacheForTests();
     for (const dir of tmpDirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -156,16 +158,18 @@ describe('verdaccio-filter-artea', () => {
       const plugin = makePlugin(file, { osv_url: 'http://policy-sync.example/osv/querybatch' });
       const fetchMock = vi.fn(async (_url: string, init: { body?: unknown }) => {
         const body = JSON.parse(String(init.body));
+        expect(body).toEqual({
+          ecosystem: 'npm',
+          name: 'left-pad',
+          versions: ['1.2.0', '1.3.0'],
+          blocked_only: true,
+        });
         return {
           ok: true,
           status: 200,
           json: async () => ({
             status: 'ok',
-            results: body.versions.map((version: string) => ({
-              version,
-              blocked: version === '1.3.0',
-              ids: version === '1.3.0' ? ['MAL-2026-1'] : [],
-            })),
+            results: [{ version: '1.3.0', blocked: true, ids: ['MAL-2026-1'] }],
           }),
         };
       });
@@ -179,6 +183,44 @@ describe('verdaccio-filter-artea', () => {
         'http://policy-sync.example/osv/querybatch',
         expect.objectContaining({ method: 'POST' }),
       );
+    });
+
+    it('prewarms OSV package summaries for dependency packuments without blocking metadata filtering', async () => {
+      const file = tmpPolicyPath();
+      writePolicy(file, 'blocked: {}\n');
+      const plugin = makePlugin(file, { osv_url: 'http://policy-sync.example/osv/querybatch' });
+      const fetchMock = vi.fn(async (_url: string, init: { body?: unknown }) => {
+        const body = JSON.parse(String(init.body));
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            status: 'ok',
+            results: body.package_summary
+              ? []
+              : body.versions.map((version: string) => ({ version, blocked: false, ids: [] })),
+          }),
+        };
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const input = packument('root-pkg', ['1.0.0']);
+      (input.versions['1.0.0'] as unknown as Record<string, unknown>).dependencies = {
+        'dep-a': '^1.0.0',
+        'dep-b': '^2.0.0',
+      };
+
+      const output = await plugin.filter_metadata(input);
+
+      expect(output).toBe(input);
+      const bodies = fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)));
+      expect(bodies).toContainEqual({
+        ecosystem: 'npm',
+        name: 'root-pkg',
+        versions: ['1.0.0'],
+        blocked_only: true,
+      });
+      expect(bodies).toContainEqual({ ecosystem: 'npm', name: 'dep-a', package_summary: true });
+      expect(bodies).toContainEqual({ ecosystem: 'npm', name: 'dep-b', package_summary: true });
     });
 
     it('fails open when OSV lookup is unavailable', async () => {
@@ -351,16 +393,18 @@ describe('verdaccio-filter-artea', () => {
       const plugin = makePlugin(file, { osv_url: 'http://policy-sync.example/osv/querybatch' });
       vi.stubGlobal('fetch', vi.fn(async (_url: string, init: { body?: unknown }) => {
         const body = JSON.parse(String(init.body));
+        expect(body).toEqual({
+          ecosystem: 'npm',
+          name: 'left-pad',
+          versions: ['1.3.0'],
+          blocked_only: true,
+        });
         return {
           ok: true,
           status: 200,
           json: async () => ({
             status: 'ok',
-            results: body.versions.map((version: string) => ({
-              version,
-              blocked: true,
-              ids: ['MAL-2026-1'],
-            })),
+            results: [{ version: '1.3.0', blocked: true, ids: ['MAL-2026-1'] }],
           }),
         };
       }));
@@ -370,6 +414,34 @@ describe('verdaccio-filter-artea', () => {
       expect(result.status).toBe(403);
       expect(result.body!.error).toContain('OSV malicious-package policy');
       expect(result.nexted).toBe(false);
+    });
+
+    it('reuses packument OSV verdicts for tarball checks', async () => {
+      const file = tmpPolicyPath();
+      writePolicy(file, 'blocked: {}\n');
+      const plugin = makePlugin(file, { osv_url: 'http://policy-sync.example/osv/querybatch' });
+      const fetchMock = vi.fn(async (_url: string, init: { body?: unknown }) => {
+        const body = JSON.parse(String(init.body));
+        expect(body.blocked_only).toBe(true);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            status: 'ok',
+            results: [{ version: '1.3.0', blocked: true, ids: ['MAL-2026-1'] }],
+          }),
+        };
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      await plugin.filter_metadata(packument('left-pad', ['1.2.0', '1.3.0'], '1.3.0'));
+      const allowed = await runMiddlewareAsync(plugin, '/left-pad/-/left-pad-1.2.0.tgz');
+      const blocked = await runMiddlewareAsync(plugin, '/left-pad/-/left-pad-1.3.0.tgz');
+
+      expect(allowed.nexted).toBe(true);
+      expect(blocked.status).toBe(403);
+      expect(blocked.body!.error).toContain('OSV malicious-package policy');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
     it('rejects too-new tarballs after metadata has populated publish times', async () => {
@@ -421,6 +493,33 @@ describe('verdaccio-filter-artea', () => {
       const result = runMiddleware(blockedPlugin(), '/left-pad/-/left-pad-1.2.0.tgz');
       expect(result.status).toBeNull();
       expect(result.nexted).toBe(true);
+    });
+
+    it('redirects policy-cleared public tarballs to the configured npm registry when enabled', () => {
+      const file = tmpPolicyPath();
+      writePolicy(file, 'blocked: {}\n');
+      const plugin = makePlugin(file, {
+        npm_registry_url: 'https://registry.npmjs.org/',
+        redirect_public_tarballs: true,
+      });
+
+      const result = runMiddleware(plugin, '/@scope%2Ftool/-/tool-1.2.0.tgz');
+
+      expect(result.status).toBe(302);
+      expect(result.redirect).toEqual({
+        status: 302,
+        url: 'https://registry.npmjs.org/@scope/tool/-/tool-1.2.0.tgz',
+      });
+      expect(result.nexted).toBe(false);
+    });
+
+    it('does not redirect tarballs that fail policy checks', () => {
+      const file = tmpPolicyPath();
+      writePolicy(file, 'blocked:\n  packages:\n    - name: left-pad\n      versions: "1.3.0"\n');
+      const result = runMiddleware(makePlugin(file, { redirect_public_tarballs: true }), '/left-pad/-/left-pad-1.3.0.tgz');
+
+      expect(result.status).toBe(403);
+      expect(result.redirect).toBeUndefined();
     });
 
     it('rejects every tarball of a fully-blocked name', () => {
