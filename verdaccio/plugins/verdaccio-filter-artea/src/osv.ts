@@ -30,6 +30,8 @@ export interface OsvDecision {
 
 const DEFAULT_OSV_TIMEOUT_MS = 5000;
 const DEFAULT_OSV_CACHE_TTL_MS = 120_000;
+const DEFAULT_OSV_CACHE_MAX_ENTRIES = 131_072;
+const DEFAULT_PREWARM_CACHE_MAX_ENTRIES = 16_384;
 const SLOW_OSV_LOOKUP_MS = 500;
 
 interface CachedOsvVerdict {
@@ -45,19 +47,38 @@ export class OsvDecisionClient {
   private readonly url: string;
   private readonly timeoutMs: number;
   private readonly cacheTtlMs: number;
+  private readonly cacheMaxEntries: number;
+  private readonly prewarmCacheMaxEntries: number;
   private readonly logger: Logger;
   private readonly cache = SHARED_OSV_CACHE;
+  private readonly prewarmCache = SHARED_PREWARM_CACHE;
+  private readonly prewarmInFlight = SHARED_PREWARM_IN_FLIGHT;
 
-  public constructor(url: string, logger: Logger, timeoutMs = DEFAULT_OSV_TIMEOUT_MS, cacheTtlMs = DEFAULT_OSV_CACHE_TTL_MS) {
+  public constructor(
+    url: string,
+    logger: Logger,
+    timeoutMs = DEFAULT_OSV_TIMEOUT_MS,
+    cacheTtlMs = DEFAULT_OSV_CACHE_TTL_MS,
+    cacheMaxEntries = DEFAULT_OSV_CACHE_MAX_ENTRIES,
+    prewarmCacheMaxEntries = DEFAULT_PREWARM_CACHE_MAX_ENTRIES,
+  ) {
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
       throw new Error('filter-artea: osv_timeout_ms must be positive');
     }
     if (!Number.isFinite(cacheTtlMs) || cacheTtlMs < 0) {
       throw new Error('filter-artea: osv_cache_ttl_ms must be non-negative');
     }
+    if (!Number.isInteger(cacheMaxEntries) || cacheMaxEntries <= 0) {
+      throw new Error('filter-artea: osv cache max entries must be a positive integer');
+    }
+    if (!Number.isInteger(prewarmCacheMaxEntries) || prewarmCacheMaxEntries <= 0) {
+      throw new Error('filter-artea: osv prewarm cache max entries must be a positive integer');
+    }
     this.url = url;
     this.timeoutMs = timeoutMs;
     this.cacheTtlMs = cacheTtlMs;
+    this.cacheMaxEntries = cacheMaxEntries;
+    this.prewarmCacheMaxEntries = prewarmCacheMaxEntries;
     this.logger = logger;
   }
 
@@ -69,9 +90,12 @@ export class OsvDecisionClient {
     }
     const cachedBlocked = new Map<string, string[]>();
     const misses: string[] = [];
+    const now = Date.now();
     for (const version of unique) {
-      const cached = this.cacheTtlMs > 0 ? this.cache.get(cacheKey(this.url, ecosystem, name, version)) : undefined;
-      if (cached !== undefined && cached.expiresAt > Date.now()) {
+      const cached = this.cacheTtlMs > 0
+        ? getFreshCacheEntry(this.cache, cacheKey(this.url, ecosystem, name, version), now, (entry) => entry.expiresAt)
+        : undefined;
+      if (cached !== undefined) {
         if (cached.ids.length > 0) {
           cachedBlocked.set(version, cached.ids);
         }
@@ -105,11 +129,12 @@ export class OsvDecisionClient {
       if (complete && this.cacheTtlMs > 0) {
         const expiresAt = Date.now() + this.cacheTtlMs;
         for (const version of misses) {
-          this.cache.set(cacheKey(this.url, ecosystem, name, version), {
+          storeCacheEntry(this.cache, cacheKey(this.url, ecosystem, name, version), {
             ids: fetched.get(version) ?? [],
             expiresAt,
           });
         }
+        pruneCache(this.cache, Date.now(), this.cacheMaxEntries, (entry) => entry.expiresAt);
       }
       return { blocked: mergeBlocked(cachedBlocked, fetched), complete };
     } catch (e) {
@@ -129,11 +154,11 @@ export class OsvDecisionClient {
     const unique = [...new Set(names.filter((name) => name.length > 0))];
     for (const name of unique) {
       const key = summaryCacheKey(this.url, ecosystem, name);
-      const cachedUntil = SHARED_PREWARM_CACHE.get(key);
-      if ((cachedUntil !== undefined && cachedUntil > now) || SHARED_PREWARM_IN_FLIGHT.has(key)) {
+      const cachedUntil = getFreshCacheEntry(this.prewarmCache, key, now, (expiresAt) => expiresAt);
+      if (cachedUntil !== undefined || this.prewarmInFlight.has(key)) {
         continue;
       }
-      SHARED_PREWARM_IN_FLIGHT.add(key);
+      this.prewarmInFlight.add(key);
       void this.fetchDecision({ ecosystem, name, package_summary: true })
         .then((body) => {
           const status = typeof body.status === 'string' ? body.status : 'unknown';
@@ -143,7 +168,8 @@ export class OsvDecisionClient {
               'filter-artea: OSV prewarm for @{name} returned @{status}: @{reason}',
             );
           }
-          SHARED_PREWARM_CACHE.set(key, Date.now() + this.cacheTtlMs);
+          storeCacheEntry(this.prewarmCache, key, Date.now() + this.cacheTtlMs);
+          pruneCache(this.prewarmCache, Date.now(), this.prewarmCacheMaxEntries, (expiresAt) => expiresAt);
         })
         .catch((e) => {
           this.logger.debug(
@@ -152,7 +178,7 @@ export class OsvDecisionClient {
           );
         })
         .finally(() => {
-          SHARED_PREWARM_IN_FLIGHT.delete(key);
+          this.prewarmInFlight.delete(key);
         });
     }
   }
@@ -183,6 +209,14 @@ export function clearOsvDecisionCacheForTests(): void {
   SHARED_PREWARM_IN_FLIGHT.clear();
 }
 
+export function osvDecisionCacheSizesForTests(): { verdicts: number; prewarms: number; prewarmsInFlight: number } {
+  return {
+    verdicts: SHARED_OSV_CACHE.size,
+    prewarms: SHARED_PREWARM_CACHE.size,
+    prewarmsInFlight: SHARED_PREWARM_IN_FLIGHT.size,
+  };
+}
+
 function cacheKey(url: string, ecosystem: 'npm', name: string, version: string): string {
   return `${url}\0${ecosystem}\0${name}\0${version}`;
 }
@@ -199,6 +233,39 @@ function mergeBlocked(a: Map<string, string[]>, b: Map<string, string[]>): Map<s
     return a;
   }
   return new Map([...a, ...b]);
+}
+
+function getFreshCacheEntry<V>(cache: Map<string, V>, key: string, now: number, expiresAt: (value: V) => number): V | undefined {
+  const entry = cache.get(key);
+  if (entry === undefined) {
+    return undefined;
+  }
+  if (expiresAt(entry) <= now) {
+    cache.delete(key);
+    return undefined;
+  }
+  storeCacheEntry(cache, key, entry);
+  return entry;
+}
+
+function storeCacheEntry<V>(cache: Map<string, V>, key: string, value: V): void {
+  cache.delete(key);
+  cache.set(key, value);
+}
+
+function pruneCache<V>(cache: Map<string, V>, now: number, maxEntries: number, expiresAt: (value: V) => number): void {
+  for (const [key, value] of cache) {
+    if (expiresAt(value) <= now) {
+      cache.delete(key);
+    }
+  }
+  while (cache.size > maxEntries) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) {
+      return;
+    }
+    cache.delete(oldest);
+  }
 }
 
 function parseResponse(body: OsvResponse): Map<string, string[]> {

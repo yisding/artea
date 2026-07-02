@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { OsvDecisionClient, clearOsvDecisionCacheForTests } from '../src/osv';
+import { OsvDecisionClient, clearOsvDecisionCacheForTests, osvDecisionCacheSizesForTests } from '../src/osv';
 import { makeLogger } from './helpers';
 
 // Shared cross-language wire-shape contract (docs/policy-spec/osv-decision-vectors.json):
@@ -16,6 +16,7 @@ const vectors = JSON.parse(
 
 describe('OSV decision wire shape (shared vectors)', () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     clearOsvDecisionCacheForTests();
   });
@@ -116,4 +117,94 @@ describe('OSV decision wire shape (shared vectors)', () => {
     expect(result.complete).toBe(true);
     expect(result.blocked.get('2.0.0')).toEqual(['MAL-2026-1']);
   });
+
+  it('evicts least-recently-used version verdicts above the cache cap', async () => {
+    const bodies: Array<{ versions: string[] }> = [];
+    const fetchMock = vi.fn(async (_url: string, init: { body?: unknown }) => {
+      const body = JSON.parse(String(init.body)) as { versions: string[] };
+      bodies.push(body);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ status: 'ok', results: [] }),
+      };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new OsvDecisionClient('http://policy-sync.example/osv/querybatch', makeLogger(), 5000, 60_000, 2, 2);
+
+    await client.blockedVersions('npm', 'left-pad', ['1.0.0']);
+    await client.blockedVersions('npm', 'left-pad', ['2.0.0']);
+    await client.blockedVersions('npm', 'left-pad', ['1.0.0']);
+    await client.blockedVersions('npm', 'left-pad', ['3.0.0']);
+    await client.blockedVersions('npm', 'left-pad', ['1.0.0']);
+    await client.blockedVersions('npm', 'left-pad', ['2.0.0']);
+
+    expect(osvDecisionCacheSizesForTests().verdicts).toBe(2);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(bodies.map((body) => body.versions)).toEqual([
+      ['1.0.0'],
+      ['2.0.0'],
+      ['3.0.0'],
+      ['2.0.0'],
+    ]);
+  });
+
+  it('prunes expired version verdicts when new verdicts are stored', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ status: 'ok', results: [] }),
+      })),
+    );
+    const client = new OsvDecisionClient('http://policy-sync.example/osv/querybatch', makeLogger(), 5000, 1000, 10, 10);
+
+    await client.blockedVersions('npm', 'left-pad', ['1.0.0', '2.0.0']);
+    expect(osvDecisionCacheSizesForTests().verdicts).toBe(2);
+
+    vi.advanceTimersByTime(1001);
+    await client.blockedVersions('npm', 'left-pad', ['3.0.0']);
+
+    expect(osvDecisionCacheSizesForTests().verdicts).toBe(1);
+  });
+
+  it('evicts least-recently-used prewarm summaries above the cache cap', async () => {
+    const bodies: Array<{ name: string; package_summary?: true }> = [];
+    const fetchMock = vi.fn(async (_url: string, init: { body?: unknown }) => {
+      const body = JSON.parse(String(init.body)) as { name: string; package_summary?: true };
+      bodies.push(body);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ status: 'ok', results: [] }),
+      };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new OsvDecisionClient('http://policy-sync.example/osv/querybatch', makeLogger(), 5000, 60_000, 10, 2);
+
+    client.prewarmPackages('npm', ['dep-a']);
+    await flushAsyncWork();
+    expect(osvDecisionCacheSizesForTests().prewarms).toBe(1);
+    client.prewarmPackages('npm', ['dep-b']);
+    await flushAsyncWork();
+    expect(osvDecisionCacheSizesForTests().prewarms).toBe(2);
+    client.prewarmPackages('npm', ['dep-a']);
+    client.prewarmPackages('npm', ['dep-c']);
+    await flushAsyncWork();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    expect(osvDecisionCacheSizesForTests().prewarms).toBe(2);
+    client.prewarmPackages('npm', ['dep-a']);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    client.prewarmPackages('npm', ['dep-b']);
+    await flushAsyncWork();
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(bodies.map((body) => body.name)).toEqual(['dep-a', 'dep-b', 'dep-c', 'dep-b']);
+  });
 });
+
+function flushAsyncWork(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
