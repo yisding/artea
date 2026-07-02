@@ -119,17 +119,22 @@ policySync:
   # OSV.dev API base for inline malicious-package checks. policy-sync queries it
   # only for package versions that clients actually request.
   osvApiUrl: "https://api.osv.dev"
+  # OSV API tuning. Keep querybatch chunks small enough that OSV.dev responds
+  # quickly for vulnerability-heavy packages, and cap outbound OSV calls
+  # process-wide so cold dependency trees overlap without fanning out without
+  # bound.
+  osvBatchSize: 100
+  osvMaxConcurrency: 32
   resources: {}
-  # Last-known-good policy state. policy-sync keeps OSV malicious-package blocks
-  # in memory only; on a restart that memory is empty until the first sync from
-  # Gitea succeeds, and OSV decisions fail OPEN during that window. This small
-  # ReadWriteOnce PVC persists the last successfully-synced policy.toml so the
-  # OSV fallback fails CLOSED across restarts. Disable only for stateless/dev or
-  # file-mode setups that mount their own policy volume.
+  # Last-known-good policy state plus the optional OSV verdict-cache snapshot.
+  # The parsed policy keeps OSV blocks fail-closed across restarts; the verdict
+  # cache keeps fresh OSV decisions hot across restarts while preserving their
+  # positive/negative TTLs. Disable only for stateless/dev or file-mode setups
+  # that mount their own policy volume.
   persistence:
     enabled: true
-    # Holds a single small policy.toml; 1Gi clears common storage-class minimums
-    # (e.g. AWS EBS) — the data itself is only a few KB.
+    # Holds a small policy.toml and a bounded JSON OSV verdict cache; 1Gi clears
+    # common storage-class minimums (e.g. AWS EBS).
     size: 1Gi
     storageClass: ""
 
@@ -375,9 +380,19 @@ verdaccio:
       pullPolicy: IfNotPresent
   # Custom keys consumed by the tpl'd configMap below. Defaults match the
   # plugin's production behavior; CI shortens them for fail-closed tests.
+  uplink:
+    # Verdaccio's public npmjs metadata revalidation window. The filter still
+    # runs for each served packument; this only controls how often the
+    # disposable upstream cache asks npmjs for fresh public metadata.
+    maxage: 10m
   arteaPolicy:
     pollIntervalMs: 10000
     failGraceMs: 60000
+    osvCacheTtlMs: 120000
+    # After metadata and tarball policy checks pass, redirect public tarball
+    # bytes to npmjs so cold dependency-heavy installs do not proxy every
+    # artifact through Verdaccio. Private-scope packages never route here.
+    redirectPublicTarballs: true
   extraInitContainers:
     - name: copy-plugins
       image: '{{ include "artea.image" .Values.pluginAssets.image }}'

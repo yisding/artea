@@ -37,6 +37,7 @@ UPSTREAM_POLICY_ENDPOINT = "/policy/upstream-policy.yaml"
 # orchestrator calls this after it has decided Gitea-first vs devpi fallback).
 ENRICH_ENDPOINT = "/pypi/simple-enrich"
 OSV_ENDPOINT = "/osv/querybatch"
+SLOW_OSV_DECISION_SECONDS = 0.5
 
 # The name is already PEP 503-normalized by the gateway; reject anything that
 # is not (defense in depth — never interpolate an arbitrary string into an
@@ -230,25 +231,40 @@ class PolicySyncHandler(BaseHTTPRequestHandler):
         self._respond(202, {"status": "sync scheduled"})
 
     def _serve_osv_querybatch(self) -> None:
+        started = time.perf_counter()
         payload = self._read_json_body()
         if payload is None:
             return
         ecosystem = payload.get("ecosystem")
         name = payload.get("name")
         versions = payload.get("versions")
-        if not isinstance(ecosystem, str) or not isinstance(name, str) or not isinstance(versions, list):
-            self._respond(400, {"error": "ecosystem, name, and versions are required"})
+        package_summary = payload.get("package_summary") is True
+        blocked_only = payload.get("blocked_only") is True
+        if not isinstance(ecosystem, str) or not isinstance(name, str):
+            self._respond(400, {"error": "ecosystem and name are required"})
             return
-        if len(versions) > 10000:
+        if not package_summary and not isinstance(versions, list):
+            self._respond(400, {"error": "versions are required"})
+            return
+        if isinstance(versions, list) and len(versions) > 10000:
             self._respond(400, {"error": "too many versions"})
             return
         try:
-            result = self.server.osv_client.decide(
-                self.server.parsed_policy_store.get(),
-                ecosystem,
-                name,
-                versions,
-            )
+            if package_summary:
+                mode = "package_summary"
+                result = self.server.osv_client.summarize_package(
+                    self.server.parsed_policy_store.get(),
+                    ecosystem,
+                    name,
+                )
+            else:
+                mode = "versioned"
+                result = self.server.osv_client.decide(
+                    self.server.parsed_policy_store.get(),
+                    ecosystem,
+                    name,
+                    versions,
+                )
         except PolicyError as e:
             self._respond(400, {"error": str(e)})
             return
@@ -256,7 +272,20 @@ class PolicySyncHandler(BaseHTTPRequestHandler):
             log.exception("OSV querybatch decision failed (name=%s)", name)
             self._respond(500, {"error": "OSV decision failed"})
             return
-        self._respond(200, osv.response_payload(result))
+        elapsed = time.perf_counter() - started
+        if result.status != "ok" or elapsed >= SLOW_OSV_DECISION_SECONDS:
+            version_count = len(versions) if isinstance(versions, list) else 0
+            log.info(
+                "OSV querybatch mode=%s ecosystem=%s name=%s versions=%s status=%s verdicts=%s elapsed_ms=%.1f",
+                mode,
+                ecosystem,
+                name,
+                version_count,
+                result.status,
+                len(result.verdicts),
+                elapsed * 1000,
+            )
+        self._respond(200, osv.response_payload(result, blocked_only=blocked_only or package_summary))
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002 (match BaseHTTPRequestHandler signature)
         log.debug("%s %s", self.client_address[0], format % args)
@@ -323,6 +352,8 @@ def main() -> None:
         positive_ttl=cfg.osv_positive_ttl_seconds,
         negative_ttl=cfg.osv_negative_ttl_seconds,
         batch_size=cfg.osv_batch_size,
+        max_concurrency=cfg.osv_max_concurrency,
+        cache_file_path=cfg.osv_cache_file_path,
     )
     syncer = Syncer(cfg, store=store, upstream_store=upstream_store, parsed_policy_store=parsed_policy_store)
 

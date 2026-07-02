@@ -306,7 +306,9 @@ allow/deny themselves:
 - **OSV malicious packages** → no compiled block-list artifact. policy-sync keeps
   the last-known-good parsed `policy.toml` in memory and serves
   `POST /osv/querybatch` for Verdaccio and devpi to query inline as package
-  requests arrive.
+  requests arrive. Runtime OSV verdicts are cached with positive/negative TTLs;
+  deployments can persist that verdict cache across policy-sync restarts without
+  changing the policy semantics.
 
 Because precedence is resolved in the compiler, each engine only ever sees
 already-decided blocks. Beyond parse/normalize/validate, the per-ecosystem
@@ -365,4 +367,3 @@ requires **no schema change** and **no change to other engines**:
 
 This slots a "policy adapter" step into the architecture's existing new-format
 recipe (`docs/ARCHITECTURE.md`, "Scale-out design").
-

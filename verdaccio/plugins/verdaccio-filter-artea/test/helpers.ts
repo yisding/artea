@@ -36,6 +36,7 @@ export function packument(
 export interface MiddlewareResult {
   status: number | null;
   body: { error?: string } | undefined;
+  redirect: { status: number; url: string } | undefined;
   nexted: boolean;
 }
 
@@ -44,7 +45,7 @@ export function runMiddleware(plugin: FilterArtea, path: string, method = 'GET')
   let handler: ((req: unknown, res: unknown, next: () => void) => void) | undefined;
   const app = { use: (h: typeof handler) => (handler = h) };
   plugin.register_middlewares(app as never, undefined as never, undefined as never);
-  const result: MiddlewareResult = { status: null, body: undefined, nexted: false };
+  const result: MiddlewareResult = { status: null, body: undefined, redirect: undefined, nexted: false };
   const res = {
     status(code: number) {
       result.status = code;
@@ -52,6 +53,10 @@ export function runMiddleware(plugin: FilterArtea, path: string, method = 'GET')
     },
     json(body: MiddlewareResult['body']) {
       result.body = body;
+    },
+    redirect(code: number, url: string) {
+      result.status = code;
+      result.redirect = { status: code, url };
     },
   };
   handler!({ method, path }, res, () => {
@@ -64,7 +69,7 @@ export async function runMiddlewareAsync(plugin: FilterArtea, path: string, meth
   let handler: ((req: unknown, res: unknown, next: () => void) => void | Promise<void>) | undefined;
   const app = { use: (h: typeof handler) => (handler = h) };
   plugin.register_middlewares(app as never, undefined as never, undefined as never);
-  const result: MiddlewareResult = { status: null, body: undefined, nexted: false };
+  const result: MiddlewareResult = { status: null, body: undefined, redirect: undefined, nexted: false };
   await new Promise<void>((resolve) => {
     const res = {
       status(code: number) {
@@ -73,6 +78,11 @@ export async function runMiddlewareAsync(plugin: FilterArtea, path: string, meth
       },
       json(body: MiddlewareResult['body']) {
         result.body = body;
+        resolve();
+      },
+      redirect(code: number, url: string) {
+        result.status = code;
+        result.redirect = { status: code, url };
         resolve();
       },
     };

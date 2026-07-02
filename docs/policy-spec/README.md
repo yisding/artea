@@ -18,7 +18,9 @@ shipping.
   wire shape. This is a field-name/shape contract (not a compute lockstep):
   produced by `policy-sync` (`osv.response_payload`, Py) and parsed by both
   `verdaccio-filter-artea` (`OsvDecisionClient`, TS) and `devpi`
-  (`query_osv_blocked_versions`, Py). `status` drives cacheability: only `ok`
-  is cache-complete; non-`ok` responses may still carry blocking verdicts, but
-  consumers must not cache them because they may also contain fail-open allowed
-  entries. `reason` is observability-only.
+  (`query_osv_blocked_versions`, Py). Policy-sync also supports compact
+  `package_summary` responses for callers that can tolerate a
+  `needs_versions` retry; the response entry shape is unchanged. `status` drives
+  cacheability: only `ok` is cache-complete; non-`ok` responses may still carry
+  blocking verdicts, but consumers must not cache them because they may also
+  contain fail-open allowed entries. `reason` is observability-only.

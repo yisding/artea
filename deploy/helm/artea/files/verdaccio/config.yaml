@@ -46,7 +46,7 @@ uplinks:
   npmjs:
     url: https://registry.npmjs.org/
     cache: true
-    maxage: 2m
+    maxage: {{ .Values.verdaccio.uplink.maxage }}
     max_fails: 5
     fail_timeout: 5m
 

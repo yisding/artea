@@ -24,7 +24,10 @@ the shared upstream age policy
   tarball arrives before Verdaccio has served the package metadata, the middleware
   fetches the npm packument from `npm_registry_url` (default
   `https://registry.npmjs.org`) to verify the publish time and fails closed on
-  lookup errors.
+  lookup errors. When `redirect_public_tarballs` is enabled, allowed tarballs are
+  redirected to `npm_registry_url` after these checks pass, so public artifact
+  bytes come directly from npmjs while Artea still owns the metadata and tarball
+  policy gate.
 
 Both roles share one policy-loading code path (`src/policy.ts`): a `stat()` per
 request, re-parse only on mtime change.
@@ -38,7 +41,9 @@ filters:
     upstream_policy_file: /policy/upstream-policy.yaml
     osv_url: http://policy-sync:8920/osv/querybatch
     osv_timeout_ms: 5000
+    osv_cache_ttl_ms: 120000
     npm_registry_url: https://registry.npmjs.org
+    redirect_public_tarballs: true
 
 middlewares:
   filter-artea:                           # same package, middleware role (S13)
@@ -46,7 +51,9 @@ middlewares:
     upstream_policy_file: /policy/upstream-policy.yaml
     osv_url: http://policy-sync:8920/osv/querybatch
     osv_timeout_ms: 5000
+    osv_cache_ttl_ms: 120000
     npm_registry_url: https://registry.npmjs.org
+    redirect_public_tarballs: true
 ```
 
 In Kubernetes, use `policy_url` and `upstream_policy_url` instead. `osv_url`
@@ -143,7 +150,10 @@ When rejection kicks in differs per mode:
   recovers automatically.
 - **OSV mode**: `osv_url` lookup failures fail open for that OSV-only decision.
   The compiled policy file and upstream age gate above still keep their normal
-  fail-closed behavior.
+  fail-closed behavior. Complete per-version OSV verdicts are cached in-process
+  for `osv_cache_ttl_ms` (default 120s); policy-sync also caches per-version
+  verdicts, so tarball checks after metadata filtering do not repeat upstream
+  OSV work.
 
 Load failures and the open/closed transitions are logged once per transition
 (`warn`/`error` level); rejected requests log at `warn`.

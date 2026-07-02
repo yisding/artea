@@ -45,6 +45,8 @@ class Config:
     osv_positive_ttl_seconds: float = 3600.0
     osv_negative_ttl_seconds: float = 900.0
     osv_batch_size: int = 100
+    osv_max_concurrency: int = 8
+    osv_cache_file_path: str = ""
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Config":
@@ -64,10 +66,17 @@ class Config:
             osv_positive_ttl = float(env.get("OSV_POSITIVE_TTL_SECONDS", "3600"))
             osv_negative_ttl = float(env.get("OSV_NEGATIVE_TTL_SECONDS", "900"))
             osv_batch_size = int(env.get("OSV_BATCH_SIZE", "100"))
+            osv_max_concurrency = int(env.get("OSV_MAX_CONCURRENCY", "8"))
         except ValueError as e:
             raise ConfigError(f"invalid numeric environment variable: {e}") from e
-        if osv_timeout <= 0 or osv_positive_ttl <= 0 or osv_negative_ttl <= 0 or osv_batch_size <= 0:
-            raise ConfigError("OSV timeout, TTLs, and batch size must be positive")
+        if (
+            osv_timeout <= 0
+            or osv_positive_ttl <= 0
+            or osv_negative_ttl <= 0
+            or osv_batch_size <= 0
+            or osv_max_concurrency <= 0
+        ):
+            raise ConfigError("OSV timeout, TTLs, batch size, and max concurrency must be positive")
 
         # POLICY_FILE_PATH unset -> file-mode default under POLICY_DIR (test/local
         # inspection); set to "" -> HTTP-only mode (the /policy endpoint is the only output)
@@ -113,4 +122,6 @@ class Config:
             osv_positive_ttl_seconds=osv_positive_ttl,
             osv_negative_ttl_seconds=osv_negative_ttl,
             osv_batch_size=osv_batch_size,
+            osv_max_concurrency=osv_max_concurrency,
+            osv_cache_file_path=env.get("OSV_CACHE_FILE_PATH", ""),
         )

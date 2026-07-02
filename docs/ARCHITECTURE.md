@@ -264,10 +264,13 @@ push does not bump the artifacts' mtime/ETag.
 When `[osv] malicious_packages = true`, policy-sync also serves
 `POST /osv/querybatch` as a cluster-internal runtime verdict endpoint. Verdaccio
 and devpi call it for the public package versions they are already listing or
-serving; policy-sync translates those requests to OSV.dev `querybatch` calls and
-caches bounded per-version verdicts. Only OpenSSF `MAL-*` IDs block. Curated
-`allow` rules override OSV hits, and OSV lookup failures fail open for uncached
-versions so Artea does not need to mirror the OSV database.
+serving; callers can request versioned responses trimmed to blocking hits.
+policy-sync translates those requests to OSV.dev package/querybatch calls and
+caches bounded per-version verdicts. In Kubernetes, that verdict cache is also
+snapshotted onto the policy-sync state PVC and reloaded after restarts while the
+entries remain within their TTLs. Only OpenSSF `MAL-*` IDs block. Curated `allow`
+rules override OSV hits, and OSV lookup failures fail open for uncached versions
+so Artea does not need to mirror the OSV database.
 
 **Enforcement depth (npm):** the filter plugin filters packuments (metadata) AND the
 same package registers a Verdaccio middleware that rejects tarball downloads
