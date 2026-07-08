@@ -42,6 +42,10 @@ interface CachedOsvVerdict {
 const SHARED_OSV_CACHE = new Map<string, CachedOsvVerdict>();
 const SHARED_PREWARM_CACHE = new Map<string, number>();
 const SHARED_PREWARM_IN_FLIGHT = new Set<string>();
+const SHARED_BLOCKED_IN_FLIGHT = new Map<string, Promise<OsvResponse>>();
+/** Last full expiry sweep per cache, so pruneCache stays O(1) on the hot path. */
+const LAST_EXPIRY_SWEEP = new WeakMap<Map<string, unknown>, number>();
+const EXPIRY_SWEEP_MAX_INTERVAL_MS = 60_000;
 
 export class OsvDecisionClient {
   private readonly url: string;
@@ -53,6 +57,7 @@ export class OsvDecisionClient {
   private readonly cache = SHARED_OSV_CACHE;
   private readonly prewarmCache = SHARED_PREWARM_CACHE;
   private readonly prewarmInFlight = SHARED_PREWARM_IN_FLIGHT;
+  private readonly blockedInFlight = SHARED_BLOCKED_IN_FLIGHT;
 
   public constructor(
     url: string,
@@ -109,7 +114,19 @@ export class OsvDecisionClient {
 
     try {
       const mode = 'versioned';
-      const body = await this.fetchDecision({ ecosystem, name, versions: misses, blocked_only: true });
+      // Coalesce concurrent identical miss lookups (parallel installs of the same
+      // package race here before any of them populates the cache).
+      const inFlightKey = cacheKey(this.url, ecosystem, name, misses.join(','));
+      let request = this.blockedInFlight.get(inFlightKey);
+      if (request === undefined) {
+        request = this.fetchDecision({ ecosystem, name, versions: misses, blocked_only: true });
+        this.blockedInFlight.set(inFlightKey, request);
+        const cleanup = (): void => {
+          this.blockedInFlight.delete(inFlightKey);
+        };
+        request.then(cleanup, cleanup);
+      }
+      const body = await request;
       const status = typeof body.status === 'string' ? body.status : 'unknown';
       const fetched = parseResponse(body);
       const complete = status === 'ok';
@@ -134,7 +151,7 @@ export class OsvDecisionClient {
             expiresAt,
           });
         }
-        pruneCache(this.cache, Date.now(), this.cacheMaxEntries, (entry) => entry.expiresAt);
+        pruneCache(this.cache, Date.now(), this.cacheMaxEntries, (entry) => entry.expiresAt, this.expirySweepIntervalMs());
       }
       return { blocked: mergeBlocked(cachedBlocked, fetched), complete };
     } catch (e) {
@@ -169,7 +186,7 @@ export class OsvDecisionClient {
             );
           }
           storeCacheEntry(this.prewarmCache, key, Date.now() + this.cacheTtlMs);
-          pruneCache(this.prewarmCache, Date.now(), this.prewarmCacheMaxEntries, (expiresAt) => expiresAt);
+          pruneCache(this.prewarmCache, Date.now(), this.prewarmCacheMaxEntries, (expiresAt) => expiresAt, this.expirySweepIntervalMs());
         })
         .catch((e) => {
           this.logger.debug(
@@ -181,6 +198,11 @@ export class OsvDecisionClient {
           this.prewarmInFlight.delete(key);
         });
     }
+  }
+
+  /** Sweeping more often than the TTL cannot find anything to reclaim. */
+  private expirySweepIntervalMs(): number {
+    return Math.min(this.cacheTtlMs, EXPIRY_SWEEP_MAX_INTERVAL_MS);
   }
 
   private async fetchDecision(body: OsvRequestBody): Promise<OsvResponse> {
@@ -207,6 +229,9 @@ export function clearOsvDecisionCacheForTests(): void {
   SHARED_OSV_CACHE.clear();
   SHARED_PREWARM_CACHE.clear();
   SHARED_PREWARM_IN_FLIGHT.clear();
+  SHARED_BLOCKED_IN_FLIGHT.clear();
+  LAST_EXPIRY_SWEEP.delete(SHARED_OSV_CACHE);
+  LAST_EXPIRY_SWEEP.delete(SHARED_PREWARM_CACHE);
 }
 
 export function osvDecisionCacheSizesForTests(): { verdicts: number; prewarms: number; prewarmsInFlight: number } {
@@ -253,10 +278,21 @@ function storeCacheEntry<V>(cache: Map<string, V>, key: string, value: V): void 
   cache.set(key, value);
 }
 
-function pruneCache<V>(cache: Map<string, V>, now: number, maxEntries: number, expiresAt: (value: V) => number): void {
-  for (const [key, value] of cache) {
-    if (expiresAt(value) <= now) {
-      cache.delete(key);
+/**
+ * The full expiry sweep is O(cache size) and pruneCache runs after every
+ * miss-fetch on the tarball hot path, so it is throttled: reads already evict
+ * lazily (getFreshCacheEntry), leaving the sweep as a memory-reclamation aid
+ * for entries that are written but never read again. The cheap LRU overflow
+ * eviction still runs on every write.
+ */
+function pruneCache<V>(cache: Map<string, V>, now: number, maxEntries: number, expiresAt: (value: V) => number, sweepIntervalMs: number): void {
+  const lastSweep = LAST_EXPIRY_SWEEP.get(cache) ?? 0;
+  if (now - lastSweep >= sweepIntervalMs || cache.size > maxEntries) {
+    LAST_EXPIRY_SWEEP.set(cache, now);
+    for (const [key, value] of cache) {
+      if (expiresAt(value) <= now) {
+        cache.delete(key);
+      }
     }
   }
   while (cache.size > maxEntries) {

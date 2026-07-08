@@ -118,6 +118,35 @@ describe('OSV decision wire shape (shared vectors)', () => {
     expect(result.blocked.get('2.0.0')).toEqual(['MAL-2026-1']);
   });
 
+  it('coalesces concurrent identical version-verdict lookups into one request', async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetchMock = vi.fn(async () => {
+      await gate;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          status: 'ok',
+          results: [{ version: '1.0.0', blocked: true, ids: ['MAL-2026-1'] }],
+        }),
+      };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new OsvDecisionClient('http://policy-sync.example/osv/querybatch', makeLogger());
+
+    const first = client.blockedVersions('npm', 'left-pad', ['1.0.0']);
+    const second = client.blockedVersions('npm', 'left-pad', ['1.0.0']);
+    release!();
+    const [a, b] = await Promise.all([first, second]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(a.blocked.get('1.0.0')).toEqual(['MAL-2026-1']);
+    expect(b.blocked.get('1.0.0')).toEqual(['MAL-2026-1']);
+  });
+
   it('evicts least-recently-used version verdicts above the cache cap', async () => {
     const bodies: Array<{ versions: string[] }> = [];
     const fetchMock = vi.fn(async (_url: string, init: { body?: unknown }) => {

@@ -76,9 +76,12 @@ def run_timed(cmd: list[str], *, env: dict[str, str], cwd: Path, log_path: Path,
     with log_path.open("wb") as log:
         proc = subprocess.run(cmd, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
     elapsed = time.perf_counter() - started
+    # scrub the persisted log too: --keep-workdir leaves it on disk
+    text = redact(log_path.read_text(errors="replace"))
+    log_path.write_text(text)
     if proc.returncode != 0:
-        tail = "\n".join(log_path.read_text(errors="replace").splitlines()[-40:])
-        raise RuntimeError(f"{cmd[0]} exited {proc.returncode}; log tail from {log_path}:\n{redact(tail)}")
+        tail = "\n".join(text.splitlines()[-40:])
+        raise RuntimeError(f"{cmd[0]} exited {proc.returncode}; log tail from {log_path}:\n{tail}")
     return elapsed
 
 

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import FilterArtea, { parseTarballPath, type FilterArteaConfig } from '../src/index';
 import { clearOsvDecisionCacheForTests } from '../src/osv';
-import { makeLogger, packument, runMiddleware, runMiddlewareAsync } from './helpers';
+import { denyAllAuth, makeLogger, packument, runMiddleware, runMiddlewareAsync } from './helpers';
 
 function makePlugin(policyFile: string, extra: Omit<FilterArteaConfig, 'policy_file'> = {}): FilterArtea {
   return new FilterArtea({ policy_file: policyFile, ...extra }, { config: {}, logger: makeLogger() } as never);
@@ -495,7 +495,7 @@ describe('verdaccio-filter-artea', () => {
       expect(result.nexted).toBe(true);
     });
 
-    it('redirects policy-cleared public tarballs to the configured npm registry when enabled', () => {
+    it('redirects policy-cleared public tarballs to the configured npm registry when enabled', async () => {
       const file = tmpPolicyPath();
       writePolicy(file, 'blocked: {}\n');
       const plugin = makePlugin(file, {
@@ -503,7 +503,7 @@ describe('verdaccio-filter-artea', () => {
         redirect_public_tarballs: true,
       });
 
-      const result = runMiddleware(plugin, '/@scope%2Ftool/-/tool-1.2.0.tgz');
+      const result = await runMiddlewareAsync(plugin, '/@scope%2Ftool/-/tool-1.2.0.tgz');
 
       expect(result.status).toBe(302);
       expect(result.redirect).toEqual({
@@ -511,6 +511,30 @@ describe('verdaccio-filter-artea', () => {
         url: 'https://registry.npmjs.org/@scope/tool/-/tool-1.2.0.tgz',
       });
       expect(result.nexted).toBe(false);
+    });
+
+    it('does not redirect when the access check denies the request (anonymous)', async () => {
+      // the redirect must not leak past verdaccio's package ACLs: a denied
+      // request falls through to verdaccio, whose tarball route enforces access
+      const file = tmpPolicyPath();
+      writePolicy(file, 'blocked: {}\n');
+      const plugin = makePlugin(file, { redirect_public_tarballs: true });
+
+      const result = await runMiddlewareAsync(plugin, '/left-pad/-/left-pad-1.2.0.tgz', 'GET', denyAllAuth());
+
+      expect(result.redirect).toBeUndefined();
+      expect(result.nexted).toBe(true);
+    });
+
+    it('does not redirect when no auth surface is available', async () => {
+      const file = tmpPolicyPath();
+      writePolicy(file, 'blocked: {}\n');
+      const plugin = makePlugin(file, { redirect_public_tarballs: true });
+
+      const result = await runMiddlewareAsync(plugin, '/left-pad/-/left-pad-1.2.0.tgz', 'GET', null);
+
+      expect(result.redirect).toBeUndefined();
+      expect(result.nexted).toBe(true);
     });
 
     it('does not redirect tarballs that fail policy checks', () => {

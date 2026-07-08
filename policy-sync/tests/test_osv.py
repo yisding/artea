@@ -35,13 +35,15 @@ class MockOsv(StubServer):
                     self.send_error(500)
                     return
                 if self.path == "/v1/query":
+                    package = payload.get("package") or {}
                     vulns = []
                     for version, ids in mock.malicious.items():
                         vulns.extend(
                             {
                                 "id": mid,
                                 "modified": "2026-01-01T00:00:00Z",
-                                "affected": [{"versions": [version]}],
+                                # real OSV affected entries always carry the package identity
+                                "affected": [{"package": package, "versions": [version]}],
                             }
                             for mid in ids
                         )
@@ -57,13 +59,14 @@ class MockOsv(StubServer):
                 for query in queries:
                     version = query.get("version")
                     if version is None:
+                        package = query.get("package") or {}
                         vulns = []
                         for affected_version, ids in mock.malicious.items():
                             vulns.extend(
                                 {
                                     "id": mid,
                                     "modified": "2026-01-01T00:00:00Z",
-                                    "affected": [{"versions": [affected_version]}],
+                                    "affected": [{"package": package, "versions": [affected_version]}],
                                 }
                                 for mid in ids
                             )
@@ -148,7 +151,9 @@ def test_curated_pypi_exact_allow_overrides_with_release_equality():
         osv.stop()
 
     assert [(v.version, v.blocked) for v in result.verdicts] == [("1.0.0", False), ("2.0.0", False)]
-    assert osv.paths == ["/v1/querybatch"]
+    # a MAL record with exact versions is not decided locally for pypi (raw-string
+    # equality is npm-only), so the package-level probe falls back to per-version
+    assert osv.paths == ["/v1/querybatch", "/v1/querybatch"]
     assert osv.requests[0] == {"queries": [{"package": {"name": "six", "ecosystem": "PyPI"}}]}
 
 
@@ -188,8 +193,9 @@ def test_decide_accepts_osv_pypi_ecosystem_alias():
 
     assert result.status == "ok"
     assert [(v.version, v.blocked) for v in result.verdicts] == [("1.0.0", True), ("2.0.0", False)]
-    # the OSV request must use OSV's "PyPI" ecosystem casing
-    assert osv.paths == ["/v1/querybatch"]
+    # the OSV request must use OSV's "PyPI" ecosystem casing; the MAL hit is
+    # then decided by the authoritative per-version follow-up (npm-only local match)
+    assert osv.paths == ["/v1/querybatch", "/v1/querybatch"]
     assert osv.requests[0]["queries"][0]["package"]["ecosystem"] == "PyPI"
 
 
@@ -224,7 +230,7 @@ def test_package_level_osv_query_blocks_exact_malicious_versions(monkeypatch):
                     "vulns": [
                         {
                             "id": "MAL-2026-1",
-                            "affected": [{"versions": ["2.0.0", "9.9.9"]}],
+                            "affected": [{"package": {"name": "left-pad", "ecosystem": "npm"}, "versions": ["2.0.0", "9.9.9"]}],
                         }
                     ]
                 }
@@ -258,6 +264,7 @@ def test_package_level_osv_query_blocks_semver_range_malicious_versions(monkeypa
                             "id": "MAL-2026-1",
                             "affected": [
                                 {
+                                    "package": {"name": "left-pad", "ecosystem": "npm"},
                                     "ranges": [
                                         {
                                             "type": "SEMVER",
@@ -302,7 +309,7 @@ def test_package_level_osv_query_falls_back_when_malicious_range_lacks_exact_ver
                         "vulns": [
                             {
                                 "id": "MAL-2026-1",
-                                "affected": [{"ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "2.0.0"}]}]}],
+                                "affected": [{"package": {"name": "left-pad", "ecosystem": "npm"}, "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "2.0.0"}]}]}],
                             }
                         ]
                     }
@@ -370,7 +377,7 @@ def test_package_summary_returns_only_exact_malicious_versions(monkeypatch):
                     "vulns": [
                         {
                             "id": "MAL-2026-1",
-                            "affected": [{"versions": ["2.0.0", "9.9.9"]}],
+                            "affected": [{"package": {"name": "left-pad", "ecosystem": "npm"}, "versions": ["2.0.0", "9.9.9"]}],
                         },
                         {"id": "GHSA-xxxx-yyyy-zzzz"},
                     ]
@@ -400,7 +407,7 @@ def test_package_summary_honors_curated_allow_overrides(monkeypatch):
                     "vulns": [
                         {
                             "id": "MAL-2026-1",
-                            "affected": [{"versions": ["2.0.0", "9.9.9"]}],
+                            "affected": [{"package": {"name": "left-pad", "ecosystem": "npm"}, "versions": ["2.0.0", "9.9.9"]}],
                         }
                     ]
                 }
@@ -451,7 +458,7 @@ def test_package_summary_needs_versions_when_malicious_range_lacks_exact_version
                     "vulns": [
                         {
                             "id": "MAL-2026-1",
-                            "affected": [{"ranges": [{"type": "SEMVER", "events": [{"introduced": "2.0.0"}]}]}],
+                            "affected": [{"package": {"name": "left-pad", "ecosystem": "npm"}, "ranges": [{"type": "SEMVER", "events": [{"introduced": "2.0.0"}]}]}],
                         }
                     ]
                 }
@@ -554,7 +561,7 @@ def test_osv_verdict_cache_persists_and_reloads(tmp_path, monkeypatch):
                     "vulns": [
                         {
                             "id": "MAL-2026-1",
-                            "affected": [{"versions": ["1.0.0"]}],
+                            "affected": [{"package": {"name": "left-pad", "ecosystem": "npm"}, "versions": ["1.0.0"]}],
                         }
                     ]
                 }
@@ -685,3 +692,156 @@ def test_osv_querybatch_endpoint_uses_parsed_policy_fallback(tmp_path):
         "status": "ok",
         "results": [{"version": "1.0.0", "blocked": True, "ids": ["MAL-2026-1"]}],
     }
+
+
+def test_multi_package_mal_record_does_not_block_sibling_package_versions(monkeypatch):
+    # An OSV MAL record can span several packages; versions listed for a sibling
+    # package must not block the queried one.
+    client = OsvClient(api_url="http://osv.example.test")
+
+    def fake_post_json(path, payload):
+        assert path == "/v1/querybatch"
+        assert all("version" not in query for query in payload["queries"])
+        return {
+            "results": [
+                {
+                    "vulns": [
+                        {
+                            "id": "MAL-2026-1",
+                            "affected": [
+                                {"package": {"name": "evil-sibling", "ecosystem": "npm"}, "versions": ["2.0.0"]},
+                                {"package": {"name": "left-pad", "ecosystem": "npm"}, "versions": ["1.0.0"]},
+                            ],
+                        }
+                    ]
+                }
+            ],
+        }
+
+    monkeypatch.setattr(client, "_post_json", fake_post_json)
+
+    result = client.decide(policy(), "npm", "left-pad", ["1.0.0", "2.0.0"])
+
+    assert result.status == "ok"
+    assert [(v.version, v.blocked, v.ids) for v in result.verdicts] == [
+        ("1.0.0", True, ("MAL-2026-1",)),
+        ("2.0.0", False, ()),
+    ]
+
+
+def test_mal_record_without_package_identity_falls_back_to_versioned_queries(monkeypatch):
+    # A malformed MAL record whose affected entries carry no package identity is
+    # not decided locally; the authoritative per-version querybatch path decides.
+    calls = []
+    client = OsvClient(api_url="http://osv.example.test")
+
+    def fake_post_json(path, payload):
+        calls.append((path, payload))
+        assert path == "/v1/querybatch"
+        if len(calls) == 1:
+            return {
+                "results": [
+                    {"vulns": [{"id": "MAL-2026-1", "affected": [{"versions": ["1.0.0"]}]}]}
+                ],
+            }
+        versions = [query["version"] for query in payload["queries"]]
+        return {
+            "results": [
+                {"vulns": [{"id": "MAL-2026-1"}] if version == "1.0.0" else []}
+                for version in versions
+            ]
+        }
+
+    monkeypatch.setattr(client, "_post_json", fake_post_json)
+
+    result = client.decide(policy(), "npm", "left-pad", ["1.0.0", "2.0.0"])
+
+    assert result.status == "ok"
+    assert [(v.version, v.blocked) for v in result.verdicts] == [("1.0.0", True), ("2.0.0", False)]
+    assert len(calls) == 2
+
+
+def test_package_summary_ignores_sibling_package_versions(monkeypatch):
+    client = OsvClient(api_url="http://osv.example.test")
+
+    def fake_post_json(_path, _payload):
+        return {
+            "results": [
+                {
+                    "vulns": [
+                        {
+                            "id": "MAL-2026-1",
+                            "affected": [
+                                {"package": {"name": "evil-sibling", "ecosystem": "npm"}, "versions": ["2.0.0"]},
+                                {"package": {"name": "left-pad", "ecosystem": "npm"}, "versions": ["1.0.0"]},
+                            ],
+                        }
+                    ]
+                }
+            ],
+        }
+
+    monkeypatch.setattr(client, "_post_json", fake_post_json)
+
+    result = client.summarize_package(policy(), "npm", "left-pad")
+
+    assert result.status == "ok"
+    assert [(v.version, v.blocked, v.ids) for v in result.verdicts] == [
+        ("1.0.0", True, ("MAL-2026-1",)),
+    ]
+
+
+def test_osv_verdict_cache_persist_is_debounced(tmp_path):
+    cache_file = tmp_path / "osv-cache.json"
+    clock = {"t": 1000.0}
+    client = OsvClient(api_url="http://osv.example.test", cache_file_path=str(cache_file), now=lambda: clock["t"])
+
+    client.cache.set(("npm", "left-pad", "1.0.0"), OsvVerdict(version="1.0.0", blocked=True, ids=("MAL-2026-1",)))
+    client.cache.persist()
+    assert len(json.loads(cache_file.read_text())["entries"]) == 1
+
+    clock["t"] += 1.0  # within the min interval: the write is coalesced away
+    client.cache.set(("npm", "left-pad", "2.0.0"), OsvVerdict(version="2.0.0", blocked=True, ids=("MAL-2026-1",)))
+    client.cache.persist()
+    assert len(json.loads(cache_file.read_text())["entries"]) == 1
+
+    clock["t"] += 30.0  # past the min interval: the next persist writes everything
+    client.cache.persist()
+    assert len(json.loads(cache_file.read_text())["entries"]) == 2
+
+
+def test_osv_querybatch_endpoint_package_summary_degrades_on_osv_outage():
+    osv = MockOsv()
+    osv.fail = True
+    osv.start()
+    parsed_store = ParsedPolicyStore()
+    parsed_store.set(policy())
+    httpd = PolicySyncHTTPServer(
+        ("127.0.0.1", 0),
+        TEST_SECRET,
+        lambda: None,
+        SyncState(),
+        PolicyStore(),
+        PolicyStore(),
+        parsed_store,
+        OsvClient(api_url=osv.url),
+    )
+    thread = threading.Thread(target=lambda: httpd.serve_forever(poll_interval=0.01), daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{httpd.server_address[1]}/osv/querybatch",
+            data=json.dumps({"ecosystem": "npm", "name": "left-pad", "package_summary": True}).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            body = json.loads(resp.read())
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        osv.stop()
+
+    assert body["status"] == "degraded"
+    assert body["results"] == []
+    assert "reason" in body

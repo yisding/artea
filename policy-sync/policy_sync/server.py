@@ -268,6 +268,12 @@ class PolicySyncHandler(BaseHTTPRequestHandler):
         except PolicyError as e:
             self._respond(400, {"error": str(e)})
             return
+        except osv.OsvError as e:
+            # decide() converts upstream OSV failures into a degraded fail-open
+            # result internally; summarize_package() raises. Keep the endpoint
+            # contract uniform so callers never see a 500 for an OSV outage.
+            log.warning("OSV querybatch degraded (mode=%s, name=%s): %s", mode, name, e)
+            result = osv.OsvDecisionResult(status="degraded", verdicts=(), reason=str(e))
         except Exception:  # never crash the worker on an unexpected decision error
             log.exception("OSV querybatch decision failed (name=%s)", name)
             self._respond(500, {"error": "OSV decision failed"})

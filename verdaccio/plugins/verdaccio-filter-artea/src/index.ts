@@ -46,6 +46,8 @@ interface DecisionCacheEntry {
 interface HttpRequest {
   method: string;
   path: string;
+  /** populated by verdaccio's auth middleware (apiJWTmiddleware) */
+  remote_user?: unknown;
 }
 interface HttpResponse {
   status(code: number): HttpResponse;
@@ -55,6 +57,21 @@ interface HttpResponse {
 type HttpNext = () => void;
 interface ExpressApp {
   use(handler: (req: HttpRequest, res: HttpResponse, next: HttpNext) => void | Promise<void>): void;
+}
+
+/**
+ * Structural view of the runtime Auth object verdaccio hands to
+ * register_middlewares. The typed pluginUtils.IBasicAuth surface omits
+ * apiJWTmiddleware, but verdaccio's Auth instance provides it; both members are
+ * probed before use and the redirect is skipped when either is missing.
+ */
+interface TarballAuth {
+  apiJWTmiddleware?(): (req: HttpRequest, res: HttpResponse, next: (err?: unknown) => void) => void;
+  allow_access?(
+    pkg: { packageName: string; packageVersion?: string },
+    user: unknown,
+    callback: (err: unknown, allowed?: boolean) => void,
+  ): void;
 }
 
 export interface TarballRef {
@@ -189,6 +206,7 @@ export default class FilterArtea
   private readonly policyLoader: PolicyLoader;
   private readonly npmRegistryUrl: string;
   private readonly redirectPublicTarballs: boolean;
+  private auth: TarballAuth | undefined;
   private readonly osvClient: OsvDecisionClient | null;
   private readonly publishTimes = new Map<string, Map<string, number>>();
   private readonly decisionCacheTtlMs: number;
@@ -345,7 +363,8 @@ export default class FilterArtea
   }
 
   /** Middleware role: runs before verdaccio's npm endpoints and guards tarball GETs. */
-  public register_middlewares(app: ExpressApp, _auth: pluginUtils.IBasicAuth, _storage: unknown): void {
+  public register_middlewares(app: ExpressApp, auth: pluginUtils.IBasicAuth, _storage: unknown): void {
+    this.auth = auth as TarballAuth | undefined;
     app.use((req, res, next) => {
       void this.guardTarball(req, res, next).catch((err) => {
         this.logger.warn({ msg: (err as Error).message }, 'filter-artea: tarball age check failed: @{msg}');
@@ -403,13 +422,47 @@ export default class FilterArtea
     }
     if (this.redirectPublicTarballs && res.redirect !== undefined) {
       const redirectUrl = this.publicTarballUrl(req.path);
-      if (redirectUrl !== null) {
+      if (redirectUrl !== null && (await this.tarballRedirectAllowed(req, res, ref))) {
         this.logger.info({ name: ref.name, url: redirectUrl }, 'filter-artea: redirecting policy-cleared tarball of @{name} to upstream');
         res.redirect(302, redirectUrl);
         return;
       }
     }
     next();
+  }
+
+  /**
+   * This middleware runs before verdaccio's npm routes, so a redirect issued
+   * here would bypass the `packages` access ACLs (e.g. `access: $authenticated`)
+   * that gate the proxied tarball response. Resolve the request's remote user
+   * and re-run the access check the tarball route would apply. When the auth
+   * surface is unavailable or denies, the redirect is skipped and the request
+   * falls through to verdaccio, which serves — and gates — the tarball itself,
+   * so failure here can never widen access.
+   */
+  private async tarballRedirectAllowed(req: HttpRequest, res: HttpResponse, ref: TarballRef): Promise<boolean> {
+    const auth = this.auth;
+    if (auth == null || typeof auth.apiJWTmiddleware !== 'function' || typeof auth.allow_access !== 'function') {
+      return false;
+    }
+    try {
+      await new Promise<void>((resolve) => {
+        auth.apiJWTmiddleware!()(req, res, () => resolve());
+      });
+      return await new Promise<boolean>((resolve) => {
+        auth.allow_access!(
+          { packageName: ref.name, packageVersion: ref.version ?? undefined },
+          req.remote_user,
+          (err, allowed) => resolve(err == null && allowed === true),
+        );
+      });
+    } catch (e) {
+      this.logger.warn(
+        { name: ref.name, msg: (e as Error).message },
+        'filter-artea: tarball redirect access check for @{name} failed, proxying instead: @{msg}',
+      );
+      return false;
+    }
   }
 
   private publicTarballUrl(rawPath: string): string | null {

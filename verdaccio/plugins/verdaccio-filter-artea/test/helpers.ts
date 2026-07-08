@@ -40,11 +40,39 @@ export interface MiddlewareResult {
   nexted: boolean;
 }
 
-/** Registers the plugin middleware on a fake app and replays one request through it. */
-export function runMiddleware(plugin: FilterArtea, path: string, method = 'GET'): MiddlewareResult {
+/** Structural stand-in for the verdaccio Auth object handed to register_middlewares. */
+export interface FakeAuth {
+  apiJWTmiddleware?(): (req: { remote_user?: unknown }, res: unknown, next: () => void) => void;
+  allow_access?(pkg: unknown, user: unknown, callback: (err: unknown, allowed?: boolean) => void): void;
+}
+
+/** Auth that resolves an authenticated user and grants package access. */
+export function allowAllAuth(): FakeAuth {
+  return {
+    apiJWTmiddleware: () => (req, _res, next) => {
+      req.remote_user = { name: 'dev1', groups: ['$all', '$authenticated'] };
+      next();
+    },
+    allow_access: (_pkg, _user, callback) => callback(null, true),
+  };
+}
+
+/** Auth that resolves an anonymous user and denies package access. */
+export function denyAllAuth(): FakeAuth {
+  return {
+    apiJWTmiddleware: () => (req, _res, next) => {
+      req.remote_user = { name: undefined, groups: ['$all', '$anonymous'] };
+      next();
+    },
+    allow_access: (_pkg, _user, callback) => callback(new Error('unregistered users are not allowed to access package')),
+  };
+}
+
+/** Registers the plugin middleware on a fake app and replays one request through it (auth: null = no auth surface). */
+export function runMiddleware(plugin: FilterArtea, path: string, method = 'GET', auth: FakeAuth | null = allowAllAuth()): MiddlewareResult {
   let handler: ((req: unknown, res: unknown, next: () => void) => void) | undefined;
   const app = { use: (h: typeof handler) => (handler = h) };
-  plugin.register_middlewares(app as never, undefined as never, undefined as never);
+  plugin.register_middlewares(app as never, auth as never, undefined as never);
   const result: MiddlewareResult = { status: null, body: undefined, redirect: undefined, nexted: false };
   const res = {
     status(code: number) {
@@ -65,10 +93,10 @@ export function runMiddleware(plugin: FilterArtea, path: string, method = 'GET')
   return result;
 }
 
-export async function runMiddlewareAsync(plugin: FilterArtea, path: string, method = 'GET'): Promise<MiddlewareResult> {
+export async function runMiddlewareAsync(plugin: FilterArtea, path: string, method = 'GET', auth: FakeAuth | null = allowAllAuth()): Promise<MiddlewareResult> {
   let handler: ((req: unknown, res: unknown, next: () => void) => void | Promise<void>) | undefined;
   const app = { use: (h: typeof handler) => (handler = h) };
-  plugin.register_middlewares(app as never, undefined as never, undefined as never);
+  plugin.register_middlewares(app as never, auth as never, undefined as never);
   const result: MiddlewareResult = { status: null, body: undefined, redirect: undefined, nexted: false };
   await new Promise<void>((resolve) => {
     const res = {

@@ -34,6 +34,7 @@ ADAPTERS: dict[str, NpmAdapter | PypiAdapter] = {"npm": NPM, "pypi": PYPI, "PyPI
 MAX_PAGES = 8
 PACKAGE_BATCH_DELAY_SECONDS = 0.005
 SLOW_OSV_REQUEST_SECONDS = 0.2
+PERSIST_MIN_INTERVAL_SECONDS = 30.0
 _SEMVER_RE = re.compile(
     r"^v?(0|[1-9]\d*)"
     r"(?:\.(0|[1-9]\d*))?"
@@ -92,12 +93,15 @@ class _VerdictCache:
         now=time.time,
         max_entries: int = 131072,
         cache_file_path: str = "",
+        persist_min_interval: float = PERSIST_MIN_INTERVAL_SECONDS,
     ):
         self.positive_ttl = positive_ttl
         self.negative_ttl = negative_ttl
         self.now = now
         self.max_entries = max_entries
         self.cache_file_path = cache_file_path
+        self.persist_min_interval = persist_min_interval
+        self._last_persist = 0.0
         self._lock = threading.Lock()
         self._data: dict[tuple[str, str, str], _CachedVerdict] = {}
         if cache_file_path:
@@ -132,10 +136,22 @@ class _VerdictCache:
                     del self._data[old_key]
 
     def persist(self) -> None:
+        """Write the cache to disk, at most once per persist_min_interval.
+
+        Serializing every entry is O(n); persist() runs on the decide() miss
+        path, so the interval gate keeps cold-lookup bursts from turning into
+        repeated full-cache disk writes. The file is a best-effort warm-start
+        aid — verdicts fetched within the last interval may be lost on a crash,
+        and are simply re-fetched. Only the expiry sweep and snapshot happen
+        under the lock; JSON serialization and the file write do not.
+        """
         if not self.cache_file_path:
             return
         with self._lock:
             now = self.now()
+            if now - self._last_persist < self.persist_min_interval:
+                return
+            self._last_persist = now
             entries = []
             for key, entry in list(self._data.items()):
                 if self._is_expired(entry, now):
@@ -150,16 +166,16 @@ class _VerdictCache:
                         "ids": list(entry.verdict.ids),
                     }
                 )
-            try:
-                directory = os.path.dirname(self.cache_file_path)
-                if directory:
-                    os.makedirs(directory, exist_ok=True)
-                tmp_path = f"{self.cache_file_path}.tmp"
-                with open(tmp_path, "w", encoding="utf-8") as f:
-                    json.dump({"entries": entries}, f, separators=(",", ":"))
-                os.replace(tmp_path, self.cache_file_path)
-            except OSError:
-                log.exception("failed to persist OSV verdict cache to %s", self.cache_file_path)
+        try:
+            directory = os.path.dirname(self.cache_file_path)
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+            tmp_path = f"{self.cache_file_path}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump({"entries": entries}, f, separators=(",", ":"))
+            os.replace(tmp_path, self.cache_file_path)
+        except OSError:
+            log.exception("failed to persist OSV verdict cache to %s", self.cache_file_path)
 
     def _load(self) -> None:
         try:
@@ -356,7 +372,7 @@ class OsvClient:
                 vuln_id = vuln.get("id")
                 if not (isinstance(vuln_id, str) and vuln_id.startswith(MAL_PREFIX)):
                     continue
-                exact_versions = _exact_affected_versions(vuln)
+                exact_versions = _exact_affected_versions(osv_ecosystem, normalized_name, vuln)
                 if exact_versions is None:
                     return OsvDecisionResult(
                         status="needs_versions",
@@ -417,7 +433,7 @@ class OsvClient:
         first_page = self._query_package_first_page(osv_ecosystem, name)
         if first_page.get("next_page_token"):
             return self._query_package_unbatched(osv_ecosystem, name, versions)
-        return self._verdicts_from_package_page(osv_ecosystem, first_page, versions)
+        return self._verdicts_from_package_page(osv_ecosystem, name, first_page, versions)
 
     def _query_package_unbatched(self, osv_ecosystem: str, name: str, versions: list[str]) -> dict[str, OsvVerdict] | None:
         wanted = set(versions)
@@ -436,7 +452,7 @@ class OsvClient:
             if not isinstance(vulns, list):
                 raise OsvError("OSV package query response shape was invalid")
 
-            if not _apply_package_vulns(osv_ecosystem, vulns, wanted, ids_by_version):
+            if not _apply_package_vulns(osv_ecosystem, name, vulns, wanted, ids_by_version):
                 return None
 
             token = data.get("next_page_token")
@@ -529,12 +545,12 @@ class OsvClient:
             for pending in batch:
                 pending.event.set()
 
-    def _verdicts_from_package_page(self, osv_ecosystem: str, data: dict, versions: list[str]) -> dict[str, OsvVerdict] | None:
+    def _verdicts_from_package_page(self, osv_ecosystem: str, name: str, data: dict, versions: list[str]) -> dict[str, OsvVerdict] | None:
         vulns = data.get("vulns") or []
         if not isinstance(vulns, list):
             raise OsvError("OSV package query response shape was invalid")
         ids_by_version: dict[str, set[str]] = {version: set() for version in versions}
-        if not _apply_package_vulns(osv_ecosystem, vulns, set(versions), ids_by_version):
+        if not _apply_package_vulns(osv_ecosystem, name, vulns, set(versions), ids_by_version):
             return None
         return _package_verdicts(versions, ids_by_version)
 
@@ -639,12 +655,19 @@ def _unique_versions(versions: list[str]) -> list[str]:
     return out
 
 
-def _exact_affected_versions(vuln: dict) -> set[str] | None:
+def _exact_affected_versions(osv_ecosystem: str, name: str, vuln: dict) -> set[str] | None:
     """Return exact affected versions from an OSV record, or None if unavailable.
 
     A None result means "cannot decide locally"; callers must fall back to
     per-version OSV queries. An empty set is a valid exact result: a malformed or
     unrelated MAL record with no string versions blocks nothing locally.
+
+    Only ``affected`` entries whose ``package`` matches the queried
+    (ecosystem, name) count: OSV records can span multiple packages, and a
+    sibling package's version list must not block this one. Exact raw-string
+    version matching is only trusted for npm, whose registry versions are
+    canonical; other ecosystems (PEP 440 allows 1.0 == 1.0.0) defer to the
+    per-version query path.
     """
     affected = vuln.get("affected") or []
     if not isinstance(affected, list):
@@ -652,10 +675,12 @@ def _exact_affected_versions(vuln: dict) -> set[str] | None:
     out: set[str] = set()
     saw_exact_list = False
     for item in affected:
-        if not isinstance(item, dict):
+        if not isinstance(item, dict) or not _affected_matches_package(item, osv_ecosystem, name):
             continue
         raw_versions = item.get("versions")
         if isinstance(raw_versions, list):
+            if osv_ecosystem != "npm":
+                return None
             saw_exact_list = True
             out.update(version for version in raw_versions if isinstance(version, str) and version)
             continue
@@ -664,6 +689,28 @@ def _exact_affected_versions(vuln: dict) -> set[str] | None:
         if item.get("ranges"):
             return None
     return out if saw_exact_list else None
+
+
+def _affected_matches_package(item: dict, osv_ecosystem: str, name: str) -> bool:
+    """Whether an OSV ``affected`` entry names the queried package.
+
+    A missing or malformed ``package`` field is treated as a mismatch, so the
+    record cannot be decided locally and the authoritative per-version path
+    decides instead.
+    """
+    package = item.get("package")
+    if not isinstance(package, dict) or package.get("ecosystem") != osv_ecosystem:
+        return False
+    raw_name = package.get("name")
+    if not isinstance(raw_name, str):
+        return False
+    for adapter in ADAPTERS.values():
+        if adapter.osv_ecosystem == osv_ecosystem:
+            try:
+                return adapter.normalize_name(raw_name) == name
+            except PolicyError:
+                return False
+    return False
 
 
 def _page_has_malicious_record(data: dict) -> bool:
@@ -678,14 +725,14 @@ def _page_has_malicious_record(data: dict) -> bool:
     )
 
 
-def _apply_package_vulns(osv_ecosystem: str, vulns: list, wanted: set[str], ids_by_version: dict[str, set[str]]) -> bool:
+def _apply_package_vulns(osv_ecosystem: str, name: str, vulns: list, wanted: set[str], ids_by_version: dict[str, set[str]]) -> bool:
     for vuln in vulns:
         if not isinstance(vuln, dict):
             continue
         vuln_id = vuln.get("id")
         if not (isinstance(vuln_id, str) and vuln_id.startswith(MAL_PREFIX)):
             continue
-        affected_versions = _locally_affected_versions(osv_ecosystem, vuln, wanted)
+        affected_versions = _locally_affected_versions(osv_ecosystem, name, vuln, wanted)
         if affected_versions is None:
             return False
         for version in wanted.intersection(affected_versions):
@@ -693,17 +740,23 @@ def _apply_package_vulns(osv_ecosystem: str, vulns: list, wanted: set[str], ids_
     return True
 
 
-def _locally_affected_versions(osv_ecosystem: str, vuln: dict, wanted: set[str]) -> set[str] | None:
+def _locally_affected_versions(osv_ecosystem: str, name: str, vuln: dict, wanted: set[str]) -> set[str] | None:
+    # OSV records can list several affected packages; only entries naming the
+    # queried package may contribute versions/ranges (see _exact_affected_versions).
     affected = vuln.get("affected") or []
     if not isinstance(affected, list):
         return None
     out: set[str] = set()
     saw_decidable_affected = False
     for item in affected:
-        if not isinstance(item, dict):
+        if not isinstance(item, dict) or not _affected_matches_package(item, osv_ecosystem, name):
             continue
         raw_versions = item.get("versions")
         if isinstance(raw_versions, list):
+            # Raw-string equality against candidate versions is only sound for
+            # npm's canonical versions; PEP 440 et al. defer to per-version queries.
+            if osv_ecosystem != "npm":
+                return None
             saw_decidable_affected = True
             out.update(version for version in raw_versions if isinstance(version, str) and version)
         raw_ranges = item.get("ranges")
