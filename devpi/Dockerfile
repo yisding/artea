@@ -1,7 +1,7 @@
 # Artea devpi image: PyPI pull-through cache + Artea policy filtering.
 # Internal-only service; the gateway enforces auth (see docs/ARCHITECTURE.md).
 # Base = python:3.14-slim, digest-pinned (ADR-0004; bump procedure in policy-sync/Dockerfile).
-FROM python:3.14-slim@sha256:d7a925f9eb9639a93e455b9f12c167569358818c0f62b51b88edbc8fcf34c421
+FROM python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
 
 # Exact pins; the single source of truth for the devpi-server version.
 ARG DEVPI_SERVER_VERSION=6.20.2
