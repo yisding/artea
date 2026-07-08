@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import FilterArtea, { type FilterArteaConfig } from '../src/index';
+import { clearOsvDecisionCacheForTests } from '../src/osv';
 import { makeLogger, packument } from './helpers';
 
 const OSV_URL = 'http://policy-sync.example/osv/querybatch';
@@ -29,16 +30,15 @@ function writePolicy(file: string, content: string): void {
 /** OSV mock that blocks the given versions; counts calls so we can prove cache hits. */
 function osvBlocking(blocked: string[]): ReturnType<typeof vi.fn> {
   return vi.fn(async (_url: string, init: { body?: unknown }) => {
-    const body = JSON.parse(String(init.body));
     return {
       ok: true,
       status: 200,
       json: async () => ({
         status: 'ok',
-        results: body.versions.map((version: string) => ({
+        results: blocked.map((version) => ({
           version,
-          blocked: blocked.includes(version),
-          ids: blocked.includes(version) ? ['MAL-2026-1'] : [],
+          blocked: true,
+          ids: ['MAL-2026-1'],
         })),
       }),
     };
@@ -59,6 +59,7 @@ describe('decision cache', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    clearOsvDecisionCacheForTests();
     for (const dir of tmpDirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -108,7 +109,7 @@ describe('decision cache', () => {
 
   it('recomputes when only the npm `modified` marker advances', async () => {
     const file = tmpPolicyPath('blocked: {}\n');
-    const plugin = makePlugin(file, { osv_url: OSV_URL });
+    const plugin = makePlugin(file, { osv_url: OSV_URL, osv_cache_ttl_ms: 0 });
     const fetchMock = osvBlocking([]);
     vi.stubGlobal('fetch', fetchMock);
 
@@ -138,7 +139,7 @@ describe('decision cache', () => {
 
   it('expires the cache after the TTL', async () => {
     const file = tmpPolicyPath('blocked: {}\n');
-    const plugin = makePlugin(file, { osv_url: OSV_URL, decision_cache_ttl_ms: 1000 });
+    const plugin = makePlugin(file, { osv_url: OSV_URL, decision_cache_ttl_ms: 1000, osv_cache_ttl_ms: 0 });
     const fetchMock = osvBlocking(['1.3.0']);
     vi.stubGlobal('fetch', fetchMock);
     vi.useFakeTimers();
@@ -193,7 +194,7 @@ describe('decision cache', () => {
 
   it('disables caching when decision_cache_ttl_ms is 0', async () => {
     const file = tmpPolicyPath('blocked: {}\n');
-    const plugin = makePlugin(file, { osv_url: OSV_URL, decision_cache_ttl_ms: 0 });
+    const plugin = makePlugin(file, { osv_url: OSV_URL, decision_cache_ttl_ms: 0, osv_cache_ttl_ms: 0 });
     const fetchMock = osvBlocking(['1.3.0']);
     vi.stubGlobal('fetch', fetchMock);
 

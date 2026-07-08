@@ -83,6 +83,14 @@ spec:
               value: {{ .Values.policySync.pypiJsonUrl | quote }}
             - name: OSV_API_URL
               value: {{ .Values.policySync.osvApiUrl | quote }}
+            - name: OSV_BATCH_SIZE
+              value: {{ .Values.policySync.osvBatchSize | quote }}
+            - name: OSV_MAX_CONCURRENCY
+              value: {{ .Values.policySync.osvMaxConcurrency | quote }}
+            {{- if .Values.policySync.persistence.enabled }}
+            - name: OSV_CACHE_FILE_PATH
+              value: /var/lib/artea/policy-state/osv-verdict-cache.json
+            {{- end }}
             - name: POLICY_SYNC_POLL_SECONDS
               value: {{ .Values.policySync.pollSeconds | quote }}
             {{- include "artea.secretEnv" (dict "name" "POLICY_SYNC_TOKEN" "secret" "policy-sync" "key" "POLICY_SYNC_TOKEN") | nindent 12 }}

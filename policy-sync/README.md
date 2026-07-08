@@ -59,7 +59,7 @@ uid.
 | `GET /healthz` | Always `200` while the process is up. JSON body: `status`, `last_sync_ok` (`true`/`false`/`null` before first sync finishes), `last_sync_at` (epoch seconds). |
 | `GET /policy/npm-rules.yaml` | The npm policy from the last successful sync, served from memory with a **strong ETag** (quoted SHA-256 of the content) and `If-None-Match`/`304` support. Falls back to reading `$POLICY_FILE_PATH` when memory is empty (file mode after a restart: the file still holds the last synced policy). `404` with a clear JSON body if no policy has ever been synced. **No auth**: the service is cluster-internal and the body is block rules, not secrets — never expose this port or other internal service ports publicly; only the gateway is public. |
 | `GET /policy/upstream-policy.yaml` | The shared upstream policy from the last successful sync, with the same ETag behavior as the npm endpoint. Used by the Verdaccio filter in K8s. |
-| `POST /osv/querybatch` | Internal request-time OSV malicious-package verdict endpoint for Verdaccio and devpi. Body: `{"ecosystem":"npm|pypi","name":"...","versions":["..."]}`. Honors `[osv] malicious_packages`, queries OSV.dev `/v1/querybatch`, blocks only `MAL-*` IDs, and lets curated `allow` rules override false positives. |
+| `POST /osv/querybatch` | Internal request-time OSV malicious-package verdict endpoint for Verdaccio and devpi. Versioned body: `{"ecosystem":"npm\|pypi","name":"...","versions":["..."]}`. Compact package-summary body: `{"ecosystem":"npm\|pypi","name":"...","package_summary":true}` returns only blocked exact MAL versions, or `status:"needs_versions"` when the caller must retry with concrete versions. `blocked_only:true` trims versioned responses to blocking hits. Honors `[osv] malicious_packages`, blocks only `MAL-*` IDs, and lets curated `allow` rules override false positives. |
 
 ## Environment variables
 
@@ -82,7 +82,9 @@ uid.
 | `OSV_TIMEOUT_SECONDS` | no | `5` | Per-request OSV API timeout |
 | `OSV_POSITIVE_TTL_SECONDS` | no | `3600` | Cache TTL for malicious verdicts |
 | `OSV_NEGATIVE_TTL_SECONDS` | no | `900` | Cache TTL for clean verdicts |
-| `OSV_BATCH_SIZE` | no | `100` | Number of package versions per OSV `querybatch` call |
+| `OSV_BATCH_SIZE` | no | `100` | Number of package versions per fallback OSV `querybatch` call |
+| `OSV_MAX_CONCURRENCY` | no | `8` | Maximum concurrent outbound OSV API calls per policy-sync process |
+| `OSV_CACHE_FILE_PATH` | no | empty | Optional JSON snapshot path for the bounded OSV verdict cache. Loaded on startup and persisted after successful OSV lookups; entries still obey the positive/negative TTLs above. The Helm chart stores this on the policy-sync state PVC when persistence is enabled |
 
 ## Failure behavior
 
@@ -100,7 +102,8 @@ uid.
   `npm-rules.yaml`, `upstream-policy.yaml`, and the PyPI constraints file are
   still written — one ecosystem failing never blocks the other.
 - **OSV API fails**: `/osv/querybatch` fails open for uncached versions while any
-  fresh cached malicious verdicts remain blocking. This does not weaken the
+  fresh cached malicious verdicts remain blocking. If `OSV_CACHE_FILE_PATH` is
+  set, fresh verdicts can survive a policy-sync restart. This does not weaken the
   compiled curated policy artifacts, which keep their normal fail-closed behavior.
 - **Half-written files**: impossible by construction; the rename is atomic and
   the tmp file lives in the same directory/filesystem.

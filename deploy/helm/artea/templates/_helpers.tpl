@@ -118,6 +118,8 @@ in sync). Rendered in the umbrella context (config.yaml is tpl'd there). */}}
 policy_url: {{ printf "%s/policy/npm-rules.yaml" (include "artea.policySyncUrl" .) }}
 upstream_policy_url: {{ printf "%s/policy/upstream-policy.yaml" (include "artea.policySyncUrl" .) }}
 osv_url: {{ printf "%s/osv/querybatch" (include "artea.policySyncUrl" .) }}
+osv_cache_ttl_ms: {{ .Values.verdaccio.arteaPolicy.osvCacheTtlMs }}
+redirect_public_tarballs: {{ .Values.verdaccio.arteaPolicy.redirectPublicTarballs }}
 poll_interval_ms: {{ .Values.verdaccio.arteaPolicy.pollIntervalMs }}
 fail_grace_ms: {{ .Values.verdaccio.arteaPolicy.failGraceMs }}
 {{- end -}}

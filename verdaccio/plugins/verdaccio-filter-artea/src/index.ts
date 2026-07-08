@@ -11,6 +11,14 @@ export interface FilterArteaConfig extends PolicySourceConfig {
   osv_url?: string;
   /** OSV decision endpoint timeout in ms (default 5000). */
   osv_timeout_ms?: number;
+  /** In-process per-version OSV verdict cache TTL in ms (default 120000; 0 disables). */
+  osv_cache_ttl_ms?: number;
+  /**
+   * Redirect policy-cleared public tarball requests to npmjs after the guard runs.
+   * This keeps Artea's filtering surface on metadata + tarball URLs while avoiding
+   * cold proxying of public artifact bytes. Omit/false to keep Verdaccio proxying.
+   */
+  redirect_public_tarballs?: boolean;
   /**
    * Per-package filter-decision cache TTL in ms (default 120000; 0 disables).
    * Bounds how stale a cached min_age/OSV decision may be — see the decision cache
@@ -24,6 +32,9 @@ export interface FilterArteaConfig extends PolicySourceConfig {
 export const DEFAULT_DECISION_CACHE_TTL_MS = 120_000;
 /** Hard cap so the cache can never grow without bound; oldest stored entry is evicted. */
 const DECISION_CACHE_MAX_ENTRIES = 4096;
+const SLOW_METADATA_FILTER_MS = 500;
+const MAX_PREWARM_DEPENDENCIES = 96;
+const MAX_PREWARM_VERSION_SCAN = 80;
 
 interface DecisionCacheEntry {
   fp: string;
@@ -35,14 +46,32 @@ interface DecisionCacheEntry {
 interface HttpRequest {
   method: string;
   path: string;
+  /** populated by verdaccio's auth middleware (apiJWTmiddleware) */
+  remote_user?: unknown;
 }
 interface HttpResponse {
   status(code: number): HttpResponse;
   json(body: unknown): void;
+  redirect?(code: number, url: string): void;
 }
 type HttpNext = () => void;
 interface ExpressApp {
   use(handler: (req: HttpRequest, res: HttpResponse, next: HttpNext) => void | Promise<void>): void;
+}
+
+/**
+ * Structural view of the runtime Auth object verdaccio hands to
+ * register_middlewares. The typed pluginUtils.IBasicAuth surface omits
+ * apiJWTmiddleware, but verdaccio's Auth instance provides it; both members are
+ * probed before use and the redirect is skipped when either is missing.
+ */
+interface TarballAuth {
+  apiJWTmiddleware?(): (req: HttpRequest, res: HttpResponse, next: (err?: unknown) => void) => void;
+  allow_access?(
+    pkg: { packageName: string; packageVersion?: string },
+    user: unknown,
+    callback: (err: unknown, allowed?: boolean) => void,
+  ): void;
 }
 
 export interface TarballRef {
@@ -112,6 +141,38 @@ function isTooYoung(publishedAtMs: number | null, minAgeMs: number, nowMs = Date
   return nowMs - publishedAtMs < minAgeMs;
 }
 
+function dependencyNames(metadata: Manifest): string[] {
+  const versions = metadata.versions ?? {};
+  const versionNames = Object.keys(versions);
+  const sortedVersions = semver.rsort(
+    versionNames.filter((version) => semver.valid(version, SEMVER_OPTS) !== null),
+    SEMVER_OPTS,
+  );
+  const scanVersions = (sortedVersions.length > 0 ? sortedVersions : versionNames).slice(0, MAX_PREWARM_VERSION_SCAN);
+  const names = new Set<string>();
+  for (const version of scanVersions) {
+    const entry = versions[version] as unknown as Record<string, unknown> | undefined;
+    if (entry === undefined) {
+      continue;
+    }
+    for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
+      const deps = entry[field];
+      if (deps === null || typeof deps !== 'object' || Array.isArray(deps)) {
+        continue;
+      }
+      for (const name of Object.keys(deps)) {
+        if (name.length > 0 && name !== metadata.name) {
+          names.add(name);
+          if (names.size >= MAX_PREWARM_DEPENDENCIES) {
+            return [...names];
+          }
+        }
+      }
+    }
+  }
+  return [...names];
+}
+
 /** Drops dist-tags that point at removed versions and re-points `latest`. */
 function repairDistTags(pkg: Manifest, removed: Set<string>): void {
   const tags = pkg['dist-tags'];
@@ -144,6 +205,8 @@ export default class FilterArtea
   private readonly logger: Logger;
   private readonly policyLoader: PolicyLoader;
   private readonly npmRegistryUrl: string;
+  private readonly redirectPublicTarballs: boolean;
+  private auth: TarballAuth | undefined;
   private readonly osvClient: OsvDecisionClient | null;
   private readonly publishTimes = new Map<string, Map<string, number>>();
   private readonly decisionCacheTtlMs: number;
@@ -153,10 +216,16 @@ export default class FilterArtea
     this.logger = options.logger;
     this.policyLoader = createPolicyLoader(config, this.logger);
     this.npmRegistryUrl = (config.npm_registry_url ?? 'https://registry.npmjs.org').replace(/\/+$/, '');
-    this.osvClient = config.osv_url
-      ? new OsvDecisionClient(config.osv_url, this.logger, config.osv_timeout_ms)
-      : null;
+    this.redirectPublicTarballs = config.redirect_public_tarballs === true;
     this.decisionCacheTtlMs = resolveDecisionCacheTtl(config.decision_cache_ttl_ms);
+    this.osvClient = config.osv_url
+      ? new OsvDecisionClient(
+        config.osv_url,
+        this.logger,
+        config.osv_timeout_ms,
+        config.osv_cache_ttl_ms ?? this.decisionCacheTtlMs,
+      )
+      : null;
   }
 
   /** Not part of the verdaccio plugin API; lets tests/embedders stop URL polling. */
@@ -165,6 +234,7 @@ export default class FilterArtea
   }
 
   public async filter_metadata(metadata: Manifest): Promise<Manifest> {
+    const started = Date.now();
     const state = this.policyLoader.current();
     const name = metadata.name;
     if (!state.ok) {
@@ -199,6 +269,7 @@ export default class FilterArtea
     // only runs when filtering actually applies (ranges/min_age/OSV) and the cache
     // is cold/stale, so the guard always has fresh times for the live version set.
     this.rememberPublishTimes(metadata);
+    this.scheduleDependencyPrewarm(metadata);
     const removed = new Set(Object.keys(metadata.versions).filter((v) =>
       ranges.some((range) => semver.satisfies(v, range, SEMVER_OPTS))
         || isTooYoung(publishTimeMs(metadata, v), policy.minAgeMs),
@@ -218,6 +289,19 @@ export default class FilterArtea
     // would block) for the whole TTL, outliving the outage.
     if (this.decisionCacheTtlMs > 0 && osvComplete) {
       this.storeDecision(name, fp, result);
+    }
+    const elapsedMs = Date.now() - started;
+    if (elapsedMs >= SLOW_METADATA_FILTER_MS) {
+      this.logger.info(
+        {
+          name,
+          versions: Object.keys(metadata.versions).length,
+          removed: removed.size,
+          osvComplete,
+          elapsedMs,
+        },
+        'filter-artea: filtered metadata for @{name} versions=@{versions} removed=@{removed} osv_complete=@{osvComplete} elapsed_ms=@{elapsedMs}',
+      );
     }
     return result;
   }
@@ -268,8 +352,19 @@ export default class FilterArtea
     }
   }
 
+  private scheduleDependencyPrewarm(metadata: Manifest): void {
+    if (this.osvClient === null || !metadata.versions) {
+      return;
+    }
+    const names = dependencyNames(metadata);
+    if (names.length > 0) {
+      this.osvClient.prewarmPackages('npm', names);
+    }
+  }
+
   /** Middleware role: runs before verdaccio's npm endpoints and guards tarball GETs. */
-  public register_middlewares(app: ExpressApp, _auth: pluginUtils.IBasicAuth, _storage: unknown): void {
+  public register_middlewares(app: ExpressApp, auth: pluginUtils.IBasicAuth, _storage: unknown): void {
+    this.auth = auth as TarballAuth | undefined;
     app.use((req, res, next) => {
       void this.guardTarball(req, res, next).catch((err) => {
         this.logger.warn({ msg: (err as Error).message }, 'filter-artea: tarball age check failed: @{msg}');
@@ -325,7 +420,57 @@ export default class FilterArtea
         return;
       }
     }
+    if (this.redirectPublicTarballs && res.redirect !== undefined) {
+      const redirectUrl = this.publicTarballUrl(req.path);
+      if (redirectUrl !== null && (await this.tarballRedirectAllowed(req, res, ref))) {
+        this.logger.info({ name: ref.name, url: redirectUrl }, 'filter-artea: redirecting policy-cleared tarball of @{name} to upstream');
+        res.redirect(302, redirectUrl);
+        return;
+      }
+    }
     next();
+  }
+
+  /**
+   * This middleware runs before verdaccio's npm routes, so a redirect issued
+   * here would bypass the `packages` access ACLs (e.g. `access: $authenticated`)
+   * that gate the proxied tarball response. Resolve the request's remote user
+   * and re-run the access check the tarball route would apply. When the auth
+   * surface is unavailable or denies, the redirect is skipped and the request
+   * falls through to verdaccio, which serves — and gates — the tarball itself,
+   * so failure here can never widen access.
+   */
+  private async tarballRedirectAllowed(req: HttpRequest, res: HttpResponse, ref: TarballRef): Promise<boolean> {
+    const auth = this.auth;
+    if (auth == null || typeof auth.apiJWTmiddleware !== 'function' || typeof auth.allow_access !== 'function') {
+      return false;
+    }
+    try {
+      await new Promise<void>((resolve) => {
+        auth.apiJWTmiddleware!()(req, res, () => resolve());
+      });
+      return await new Promise<boolean>((resolve) => {
+        auth.allow_access!(
+          { packageName: ref.name, packageVersion: ref.version ?? undefined },
+          req.remote_user,
+          (err, allowed) => resolve(err == null && allowed === true),
+        );
+      });
+    } catch (e) {
+      this.logger.warn(
+        { name: ref.name, msg: (e as Error).message },
+        'filter-artea: tarball redirect access check for @{name} failed, proxying instead: @{msg}',
+      );
+      return false;
+    }
+  }
+
+  private publicTarballUrl(rawPath: string): string | null {
+    try {
+      return `${this.npmRegistryUrl}${encodeURI(decodeURIComponent(rawPath))}`;
+    } catch {
+      return null;
+    }
   }
 
   private rememberPublishTimes(metadata: Manifest): void {

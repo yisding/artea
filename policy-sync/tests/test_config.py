@@ -24,6 +24,8 @@ def test_defaults_match_architecture_contract():
     assert cfg.osv_positive_ttl_seconds == 3600
     assert cfg.osv_negative_ttl_seconds == 900
     assert cfg.osv_batch_size == 100
+    assert cfg.osv_max_concurrency == 8
+    assert cfg.osv_cache_file_path == ""
 
 
 def test_namespace_sets_default_policy_repo():
@@ -102,12 +104,16 @@ def test_osv_config_can_be_overridden():
         OSV_POSITIVE_TTL_SECONDS="600",
         OSV_NEGATIVE_TTL_SECONDS="30",
         OSV_BATCH_SIZE="25",
+        OSV_MAX_CONCURRENCY="3",
+        OSV_CACHE_FILE_PATH="/state/osv-cache.json",
     ))
     assert cfg.osv_api_url == "https://osv.example.test"
     assert cfg.osv_timeout_seconds == 2.5
     assert cfg.osv_positive_ttl_seconds == 600
     assert cfg.osv_negative_ttl_seconds == 30
     assert cfg.osv_batch_size == 25
+    assert cfg.osv_max_concurrency == 3
+    assert cfg.osv_cache_file_path == "/state/osv-cache.json"
 
 
 def test_invalid_osv_numeric_config_raises():
