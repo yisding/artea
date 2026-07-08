@@ -18,7 +18,7 @@
   },
   "devDependencies": {
     "@types/jsonwebtoken": "^9.0.10",
-    "@types/node": "^26.0.1",
+    "@types/node": "^26.1.0",
     "@verdaccio/core": "^8.1.2",
     "@verdaccio/types": "^13.0.2",
     "typescript": "^6.0.3",
