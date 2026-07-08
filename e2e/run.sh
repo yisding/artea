@@ -36,7 +36,9 @@ done
 resolve_credentials_file
 [ -f "${CREDENTIALS_FILE}" ] || die "${CREDENTIALS_FILE} missing — run 'make e2e' first"
 load_credentials
-GATEWAY_HOSTPORT="${GATEWAY_URL#http://}"
+GATEWAY_ORIGIN="${GATEWAY_URL%/}"
+GATEWAY_SCHEME="${GATEWAY_ORIGIN%%://*}"
+GATEWAY_HOSTPORT="${GATEWAY_ORIGIN#*://}"
 POLICY_REPO="${POLICY_REPO:-${ARTEA_NAMESPACE}/registry-policy}"
 ARTEA_ADMIN_USER="${ARTEA_ADMIN_USER:-${ARTEA_NAMESPACE}-admin}"
 # webhook target as seen by Gitea (S1 asserts the wiring bootstrap created);
@@ -175,7 +177,7 @@ if [ ! -x "${VENV}/bin/python" ] \
 fi
 
 index_url() { # <token> -> authenticated gateway simple index URL
-  echo "http://dev1:$1@${GATEWAY_HOSTPORT}/pypi/simple/"
+  echo "${GATEWAY_SCHEME}://${DEV1_USER}:$1@${GATEWAY_HOSTPORT}/pypi/simple/"
 }
 INDEX_URL=$(index_url "${DEV1_TOKEN}")
 
@@ -272,8 +274,8 @@ s1_bootstrap() {
     'any(.[]; .config.url == $hook and .active)' >/dev/null \
     || { echo "policy webhook not wired (expected ${POLICY_SYNC_URL}/hooks/policy)"; return 1; }
   login=$(curl -sf -H "Authorization: token ${DEV1_TOKEN}" "${GATEWAY_URL}/api/v1/user" | jq -r .login)
-  assert_eq dev1 "$login" "dev1 PAT rejected" || return 1
-  echo "org, policy repo, webhook, admin+dev1 PATs all present"
+  assert_eq "${DEV1_USER}" "$login" "${DEV1_USER} PAT rejected" || return 1
+  echo "org, policy repo, webhook, admin+${DEV1_USER} PATs all present"
 }
 
 # ---- S2: npm publish private scoped package -> 201 in Gitea ------------------------------
@@ -436,10 +438,10 @@ TOML
 )" "test(e2e): S10 constrain urllib3<2 via policy.toml" || return 1
   wait_for 45 2 "urllib3 2.x filtered from simple index" urllib3_v2_hidden || return 1
   for path in "/root/pypi/+simple/urllib3/" "/root/constrained/+simple/urllib3/"; do
-    assert_code 404 -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}${path}" || return 1
+    assert_code 404 -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}${path}" || return 1
   done
   echo "direct devpi simple routes are not reachable through the gateway"
-  assert_code 403 -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}${blocked_file_path}" || return 1
+  assert_code 403 -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}${blocked_file_path}" || return 1
   echo "direct devpi file URLs obey current PyPI constraints"
   out=$(pip_e2e index versions urllib3 --index-url "${INDEX_URL}" 2>&1) \
     || { echo "pip index versions failed: ${out}"; return 1; }
@@ -476,7 +478,7 @@ s11_token_scopes() {
     npm install "${NPM_NAME}@${NPM_VERSION}") || { echo "read-only npm install failed"; return 1; }
   pip_e2e install -q --index-url "$(index_url "${ro_token}")" --force-reinstall --no-deps \
     "${PY_NAME}==${PY_VERSION}" || { echo "read-only pip install failed"; return 1; }
-  assert_code 200 -u "dev1:${ro_token}" "${GATEWAY_URL}/npm/left-pad" || return 1
+  assert_code 200 -u "${DEV1_USER}:${ro_token}" "${GATEWAY_URL}/npm/left-pad" || return 1
   echo "read-only token installs fine (npm private+public, pip private)"
 
   # npm publish with the read-only token must be rejected with 401 (not 403)
@@ -507,9 +509,9 @@ s11_token_scopes() {
     "${GATEWAY_URL}/pypi/simple/six/" \
     "${GATEWAY_URL}/api/packages/${ARTEA_NAMESPACE}/pypi/simple/${PY_NAME}/"
   do
-    assert_code 403 -u "dev1:${no_package_token}" "$url" || return 1
+    assert_code 403 -u "${DEV1_USER}:${no_package_token}" "$url" || return 1
   done
-  assert_code 403 -u "dev1:${no_package_token}" \
+  assert_code 403 -u "${DEV1_USER}:${no_package_token}" \
     "${GATEWAY_URL}/api/v1/packages/${ARTEA_NAMESPACE}/?type=pypi&limit=1" \
     || { echo "Gitea package-management probe with no package scope rejected"; return 1; }
   echo "token with read:user/read:organization but no package scope is rejected before package proxies"
@@ -525,8 +527,8 @@ s12_revocation() {
     || { echo "minting revocation token failed"; return 1; }
 
   # prime both auth caches (gateway auth_request cache + verdaccio auth cache)
-  npm_code=$(http_code -u "dev1:${token}" "${GATEWAY_URL}/npm/left-pad")
-  pypi_code=$(http_code -u "dev1:${token}" "${GATEWAY_URL}/pypi/simple/six/")
+  npm_code=$(http_code -u "${DEV1_USER}:${token}" "${GATEWAY_URL}/npm/left-pad")
+  pypi_code=$(http_code -u "${DEV1_USER}:${token}" "${GATEWAY_URL}/pypi/simple/six/")
   [ "$npm_code" = 200 ] && [ "$pypi_code" = 200 ] \
     || { echo "pre-revocation installs broken (npm ${npm_code}, pypi ${pypi_code})"; return 1; }
   echo "pre-revocation: npm 200, pypi 200"
@@ -535,8 +537,8 @@ s12_revocation() {
   revoked_at=$(date +%s)
 
   while true; do
-    npm_code=$(http_code -u "dev1:${token}" "${GATEWAY_URL}/npm/left-pad")
-    pypi_code=$(http_code -u "dev1:${token}" "${GATEWAY_URL}/pypi/simple/six/")
+    npm_code=$(http_code -u "${DEV1_USER}:${token}" "${GATEWAY_URL}/npm/left-pad")
+    pypi_code=$(http_code -u "${DEV1_USER}:${token}" "${GATEWAY_URL}/pypi/simple/six/")
     elapsed=$(( $(date +%s) - revoked_at ))
     if [ "$npm_code" = 401 ] && [ "$pypi_code" = 401 ]; then
       echo "both paths reject the revoked PAT after ${elapsed}s (npm ${npm_code}, pypi ${pypi_code})"
@@ -555,11 +557,11 @@ s12_revocation() {
 TARBALL_BLOCKED="${GATEWAY_URL}/npm/left-pad/-/left-pad-1.3.0.tgz"
 TARBALL_ALLOWED="${GATEWAY_URL}/npm/left-pad/-/left-pad-1.2.0.tgz"
 
-tarball_130_blocked() { [ "$(http_code -u "dev1:${DEV1_TOKEN}" "${TARBALL_BLOCKED}")" = 403 ]; }
-tarball_130_allowed() { [ "$(http_code -u "dev1:${DEV1_TOKEN}" "${TARBALL_BLOCKED}")" = 302 ]; }
+tarball_130_blocked() { [ "$(http_code -u "${DEV1_USER}:${DEV1_TOKEN}" "${TARBALL_BLOCKED}")" = 403 ]; }
+tarball_130_allowed() { [ "$(http_code -u "${DEV1_USER}:${DEV1_TOKEN}" "${TARBALL_BLOCKED}")" = 302 ]; }
 assert_public_tarball_redirect() { # <url> <expected-upstream-url>
   local actual
-  actual=$(curl -s -o /dev/null -w '%{http_code} %header{location}' -u "dev1:${DEV1_TOKEN}" "$1")
+  actual=$(curl -s -o /dev/null -w '%{http_code} %header{location}' -u "${DEV1_USER}:${DEV1_TOKEN}" "$1")
   assert_eq "302 $2" "$actual" "policy-cleared public tarball should redirect to npmjs" || return 1
 }
 
@@ -574,7 +576,7 @@ s13_tarball_enforcement() {
   POLICY_DIRTY=1
   put_policy_file policy.toml "${POLICY_BLOCK_LEFTPAD_130}" "test(e2e): S13 block left-pad 1.3.0" || return 1
   wait_for 45 2 "blocked tarball rejected with 403" tarball_130_blocked || return 1
-  body=$(curl -s -u "dev1:${DEV1_TOKEN}" "${TARBALL_BLOCKED}")
+  body=$(curl -s -u "${DEV1_USER}:${DEV1_TOKEN}" "${TARBALL_BLOCKED}")
   assert_contains 'blocked by registry policy' "$body" \
     "403 body is not the policy middleware's JSON error: ${body}" || return 1
   assert_public_tarball_redirect "${TARBALL_ALLOWED}" "https://registry.npmjs.org/left-pad/-/left-pad-1.2.0.tgz" || return 1
@@ -589,21 +591,21 @@ s14_branch_protection() {
   local token auth_header clone="${WORK}/s14-policy-clone" out sha b64
   token=$(mint_dev1_token "${S14_TOKEN_NAME}" '["write:repository","read:user"]') \
     || { echo "minting dev1 repo-scoped token failed"; return 1; }
-  auth_header=$(printf 'dev1:%s' "$token" | json_b64)
+  auth_header=$(printf '%s:%s' "${DEV1_USER}" "$token" | json_b64)
 
   # a real git push to main as dev1 must hit the protected-branch pre-receive hook
   git -c "http.extraHeader=Authorization: Basic ${auth_header}" \
-    clone -q "http://${GATEWAY_HOSTPORT}/${POLICY_REPO}.git" "$clone" \
-    || { echo "git clone as dev1 failed (developers team should have code read)"; return 1; }
+    clone -q "${GATEWAY_SCHEME}://${GATEWAY_HOSTPORT}/${POLICY_REPO}.git" "$clone" \
+    || { echo "git clone as ${DEV1_USER} failed (developers team should have code read)"; return 1; }
   (cd "$clone" && echo "# e2e S14 direct-push probe" >> policy.toml \
-    && git -c user.email=dev1@localhost -c user.name=dev1 commit -aqm "test(e2e): S14 probe") || return 1
+    && git -c user.email="${DEV1_USER}@localhost" -c user.name="${DEV1_USER}" commit -aqm "test(e2e): S14 probe") || return 1
   if out=$(git -C "$clone" -c "http.extraHeader=Authorization: Basic ${auth_header}" \
     push origin HEAD:main 2>&1); then
-    echo "direct push to main as dev1 unexpectedly succeeded"; echo "$out"; return 1
+    echo "direct push to main as ${DEV1_USER} unexpectedly succeeded"; echo "$out"; return 1
   fi
   grep -qi 'protected branch' <<<"$out" \
     || { echo "push failed, but not with the protected-branch rejection:"; echo "$out"; return 1; }
-  echo "dev1 git push to main rejected: protected branch"
+  echo "${DEV1_USER} git push to main rejected: protected branch"
 
   # the contents API goes through the same check: dev1 gets 403
   admin_api GET "/repos/${POLICY_REPO}/contents/policy.toml"
@@ -612,10 +614,10 @@ s14_branch_protection() {
   assert_code 403 -X PUT -H "Authorization: token ${token}" -H 'Content-Type: application/json' \
     -d "{\"content\":\"${b64}\",\"sha\":\"${sha}\",\"message\":\"test(e2e): S14 contents probe\"}" \
     "${GATEWAY_URL}/api/v1/repos/${POLICY_REPO}/contents/policy.toml" \
-    || { echo "dev1 contents-API edit was not rejected with 403"; return 1; }
+    || { echo "${DEV1_USER} contents-API edit was not rejected with 403"; return 1; }
   [ "$(get_policy_file policy.toml)" = "${ORIG_POLICY}" ] \
     || { echo "policy.toml on main changed despite the rejections"; return 1; }
-  echo "dev1 contents-API edit rejected with 403; main unchanged"
+  echo "${DEV1_USER} contents-API edit rejected with 403; main unchanged"
 
   # the configured admin stays on the push allowlist: contents-API edits still land
   POLICY_DIRTY=1
@@ -631,18 +633,18 @@ s14_branch_protection() {
 
 # ---- S15: fail-closed on lost policy state (npm file + devpi volume) ---------------------------
 npm_outage_rejected() { # tarballs 503 AND packument stripped to zero versions
-  [ "$(http_code -u "dev1:${DEV1_TOKEN}" "${TARBALL_BLOCKED}")" = 503 ] || return 1
-  curl -s -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/left-pad" \
+  [ "$(http_code -u "${DEV1_USER}:${DEV1_TOKEN}" "${TARBALL_BLOCKED}")" = 503 ] || return 1
+  curl -s -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/left-pad" \
     | jq -e '(.versions // {}) | length == 0' >/dev/null
 }
 npm_recovered() {
-  [ "$(http_code -u "dev1:${DEV1_TOKEN}" "${TARBALL_BLOCKED}")" = 302 ] || return 1
-  curl -s -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/left-pad" \
+  [ "$(http_code -u "${DEV1_USER}:${DEV1_TOKEN}" "${TARBALL_BLOCKED}")" = 302 ] || return 1
+  curl -s -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/left-pad" \
     | jq -e '.versions | length > 0' >/dev/null
 }
 six_blocked() { # fresh '*'-seeded mirror exposes no six files through the gateway
   local body code
-  body=$(curl -s -w '\n%{http_code}' -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/six/") || return 1
+  body=$(curl -s -w '\n%{http_code}' -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/six/") || return 1
   code=${body##*$'\n'}
   body=${body%$'\n'*}
   [ "$code" = 404 ] && return 0
@@ -737,7 +739,7 @@ s16_normalization() {
   # curl probes: non-canonical spellings, with and without the trailing slash,
   # must get Gitea's page (its file URL shape), never the devpi mirror's
   for s in "${PY_NAME_CASE}/" "${PY_NAME_UNDERSCORE}"; do
-    body=$(curl -s -w '\n%{http_code}' -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/${s}")
+    body=$(curl -s -w '\n%{http_code}' -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/pypi/simple/${s}")
     code=${body##*$'\n'}
     body=${body%$'\n'*}
     [ "$code" = 200 ] || { echo "GET /pypi/simple/${s} -> HTTP ${code}, expected 200"; return 1; }
@@ -772,7 +774,7 @@ s17_legacy_and_encoding() {
 
   # b. packuments under /npm/: encoded and literal private-scope spellings both reach Gitea
   for spelling in "${NPM_NAME_ENC}" "${NPM_NAME}"; do
-    body=$(curl -s -w '\n%{http_code}' -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/${spelling}")
+    body=$(curl -s -w '\n%{http_code}' -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/${spelling}")
     code=${body##*$'\n'}
     body=${body%$'\n'*}
     [ "$code" = 200 ] || { echo "GET /npm/${spelling} -> HTTP ${code}, expected 200"; return 1; }
@@ -790,7 +792,7 @@ s17_legacy_and_encoding() {
   # d. boundary: <scope>-evil must NOT be captured by the configured scope route — it falls
   # through to Verdaccio, which misses on npmjs (404). 400 would mean the
   # gateway's encoded-path rejection fired; 401 would mean Gitea answered.
-  assert_code 404 -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/@${ARTEA_NAMESPACE}-evil%2fnope" \
+  assert_code 404 -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}/npm/@${ARTEA_NAMESPACE}-evil%2fnope" \
     || { echo "expected 404 (Verdaccio miss), not the Gitea route"; return 1; }
   echo "/npm/@${ARTEA_NAMESPACE}-evil%2fnope -> 404 from the Verdaccio path, not the Gitea route"
 
@@ -807,7 +809,7 @@ s17_legacy_and_encoding() {
 # (devpi pull-through) and private (Gitea) branches, and that a real
 # time-filtering client (pip --uploaded-prior-to) can install through it.
 pypi_json() { # <token> <name> -> v1+json Simple API body (enriched) or non-zero
-  curl -sf -H "Accept: ${PYPI_JSON_ACCEPT}" -u "dev1:$1" \
+  curl -sf -H "Accept: ${PYPI_JSON_ACCEPT}" -u "${DEV1_USER}:$1" \
     "${GATEWAY_URL}/pypi/simple/$2/"
 }
 
@@ -897,7 +899,7 @@ s23_pep658_core_metadata() {
     [ -n "$url" ] || continue
     # --compressed: devpi serves .metadata with Content-Encoding: gzip, which the
     # gateway streams through untouched (real installers decompress; curl needs the flag).
-    if meta=$(curl -sf --compressed -u "dev1:${DEV1_TOKEN}" "${url}.metadata" 2>/dev/null) \
+    if meta=$(curl -sf --compressed -u "${DEV1_USER}:${DEV1_TOKEN}" "${url}.metadata" 2>/dev/null) \
        && grep -qi '^Metadata-Version:' <<<"$meta"; then
       echo "public six: ${url##*/}.metadata served through the gateway ($(printf %s "$meta" | wc -c) bytes)"
       break
@@ -1059,17 +1061,17 @@ s21_pnpm_publish() {
 s22_uv_publish() {
   local pkgdir="${WORK}/uv-hello" target="${WORK}/s22-lib"
   make_py_pkg "${pkgdir}" "${UV_NAME}" "${UV_VERSION}"
-  "${VENV}/bin/uv" build --wheel --out-dir "${pkgdir}/dist" "${pkgdir}" \
+  uv_env "${VENV}/bin/uv" build --wheel --out-dir "${pkgdir}/dist" "${pkgdir}" \
     || { echo "uv build failed"; return 1; }
-  "${VENV}/bin/uv" publish \
+  uv_env "${VENV}/bin/uv" publish \
     --publish-url "${GATEWAY_URL}/api/packages/${ARTEA_NAMESPACE}/pypi/" \
-    --username dev1 --password "${DEV1_TOKEN}" "${pkgdir}/dist/"* \
+    --username "${DEV1_USER}" --password "${DEV1_TOKEN}" "${pkgdir}/dist/"* \
     || { echo "uv publish failed"; return 1; }
   pkg_version_exists pypi "${UV_NAME}" "${UV_VERSION}" \
     || { echo "Gitea does not list ${UV_NAME} ${UV_VERSION} after uv publish"; return 1; }
   echo "Gitea package API confirms ${UV_NAME} ${UV_VERSION}"
   # install it back through the gateway simple index with uv (full loop)
-  "${VENV}/bin/uv" pip install --target "${target}" --index-url "${INDEX_URL}" \
+  uv_env "${VENV}/bin/uv" pip install --target "${target}" --index-url "${INDEX_URL}" \
     --no-deps --reinstall "${UV_NAME}==${UV_VERSION}" \
     || { echo "uv pip install failed"; return 1; }
   [ -f "${target}/${UV_MODULE}.py" ] \
