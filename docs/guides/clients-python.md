@@ -102,6 +102,22 @@ poetry source add --priority=default artea http://localhost:8080/pypi/simple/
 poetry config http-basic.artea your-username your-token
 ```
 
+`--priority=default` (full PyPI replacement) is deliberate: `primary` still
+falls back to public PyPI, which forfeits the dependency-confusion guarantee.
+
+**Poetry 2.x + PEP 621:** with a `[project]`-table `pyproject.toml`,
+`poetry source add` can exit successfully *without* writing the source
+(observed with poetry 2.4.1) — `poetry add` then resolves against public PyPI
+and 404s on private packages. After running it, check that `pyproject.toml`
+contains the block below, and add it by hand if missing:
+
+```toml
+[[tool.poetry.source]]
+name = "artea"
+url = "http://localhost:8080/pypi/simple/"
+priority = "default"
+```
+
 `poetry add six` and `poetry add acme-hello` then both resolve through the
 gateway with the same precedence guarantees.
 
