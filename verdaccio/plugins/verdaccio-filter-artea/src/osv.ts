@@ -32,6 +32,14 @@ const DEFAULT_OSV_TIMEOUT_MS = 5000;
 const DEFAULT_OSV_CACHE_TTL_MS = 120_000;
 const DEFAULT_OSV_CACHE_MAX_ENTRIES = 131_072;
 const DEFAULT_PREWARM_CACHE_MAX_ENTRIES = 16_384;
+/**
+ * How long a failed/degraded prewarm suppresses retries. A degraded summary
+ * warmed nothing, so remembering it for the full TTL would leave dependencies
+ * cold long after an OSV outage ends; remembering nothing would let every
+ * packument request hammer policy-sync during the outage (prewarm fans out to
+ * ~96 deps and degraded filter decisions are not cached).
+ */
+const PREWARM_RETRY_TTL_MS = 10_000;
 const SLOW_OSV_LOOKUP_MS = 500;
 
 interface CachedOsvVerdict {
@@ -179,25 +187,37 @@ export class OsvDecisionClient {
       void this.fetchDecision({ ecosystem, name, package_summary: true })
         .then((body) => {
           const status = typeof body.status === 'string' ? body.status : 'unknown';
-          if (status !== 'ok' && status !== 'needs_versions') {
+          const warmed = status === 'ok' || status === 'needs_versions';
+          if (!warmed) {
             this.logger.debug(
               { name, status, reason: typeof body.reason === 'string' ? body.reason : 'unknown' },
               'filter-artea: OSV prewarm for @{name} returned @{status}: @{reason}',
             );
           }
-          storeCacheEntry(this.prewarmCache, key, Date.now() + this.cacheTtlMs);
-          pruneCache(this.prewarmCache, Date.now(), this.prewarmCacheMaxEntries, (expiresAt) => expiresAt, this.expirySweepIntervalMs());
+          this.rememberPrewarm(key, warmed);
         })
         .catch((e) => {
           this.logger.debug(
             { name, msg: (e as Error).message },
             'filter-artea: OSV prewarm for @{name} failed: @{msg}',
           );
+          this.rememberPrewarm(key, false);
         })
         .finally(() => {
           this.prewarmInFlight.delete(key);
         });
     }
+  }
+
+  /**
+   * A successful prewarm holds for the cache TTL; a degraded/failed one warmed
+   * nothing and is remembered only briefly, so retries resume shortly after an
+   * OSV outage without letting every request re-fire the summary during it.
+   */
+  private rememberPrewarm(key: string, warmed: boolean): void {
+    const ttlMs = warmed ? this.cacheTtlMs : Math.min(this.cacheTtlMs, PREWARM_RETRY_TTL_MS);
+    storeCacheEntry(this.prewarmCache, key, Date.now() + ttlMs);
+    pruneCache(this.prewarmCache, Date.now(), this.prewarmCacheMaxEntries, (expiresAt) => expiresAt, this.expirySweepIntervalMs());
   }
 
   /** Sweeping more often than the TTL cannot find anything to reclaim. */

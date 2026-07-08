@@ -199,6 +199,41 @@ describe('OSV decision wire shape (shared vectors)', () => {
     expect(osvDecisionCacheSizesForTests().verdicts).toBe(1);
   });
 
+  it('does not cache a degraded prewarm summary for the full TTL', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] }); // keep setImmediate real for flushAsyncWork
+    let status = 'degraded';
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ status, reason: 'OSV outage', results: [] }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new OsvDecisionClient('http://policy-sync.example/osv/querybatch', makeLogger(), 5000, 60_000, 10, 10);
+
+    client.prewarmPackages('npm', ['dep-a']);
+    await flushAsyncWork();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // within the short retry window the degraded marker still suppresses refires
+    vi.setSystemTime(Date.now() + 5_000);
+    client.prewarmPackages('npm', ['dep-a']);
+    await flushAsyncWork();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // past the retry window — but well within the 60s TTL — the prewarm retries
+    vi.setSystemTime(Date.now() + 5_001);
+    status = 'ok';
+    client.prewarmPackages('npm', ['dep-a']);
+    await flushAsyncWork();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // the successful summary now holds for the full TTL
+    vi.setSystemTime(Date.now() + 30_000);
+    client.prewarmPackages('npm', ['dep-a']);
+    await flushAsyncWork();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('evicts least-recently-used prewarm summaries above the cache cap', async () => {
     const bodies: Array<{ name: string; package_summary?: true }> = [];
     const fetchMock = vi.fn(async (_url: string, init: { body?: unknown }) => {
