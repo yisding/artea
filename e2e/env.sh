@@ -16,4 +16,5 @@ load_credentials() { # source the (already-verified) credentials file, resolve s
   # explicit BASE_URL beats the GATEWAY_URL recorded at bootstrap time
   GATEWAY_URL="${BASE_URL:-${GATEWAY_URL:-http://localhost:8080}}"
   ARTEA_NAMESPACE="${ARTEA_NAMESPACE:-artea}"
+  DEV1_USER="${DEV1_USER:-dev1}"
 }

@@ -106,8 +106,8 @@ assert_origin() { # <kind> <url> <message> ; kind: gitea-npm|gitea-pypi|gateway|
   echo "${msg}: '${url}' is not a '${kind}' origin"; return 1
 }
 
-gw_get() { # <path> -> body on stdout (dev1 PAT, fail on HTTP error)
-  curl -sf -u "dev1:${DEV1_TOKEN}" "${GATEWAY_URL}$1"
+gw_get() { # <path> -> body on stdout (test-user PAT, fail on HTTP error)
+  curl -sf -u "${DEV1_USER}:${DEV1_TOKEN}" "${GATEWAY_URL}$1"
 }
 
 # ---- Gitea API (admin token) ---------------------------------------------------
@@ -190,14 +190,19 @@ pkg_version_exists() { # <type> <urlencoded name> <version> -> 0 if Gitea has it
 # ---- dev1 token lifecycle (S11/S12) -----------------------------------------------
 mint_dev1_token() { # <name> <scopes csv as json array> -> raw token on stdout
   local resp
-  resp=$(curl -sfS -u "dev1:${DEV1_PASSWORD}" -X POST -H 'Content-Type: application/json' \
-    -d "{\"name\":\"$1\",\"scopes\":$2}" "${GATEWAY_URL}/api/v1/users/dev1/tokens") || return 1
+  [ -n "${DEV1_PASSWORD:-}" ] || {
+    echo "DEV1_PASSWORD is required to mint tokens for ${DEV1_USER}" >&2
+    return 1
+  }
+  resp=$(curl -sfS -u "${DEV1_USER}:${DEV1_PASSWORD}" -X POST -H 'Content-Type: application/json' \
+    -d "{\"name\":\"$1\",\"scopes\":$2}" "${GATEWAY_URL}/api/v1/users/${DEV1_USER}/tokens") || return 1
   echo "$resp" | jq -re .sha1
 }
 
 delete_dev1_token() { # <name> ; tolerates 404/422 (already gone)
   local code
-  code=$(http_code -u "dev1:${DEV1_PASSWORD}" -X DELETE "${GATEWAY_URL}/api/v1/users/dev1/tokens/$1")
+  [ -n "${DEV1_PASSWORD:-}" ] || return 0
+  code=$(http_code -u "${DEV1_USER}:${DEV1_PASSWORD}" -X DELETE "${GATEWAY_URL}/api/v1/users/${DEV1_USER}/tokens/$1")
   case "$code" in 204 | 404 | 422) return 0 ;; *) echo "delete token $1 -> HTTP ${code}"; return 1 ;; esac
 }
 
@@ -215,7 +220,7 @@ write_npmrc() { # <file> <token> ; the documented single-URL client contract
   #   //host/npm/  — covers npm publish's local credential preflight, which
   #                  checks only the registry's exact nerf-dart, never //host/.
   local b64
-  b64=$(printf 'dev1:%s' "$2" | json_b64)
+  b64=$(printf '%s:%s' "${DEV1_USER}" "$2" | json_b64)
   prepare_npmrc "$1"
   cat > "$1" <<EOF
 registry=${GATEWAY_URL}/npm/
@@ -232,7 +237,7 @@ write_npmrc_legacy() { # <file> <token> ; the OLD two-registry contract — kept
   # plus path-scoped credentials. Must keep working unchanged behind the new
   # gateway (the legacy /api/packages/<namespace>/npm/ URLs bypass /npm/ routing).
   local b64
-  b64=$(printf 'dev1:%s' "$2" | json_b64)
+  b64=$(printf '%s:%s' "${DEV1_USER}" "$2" | json_b64)
   prepare_npmrc "$1"
   cat > "$1" <<EOF
 registry=${GATEWAY_URL}/npm/
@@ -299,6 +304,13 @@ pip_env() { # run a command with host PIP_* env/config leakage removed
   env $unset_args PIP_CONFIG_FILE=/dev/null "$@"
 }
 
+uv_env() { # run uv with host UV_* env/config leakage removed
+  local unset_args
+  unset_args=$(env | sed -n 's/^\(UV_[A-Za-z_0-9]*\)=.*/-u \1/p' | tr '\n' ' ')
+  # shellcheck disable=SC2086
+  env $unset_args "$@"
+}
+
 build_wheel() { # <dir> ; wheel lands in <dir>/dist
   pip_env "${VENV}/bin/python" -m build --wheel --no-isolation --outdir "$1/dist" "$1"
 }
@@ -312,5 +324,5 @@ twine_upload() { # <token> <wheel...> ; uploads to Gitea through the gateway
   shift
   "${VENV}/bin/twine" upload --non-interactive --disable-progress-bar \
     --repository-url "${GATEWAY_URL}/api/packages/${ARTEA_NAMESPACE}/pypi/" \
-    -u dev1 -p "$token" "$@"
+    -u "${DEV1_USER}" -p "$token" "$@"
 }
