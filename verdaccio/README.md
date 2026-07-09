@@ -41,6 +41,18 @@ so plugins must be built before the verdaccio-assets image (`make images`) or
 plugins' runtime dependencies (`semver`, `js-yaml`) are pure JS — no native modules —
 so a macOS-built `node_modules` works unchanged inside the Linux container.
 
+> **Release-age guards:** on a machine that enforces pnpm's
+> `minimumReleaseAge` (a supply-chain policy that delays newly published
+> versions), `pnpm install --frozen-lockfile` — and therefore `make plugins` —
+> fails with `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION` whenever the committed
+> lockfile references a version published more recently than the policy allows.
+> Same-day devDep bumps (e.g. a fresh vitest release) are the usual trigger,
+> and CI has no such guard, so a lockfile that passes CI can still fail
+> locally. Since this build is required for the verdaccio-assets image, either
+> wait for the offending entries to age past your policy window, or exempt the
+> packages in this build (pnpm's `minimumReleaseAgeExclude`, or temporarily
+> lowering `minimumReleaseAge`).
+
 To verify config + plugin loading against a real verdaccio without docker:
 
 ```sh
