@@ -50,7 +50,7 @@ so a macOS-built `node_modules` works unchanged inside the Linux container.
 > and CI has no such guard, so a lockfile that passes CI can still fail
 > locally. Since this build is required for the verdaccio-assets image, either
 > wait for the offending entries to age past your policy window, or exempt the
-> packages for this build (pnpm's `minimumReleaseAgeExclude`, or temporarily
+> packages in this build (pnpm's `minimumReleaseAgeExclude`, or temporarily
 > lowering `minimumReleaseAge`).
 
 To verify config + plugin loading against a real verdaccio without docker:

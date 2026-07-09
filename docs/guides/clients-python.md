@@ -98,12 +98,14 @@ export UV_INDEX_ARTEA_PASSWORD=your-token
 ## 4. poetry
 
 ```sh
-poetry source add --priority=default artea http://localhost:8080/pypi/simple/
+poetry source add --priority=primary artea http://localhost:8080/pypi/simple/
 poetry config http-basic.artea your-username your-token
 ```
 
-`--priority=default` (full PyPI replacement) is deliberate: `primary` still
-falls back to public PyPI, which forfeits the dependency-confusion guarantee.
+`--priority=primary` (full PyPI replacement) is deliberate: Poetry supports
+`primary`, `supplemental`, and `explicit` source priorities, and a configured
+primary source disables implicit PyPI. Public PyPI fallback only exists if you
+explicitly configure PyPI as another source.
 
 **Poetry 2.x + PEP 621:** with a `[project]`-table `pyproject.toml`,
 `poetry source add` can exit successfully *without* writing the source
@@ -115,7 +117,7 @@ contains the block below, and add it by hand if missing:
 [[tool.poetry.source]]
 name = "artea"
 url = "http://localhost:8080/pypi/simple/"
-priority = "default"
+priority = "primary"
 ```
 
 `poetry add six` and `poetry add acme-hello` then both resolve through the
