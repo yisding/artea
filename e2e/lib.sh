@@ -190,6 +190,10 @@ pkg_version_exists() { # <type> <urlencoded name> <version> -> 0 if Gitea has it
 # ---- dev1 token lifecycle (S11/S12) -----------------------------------------------
 mint_dev1_token() { # <name> <scopes csv as json array> -> raw token on stdout
   local resp
+  [ -n "${DEV1_PASSWORD:-}" ] || {
+    echo "DEV1_PASSWORD is required to mint tokens for ${DEV1_USER}" >&2
+    return 1
+  }
   resp=$(curl -sfS -u "${DEV1_USER}:${DEV1_PASSWORD}" -X POST -H 'Content-Type: application/json' \
     -d "{\"name\":\"$1\",\"scopes\":$2}" "${GATEWAY_URL}/api/v1/users/${DEV1_USER}/tokens") || return 1
   echo "$resp" | jq -re .sha1
@@ -197,6 +201,7 @@ mint_dev1_token() { # <name> <scopes csv as json array> -> raw token on stdout
 
 delete_dev1_token() { # <name> ; tolerates 404/422 (already gone)
   local code
+  [ -n "${DEV1_PASSWORD:-}" ] || return 0
   code=$(http_code -u "${DEV1_USER}:${DEV1_PASSWORD}" -X DELETE "${GATEWAY_URL}/api/v1/users/${DEV1_USER}/tokens/$1")
   case "$code" in 204 | 404 | 422) return 0 ;; *) echo "delete token $1 -> HTTP ${code}"; return 1 ;; esac
 }
