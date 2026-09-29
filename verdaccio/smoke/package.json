@@ -11,6 +11,6 @@
     "@types/node": "^26.1.0",
     "js-yaml": "^5.2.1",
     "verdaccio": "^6.7.2",
-    "vitest": "^4.1.10"
+    "vitest": "^5.0.2"
   }
 }
